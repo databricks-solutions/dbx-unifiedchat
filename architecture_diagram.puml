@@ -1,0 +1,182 @@
+@startuml Multi-Agent System Architecture
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam defaultTextAlignment center
+skinparam componentStyle rectangle
+
+' Define colors
+skinparam component {
+    BackgroundColor<<agent>> #4A90E2
+    BorderColor<<agent>> #2E5C8A
+    FontColor<<agent>> #FFFFFF
+    
+    BackgroundColor<<data>> #50C878
+    BorderColor<<data>> #2E7D4E
+    FontColor<<data>> #FFFFFF
+    
+    BackgroundColor<<process>> #F5A623
+    BorderColor<<process>> #C17D11
+    FontColor<<process>> #000000
+    
+    BackgroundColor<<decision>> #E94B3C
+    BorderColor<<decision>> #A33428
+    FontColor<<decision>> #FFFFFF
+    
+    BackgroundColor<<pipeline>> #9B59B6
+    BorderColor<<pipeline>> #6C3483
+    FontColor<<pipeline>> #FFFFFF
+}
+
+title Multi-Agent System Architecture - KUMC POC
+
+actor User
+
+rectangle "Main Flow" {
+    component "Super Agent\n(Main Orchestrator)" as SuperAgent <<agent>>
+    component "Thinking & Planning Agent\n(Query Analysis & Breakdown)" as ThinkingAgent <<agent>>
+    
+    diamond "Question\nClear?" as ClarificationCheck <<decision>>
+    component "Request Clarification\n(Provide Choices)" as Clarify <<process>>
+    
+    component "Break Down Query\ninto Sub-tasks" as BreakDown <<process>>
+    component "Vector Search Index Tool\n(Find Relevant Genie Agents)" as VSSearch <<process>>
+    
+    database "Vector Search Index\n(Enriched Metadata)" as VSIndex <<data>>
+    
+    diamond "Single\nGenie Agent?" as DecisionSingle <<decision>>
+    diamond "Row-wise\nJoin Needed?" as DecisionJoin <<decision>>
+}
+
+rectangle "Single Agent Path" {
+    component "Single Genie Agent" as SingleGenie <<agent>>
+    component "Return:\nthinking_result\nsql_result\nanswer_result" as ReturnSingle <<process>>
+}
+
+rectangle "Multiple Agents - Fast Route" {
+    component "SQL Synthesis Agent\n(Assembly from Metadata)" as SQLSynthesisFast <<agent>>
+    component "SQL Execution Agent\n(Execute on Delta Tables)" as SQLExecFast <<agent>>
+    component "Return Fast Result" as ReturnFast <<process>>
+}
+
+rectangle "Multiple Agents - Slow Route" {
+    component "Parallel Async Calls\nto Genie Agents" as ParallelCall <<process>>
+    component "Genie Agent A\n(Sub-question 1)" as GenieAgentA1 <<agent>>
+    component "Genie Agent B\n(Sub-question 2)" as GenieAgentB1 <<agent>>
+    component "Collect sql_results" as CollectSQL <<process>>
+    component "SQL Synthesis Agent\n(Assembly from Results)" as SQLSynthesisSlow <<agent>>
+    component "SQL Execution Agent" as SQLExecSlow <<agent>>
+    component "Return Slow Result" as ReturnSlow <<process>>
+}
+
+rectangle "Multiple Agents - Verbal Merge" {
+    component "Call Multiple\nGenie Agents" as MultiCall <<process>>
+    component "Genie Agent A\n(Sub-question 1)" as GenieAgentA2 <<agent>>
+    component "Genie Agent B\n(Sub-question 2)" as GenieAgentB2 <<agent>>
+    component "Verbal Merge\n(Integrate Answers)" as VerbalMerge <<process>>
+    component "Return:\nintegrated answer\nseparate sql_results" as ReturnMerged <<process>>
+}
+
+database "Delta Tables\n(Behind Genie Agents)" as DeltaTables <<data>>
+
+rectangle "Supporting Pipelines" {
+    
+    package "Pipeline 1: Table Metadata Update" <<pipeline>> {
+        component "Sample Column Values" as TMU1 <<pipeline>>
+        component "Build Value Dictionary" as TMU2 <<pipeline>>
+        component "Enrich Metadata" as TMU3 <<pipeline>>
+        database "Save to Delta Table" as TMU4 <<data>>
+    }
+    
+    package "Pipeline 2: Vector Search Index" <<pipeline>> {
+        component "Parse Genie Space JSON" as VS1 <<pipeline>>
+        component "Get Baseline Docs" as VS2 <<pipeline>>
+        component "Enrich with Table Metadata" as VS3 <<pipeline>>
+        component "Build VS Index" as VS4 <<pipeline>>
+    }
+    
+    package "Pipeline 3: Genie Space Export" <<pipeline>> {
+        component "Export Genie Spaces" as GSE1 <<pipeline>>
+        component "Generate space.json" as GSE2 <<pipeline>>
+    }
+}
+
+package "Future: Caching System" {
+    component "Full-text Cache" as Cache1
+    component "Parameterized SQL Cache" as Cache2
+    component "Semantic Cache" as Cache3
+}
+
+component "MLflow\n(Logging & Deployment)" as MLflow
+
+' Main Flow
+User --> SuperAgent
+SuperAgent --> ClarificationCheck
+ClarificationCheck --> Clarify : Vague
+Clarify --> User
+ClarificationCheck --> ThinkingAgent : Clear
+SuperAgent --> ThinkingAgent
+ThinkingAgent --> BreakDown
+BreakDown --> VSSearch
+VSIndex --> VSSearch
+VSSearch --> DecisionSingle
+
+' Single Agent Path
+DecisionSingle --> SingleGenie : Yes
+SingleGenie --> ReturnSingle
+ReturnSingle --> SuperAgent
+
+' Multiple Agents Paths
+DecisionSingle --> DecisionJoin : No
+
+' Fast Route
+DecisionJoin --> SQLSynthesisFast : Yes - Fast
+SQLSynthesisFast --> SQLExecFast
+SQLExecFast --> DeltaTables
+SQLExecFast --> ReturnFast
+ReturnFast --> SuperAgent
+
+' Slow Route
+DecisionJoin --> ParallelCall : Yes - Slow
+ParallelCall --> GenieAgentA1
+ParallelCall --> GenieAgentB1
+GenieAgentA1 --> CollectSQL
+GenieAgentB1 --> CollectSQL
+CollectSQL --> SQLSynthesisSlow
+SQLSynthesisSlow --> SQLExecSlow
+SQLExecSlow --> DeltaTables
+SQLExecSlow --> ReturnSlow
+ReturnSlow --> SuperAgent
+
+' Verbal Merge
+DecisionJoin --> MultiCall : No Join
+MultiCall --> GenieAgentA2
+MultiCall --> GenieAgentB2
+GenieAgentA2 --> VerbalMerge
+GenieAgentB2 --> VerbalMerge
+VerbalMerge --> ReturnMerged
+ReturnMerged --> SuperAgent
+
+' Final Output
+SuperAgent --> User : Final Answer
+
+' Pipeline Dependencies
+TMU1 --> TMU2
+TMU2 --> TMU3
+TMU3 --> TMU4
+TMU4 ..> VS3 : Enriched\nMetadata
+
+GSE1 --> GSE2
+GSE2 ..> VS2 : space.json
+
+VS1 --> VS2
+VS2 --> VS3
+VS3 --> VS4
+VS4 --> VSIndex
+
+' MLflow connections
+SuperAgent ..> MLflow : logs
+ThinkingAgent ..> MLflow : logs
+SingleGenie ..> MLflow : logs
+
+@enduml
+

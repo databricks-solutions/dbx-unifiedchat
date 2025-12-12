@@ -1,0 +1,96 @@
+Source,Target,Label,Type,Category
+User,Super Agent,Query,Flow,Main
+Super Agent,Thinking & Planning Agent,Analyze,Flow,Main
+Super Agent,Clarification Check,Validate,Decision,Main
+Clarification Check,Request Clarification,Vague,Flow,Main
+Request Clarification,User,Provide Choices,Flow,Main
+Clarification Check,Thinking & Planning Agent,Clear,Flow,Main
+Thinking & Planning Agent,Break Down Query,Process,Flow,Main
+Break Down Query,Vector Search Tool,Search,Flow,Main
+Vector Search Index,Vector Search Tool,Query Index,Data,Main
+Vector Search Tool,Single Agent Decision,Route,Decision,Main
+Single Agent Decision,Single Genie Agent,Yes - One Agent,Flow,Single Path
+Single Genie Agent,Return Single Result,Result,Flow,Single Path
+Return Single Result,Super Agent,Answer,Flow,Single Path
+Single Agent Decision,Join Decision,No - Multiple Agents,Decision,Multiple Path
+Join Decision,SQL Synthesis Agent (Fast),Yes - Fast Route,Flow,Fast Route
+SQL Synthesis Agent (Fast),SQL Execution Agent (Fast),Execute,Flow,Fast Route
+SQL Execution Agent (Fast),Delta Tables,Query,Data,Fast Route
+SQL Execution Agent (Fast),Return Fast Result,Result,Flow,Fast Route
+Return Fast Result,Super Agent,Answer,Flow,Fast Route
+Join Decision,Parallel Async Calls,Yes - Slow Route,Flow,Slow Route
+Parallel Async Calls,Genie Agent A (Slow),Sub-query 1,Flow,Slow Route
+Parallel Async Calls,Genie Agent B (Slow),Sub-query 2,Flow,Slow Route
+Genie Agent A (Slow),Collect SQL Results,SQL 1,Flow,Slow Route
+Genie Agent B (Slow),Collect SQL Results,SQL 2,Flow,Slow Route
+Collect SQL Results,SQL Synthesis Agent (Slow),Combine,Flow,Slow Route
+SQL Synthesis Agent (Slow),SQL Execution Agent (Slow),Execute,Flow,Slow Route
+SQL Execution Agent (Slow),Delta Tables,Query,Data,Slow Route
+SQL Execution Agent (Slow),Return Slow Result,Result,Flow,Slow Route
+Return Slow Result,Super Agent,Answer,Flow,Slow Route
+Join Decision,Multiple Agent Calls,No - Verbal Merge,Flow,Verbal Path
+Multiple Agent Calls,Genie Agent A (Verbal),Sub-query 1,Flow,Verbal Path
+Multiple Agent Calls,Genie Agent B (Verbal),Sub-query 2,Flow,Verbal Path
+Genie Agent A (Verbal),Verbal Merge,Answer 1,Flow,Verbal Path
+Genie Agent B (Verbal),Verbal Merge,Answer 2,Flow,Verbal Path
+Verbal Merge,Return Merged Result,Integrated,Flow,Verbal Path
+Return Merged Result,Super Agent,Answer,Flow,Verbal Path
+Super Agent,User,Final Answer,Flow,Main
+Export Genie Spaces,Generate space.json,Export,Flow,Pipeline 3
+Generate space.json,Get Baseline Docs,Input,Data,Pipeline 2
+Parse Genie Space JSON,Get Baseline Docs,Process,Flow,Pipeline 2
+Get Baseline Docs,Enrich with Table Metadata,Enrich,Flow,Pipeline 2
+Enrich with Table Metadata,Build VS Index,Build,Flow,Pipeline 2
+Build VS Index,Vector Search Index,Store,Data,Pipeline 2
+Sample Column Values,Build Value Dictionary,Process,Flow,Pipeline 1
+Build Value Dictionary,Enrich Metadata,Process,Flow,Pipeline 1
+Enrich Metadata,Save to Delta Table,Store,Data,Pipeline 1
+Save to Delta Table,Enrich with Table Metadata,Metadata,Data,Pipeline Link
+Super Agent,MLflow,Log,Integration,MLflow
+Thinking & Planning Agent,MLflow,Log,Integration,MLflow
+Single Genie Agent,MLflow,Log,Integration,MLflow
+
+Node,Label,Type,Color,Shape
+User,User,Actor,#95A5A6,ellipse
+Super Agent,Super Agent (Main Orchestrator),Agent,#4A90E2,rectangle
+Thinking & Planning Agent,Thinking & Planning Agent (Query Analysis),Agent,#4A90E2,rectangle
+Clarification Check,Question Clear?,Decision,#E94B3C,diamond
+Request Clarification,Request Clarification (Provide Choices),Process,#F5A623,rectangle
+Break Down Query,Break Down Query into Sub-tasks,Process,#F5A623,rectangle
+Vector Search Tool,Vector Search Index Tool,Process,#F5A623,rectangle
+Vector Search Index,Vector Search Index (Enriched Metadata),Data,#50C878,cylinder
+Single Agent Decision,Single Genie Agent?,Decision,#E94B3C,diamond
+Single Genie Agent,Single Genie Agent,Agent,#4A90E2,rectangle
+Return Single Result,Return Result (thinking/sql/answer),Process,#F5A623,rectangle
+Join Decision,Row-wise Join Needed?,Decision,#E94B3C,diamond
+SQL Synthesis Agent (Fast),SQL Synthesis Agent (Fast Route),Agent,#4A90E2,rectangle
+SQL Execution Agent (Fast),SQL Execution Agent (Fast),Agent,#4A90E2,rectangle
+Return Fast Result,Return Fast Result,Process,#F5A623,rectangle
+Parallel Async Calls,Parallel Async Calls to Genie Agents,Process,#F5A623,rectangle
+Genie Agent A (Slow),Genie Agent A (Sub-question 1),Agent,#4A90E2,rectangle
+Genie Agent B (Slow),Genie Agent B (Sub-question 2),Agent,#4A90E2,rectangle
+Collect SQL Results,Collect sql_results,Process,#F5A623,rectangle
+SQL Synthesis Agent (Slow),SQL Synthesis Agent (Slow Route),Agent,#4A90E2,rectangle
+SQL Execution Agent (Slow),SQL Execution Agent (Slow),Agent,#4A90E2,rectangle
+Return Slow Result,Return Slow Result,Process,#F5A623,rectangle
+Multiple Agent Calls,Call Multiple Genie Agents,Process,#F5A623,rectangle
+Genie Agent A (Verbal),Genie Agent A (Sub-question 1),Agent,#4A90E2,rectangle
+Genie Agent B (Verbal),Genie Agent B (Sub-question 2),Agent,#4A90E2,rectangle
+Verbal Merge,Verbal Merge (Integrate Answers),Process,#F5A623,rectangle
+Return Merged Result,Return Integrated Answer,Process,#F5A623,rectangle
+Delta Tables,Delta Tables (Behind Genie Agents),Data,#50C878,cylinder
+Export Genie Spaces,Export Genie Spaces,Pipeline,#9B59B6,rectangle
+Generate space.json,Generate space.json,Pipeline,#9B59B6,rectangle
+Parse Genie Space JSON,Parse Genie Space JSON,Pipeline,#9B59B6,rectangle
+Get Baseline Docs,Get Baseline Docs,Pipeline,#9B59B6,rectangle
+Enrich with Table Metadata,Enrich with Table Metadata,Pipeline,#9B59B6,rectangle
+Build VS Index,Build VS Index,Pipeline,#9B59B6,rectangle
+Sample Column Values,Sample Column Values,Pipeline,#9B59B6,rectangle
+Build Value Dictionary,Build Value Dictionary,Pipeline,#9B59B6,rectangle
+Enrich Metadata,Enrich Metadata,Pipeline,#9B59B6,rectangle
+Save to Delta Table,Save to Delta Table,Data,#50C878,cylinder
+MLflow,MLflow (Logging & Deployment),Integration,#FFA500,rectangle
+Full-text Cache,Full-text Cache (Future),Future,#BDC3C7,rectangle
+Parameterized SQL Cache,Parameterized SQL Cache (Future),Future,#BDC3C7,rectangle
+Semantic Cache,Semantic Cache (Future),Future,#BDC3C7,rectangle
+

@@ -1,0 +1,48 @@
+graph LR
+    %% Main Flow - Simplified
+    User[👤 User] --> SuperAgent[🤖 Super Agent]
+    SuperAgent --> ThinkingAgent[🧠 Thinking Agent]
+    ThinkingAgent --> VSIndex[(📚 Vector Search Index)]
+    
+    %% Decision Points
+    VSIndex --> Decision{How many<br/>agents?}
+    
+    %% Paths
+    Decision -->|Single| GenieAgent1[🤖 Genie Agent]
+    Decision -->|Multiple + Join| FastPath[⚡ Fast: SQL Synthesis]
+    Decision -->|Multiple + Join| SlowPath[🔄 Slow: Async Agents]
+    Decision -->|Multiple - No Join| VerbalPath[💬 Verbal Merge]
+    
+    %% Results
+    GenieAgent1 --> Result1[📊 Result]
+    FastPath --> DeltaTables[(💾 Delta Tables)]
+    SlowPath --> DeltaTables
+    DeltaTables --> Result2[📊 Result]
+    VerbalPath --> Result3[📊 Result]
+    
+    %% Back to user
+    Result1 --> SuperAgent
+    Result2 --> SuperAgent
+    Result3 --> SuperAgent
+    SuperAgent --> User
+    
+    %% Supporting Pipelines
+    Genie[📤 Genie Export] --> Metadata[🏷️ Table Metadata]
+    Metadata --> VSIndex
+    
+    %% MLflow
+    MLflow[📈 MLflow] -.logs.-> SuperAgent
+    MLflow -.logs.-> ThinkingAgent
+    MLflow -.logs.-> GenieAgent1
+    
+    %% Styling
+    classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff
+    classDef dataClass fill:#50C878,stroke:#2E7D4E,stroke-width:2px,color:#fff
+    classDef processClass fill:#F5A623,stroke:#C17D11,stroke-width:2px,color:#000
+    classDef decisionClass fill:#E94B3C,stroke:#A33428,stroke-width:2px,color:#fff
+    
+    class SuperAgent,ThinkingAgent,GenieAgent1 agentClass
+    class VSIndex,DeltaTables dataClass
+    class FastPath,SlowPath,VerbalPath,Genie,Metadata processClass
+    class Decision decisionClass
+

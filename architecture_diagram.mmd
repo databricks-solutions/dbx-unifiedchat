@@ -1,0 +1,122 @@
+graph TB
+    %% Main Entry Point
+    User[User Query] --> SuperAgent[Super Agent<br/>Main Orchestrator]
+    
+    %% Super Agent connections
+    SuperAgent --> ThinkingAgent[Thinking & Planning Agent<br/>Query Analysis & Breakdown]
+    SuperAgent --> ClarificationLoop{Question<br/>Clear?}
+    
+    %% Clarification flow
+    ClarificationLoop -->|Vague| Clarify[Request Clarification<br/>Provide Choices]
+    Clarify --> User
+    ClarificationLoop -->|Clear| ThinkingAgent
+    
+    %% Thinking Agent Process
+    ThinkingAgent --> BreakDown[Break Down Query<br/>into Sub-tasks]
+    BreakDown --> VSSearch[Vector Search Index Tool<br/>Find Relevant Genie Agents]
+    
+    %% Vector Search Index
+    VSIndex[(Vector Search Index<br/>Enriched Genie Space Metadata)] --> VSSearch
+    
+    %% Decision Points
+    VSSearch --> DecisionSingle{Single<br/>Genie Agent?}
+    
+    %% Single Agent Path
+    DecisionSingle -->|Yes| SingleGenie[Call Single Genie Agent]
+    SingleGenie --> GenieAgent1[Genie Agent<br/>Patients/Medications/Diagnoses/etc.]
+    GenieAgent1 --> ReturnSingle[Return:<br/>thinking_result<br/>sql_result<br/>answer_result]
+    ReturnSingle --> SuperAgent
+    
+    %% Multiple Agents Path
+    DecisionSingle -->|No| DecisionJoin{Row-wise<br/>Join Needed?}
+    
+    %% Join Required - Fast Route
+    DecisionJoin -->|Yes - Fast Route| SQLSynthesisFast[SQL Synthesis Agent<br/>Assembly SQL from Metadata]
+    SQLSynthesisFast --> SQLExecFast[SQL Execution Agent<br/>Execute on Delta Tables]
+    SQLExecFast --> DeltaTables[(Delta Tables<br/>Behind Genie Agents)]
+    SQLExecFast --> ReturnFast[Return Fast Result]
+    ReturnFast --> SuperAgent
+    
+    %% Join Required - Slow Route
+    DecisionJoin -->|Yes - Slow Route| ParallelCall[Parallel Async Calls<br/>to Multiple Genie Agents]
+    ParallelCall --> GenieAgent2A[Genie Agent A<br/>Sub-question 1]
+    ParallelCall --> GenieAgent2B[Genie Agent B<br/>Sub-question 2]
+    GenieAgent2A --> CollectSQL[Collect sql_results]
+    GenieAgent2B --> CollectSQL
+    CollectSQL --> SQLSynthesisSlow[SQL Synthesis Agent<br/>Assembly SQL from Results]
+    SQLSynthesisSlow --> SQLExecSlow[SQL Execution Agent<br/>Execute on Delta Tables]
+    SQLExecSlow --> DeltaTables
+    SQLExecSlow --> ReturnSlow[Return Slow Result]
+    ReturnSlow --> SuperAgent
+    
+    %% No Join Required - Verbal Merge
+    DecisionJoin -->|No - Verbal Merge| MultiCall[Call Multiple Genie Agents<br/>in Parallel]
+    MultiCall --> GenieAgent3A[Genie Agent A<br/>Sub-question 1]
+    MultiCall --> GenieAgent3B[Genie Agent B<br/>Sub-question 2]
+    GenieAgent3A --> VerbalMerge[Verbal Merge<br/>Integrate Answers]
+    GenieAgent3B --> VerbalMerge
+    VerbalMerge --> ReturnMerged[Return:<br/>integrated answer<br/>separate sql_results]
+    ReturnMerged --> SuperAgent
+    
+    %% Final Output
+    SuperAgent --> FinalAnswer[Final Answer to User]
+    FinalAnswer --> User
+    
+    %% Supporting Pipelines Section
+    subgraph Pipeline1["Pipeline 1: Table Metadata Update"]
+        TMU1[Sample Column Values]
+        TMU2[Build Value Dictionary]
+        TMU3[Enrich Metadata]
+        TMU4[Save to Delta Table]
+        TMU1 --> TMU2
+        TMU2 --> TMU3
+        TMU3 --> TMU4
+    end
+    
+    subgraph Pipeline2["Pipeline 2: Vector Search Index Generation"]
+        VS1[Parse Genie Space JSON]
+        VS2[Get Baseline Docs]
+        VS3[Enrich with Table Metadata]
+        VS4[Build VS Index]
+        VS1 --> VS2
+        VS2 --> VS3
+        VS3 --> VS4
+        VS4 --> VSIndex
+    end
+    
+    subgraph Pipeline3["Pipeline 3: Genie Space Export"]
+        GSE1[Export Genie Spaces]
+        GSE2[Generate space.json]
+        GSE1 --> GSE2
+    end
+    
+    %% Pipeline dependencies
+    GSE2 --> VS1
+    TMU4 --> VS3
+    
+    %% Future Components (Caching)
+    subgraph FutureCaching["Future: Caching System"]
+        Cache1[Full-text Cache]
+        Cache2[Parameterized SQL Cache]
+        Cache3[Semantic Cache]
+    end
+    
+    %% MLflow Integration
+    MLflow[MLflow<br/>Logging & Deployment]
+    SuperAgent -.logs.-> MLflow
+    ThinkingAgent -.logs.-> MLflow
+    GenieAgent1 -.logs.-> MLflow
+    
+    %% Styling
+    classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff
+    classDef dataClass fill:#50C878,stroke:#2E7D4E,stroke-width:2px,color:#fff
+    classDef processClass fill:#F5A623,stroke:#C17D11,stroke-width:2px,color:#fff
+    classDef decisionClass fill:#E94B3C,stroke:#A33428,stroke-width:2px,color:#fff
+    classDef pipelineClass fill:#9B59B6,stroke:#6C3483,stroke-width:2px,color:#fff
+    
+    class SuperAgent,ThinkingAgent,GenieAgent1,GenieAgent2A,GenieAgent2B,GenieAgent3A,GenieAgent3B agentClass
+    class VSIndex,DeltaTables dataClass
+    class SQLSynthesisFast,SQLExecFast,SQLSynthesisSlow,SQLExecSlow,BreakDown,VSSearch processClass
+    class DecisionSingle,DecisionJoin,ClarificationLoop decisionClass
+    class TMU1,TMU2,TMU3,TMU4,VS1,VS2,VS3,VS4,GSE1,GSE2 pipelineClass
+

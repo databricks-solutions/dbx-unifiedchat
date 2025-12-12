@@ -1,0 +1,88 @@
+═══════════════════════════════════════════════════════════════
+  🏗️  ARCHITECTURE DIAGRAM FILES - COMPLETE PACKAGE
+═══════════════════════════════════════════════════════════════
+
+📚 DOCUMENTATION FILES (Start Here!)
+───────────────────────────────────────────────────────────────
+  1. ⭐ ARCHITECTURE_INDEX.md           - Master index & overview
+  2. 🚀 ARCHITECTURE_QUICK_START.md     - Quick start guide  
+  3. 📖 ARCHITECTURE_DIAGRAM.md         - Full documentation
+  4. 📋 DIAGRAM_FILES_SUMMARY.md        - Detailed file guide
+  5. 📝 ARCHITECTURE_FILES_LIST.txt     - This file
+
+🖼️  VISUAL DIAGRAMS - DETAILED VERSION
+───────────────────────────────────────────────────────────────
+  6. 🖼️  architecture_diagram.png      - 438KB - Presentation ready
+  7. 📐 architecture_diagram.svg       - 101KB - Scalable vector
+  8. 📄 architecture_diagram.pdf       - 108KB - Print ready
+
+🖼️  VISUAL DIAGRAMS - SIMPLIFIED VERSION  
+───────────────────────────────────────────────────────────────
+  9. 🖼️  architecture_diagram_simple.png  - 124KB - Executive view
+ 10. 📐 architecture_diagram_simple.svg  - 41KB  - Simple vector
+ 11. 📄 architecture_diagram_simple.pdf  - 165KB - Simple print
+
+📝 SOURCE FILES (Editable)
+───────────────────────────────────────────────────────────────
+ 12. 🔧 architecture_diagram.mmd        - 4.8KB - Mermaid source
+ 13. 🔧 architecture_diagram_simple.mmd - 1.7KB - Simple Mermaid
+ 14. 🔧 architecture_diagram.puml       - 5.6KB - PlantUML source
+ 15. 📊 architecture_nodes_edges.csv    - 7.2KB - Lucid Chart import
+
+═══════════════════════════════════════════════════════════════
+
+🎯 QUICK ACTIONS
+───────────────────────────────────────────────────────────────
+
+For Lucid Chart:
+  → Import: architecture_nodes_edges.csv
+  
+For Presentations:  
+  → Use: architecture_diagram.png (detailed)
+  → Use: architecture_diagram_simple.png (overview)
+  
+For Documentation:
+  → Copy: ARCHITECTURE_DIAGRAM.md to your wiki
+  
+For Editing:
+  → Open: architecture_diagram.mmd
+  → Edit at: https://mermaid.live
+  
+═══════════════════════════════════════════════════════════════
+
+📊 WHAT'S INSIDE THE DIAGRAM
+───────────────────────────────────────────────────────────────
+
+✅ Super Agent - Main orchestrator
+✅ Thinking & Planning Agent - Query analyzer  
+✅ Genie Agents - Domain experts (Patients, Meds, Diagnoses)
+✅ SQL Synthesis Agent - Query builder
+✅ SQL Execution Agent - Query executor
+✅ Vector Search Index - Searchable metadata
+✅ Delta Tables - Data storage
+✅ 4 Execution Paths (Single, Fast, Slow, Verbal)
+✅ 3 Supporting Pipelines
+✅ MLflow Integration
+✅ Future Caching System
+
+═══════════════════════════════════════════════════════════════
+
+🎨 COLOR SCHEME
+───────────────────────────────────────────────────────────────
+  🔵 Blue #4A90E2   - Agents
+  🟢 Green #50C878  - Data Stores  
+  🟠 Orange #F5A623 - Processes
+  🔴 Red #E94B3C    - Decisions
+  🟣 Purple #9B59B6 - Pipelines
+
+═══════════════════════════════════════════════════════════════
+
+Total Files: 15
+Total Size: ~1.1 MB
+Status: ✅ Ready to use!
+
+Generated: December 8, 2025
+Project: KUMC POC - Multi-Agent System
+Based on: Instructions/01_overall.md
+
+═══════════════════════════════════════════════════════════════

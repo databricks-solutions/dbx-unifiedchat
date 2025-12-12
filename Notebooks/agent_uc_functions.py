@@ -54,6 +54,7 @@ def analyze_query_plan(
     llm = ChatDatabricks(endpoint="databricks-claude-sonnet-4-5")
     
     # Step 1: Check query clarity
+    # TODO: include {context} in the prompt, context could be some part of the VS results that is relevant to the question
     clarity_prompt = f"""
     Analyze the following question for clarity and specificity:
     
