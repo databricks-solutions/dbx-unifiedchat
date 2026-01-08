@@ -1,0 +1,67 @@
+graph TD
+    A[User Query] --> B[Super Agent<br/>LangGraph Supervisor]
+    
+    B --> C[1. Clarification Agent]
+    C -->|Clear Query| D[2. Planning Agent]
+    C -->|Needs Clarification| A
+    
+    D -->|Creates Plan| E[3. SQL Synthesis Agent]
+    E -->|Generates SQL| F[4. SQL Validation Agent<br/>⭐ NEW]
+    
+    F -->|Validates| G{Is Valid?}
+    
+    G -->|✅ Yes| H[5. SQL Execution Agent]
+    G -->|❌ No| I[Return Errors<br/>to Synthesis]
+    
+    I -->|Errors + Suggestions| E
+    
+    H -->|Executes| J[Query Results]
+    J --> K[Final Answer to User]
+    
+    style F fill:#90EE90,stroke:#006400,stroke-width:3px
+    style G fill:#FFD700,stroke:#FF8C00,stroke-width:2px
+    style E fill:#87CEEB,stroke:#4682B4,stroke-width:2px
+    style H fill:#87CEEB,stroke:#4682B4,stroke-width:2px
+    
+    subgraph "SQL Validation Agent Components"
+        F1[SQL Parser]
+        F2[Table Validator]
+        F3[Column Validator]
+        F4[UC Function Tools]
+        
+        F --> F1
+        F1 --> F2
+        F2 --> F3
+        F3 --> F4
+        F4 --> F
+    end
+    
+    subgraph "UC Function Tools"
+        T1[get_space_summary]
+        T2[get_table_overview]
+        T3[get_column_detail]
+        T4[get_space_details]
+    end
+    
+    F4 -.->|Calls| T1
+    F4 -.->|Calls| T2
+    F4 -.->|Calls| T3
+    F4 -.->|Calls| T4
+    
+    subgraph "Validation Result Structure"
+        V1[is_valid: bool]
+        V2[errors: list]
+        V3[warnings: list]
+        V4[suggestions: list]
+        V5[validation_details: dict]
+    end
+    
+    F --> V1
+    F --> V2
+    F --> V3
+    F --> V4
+    F --> V5
+    
+    classDef newAgent fill:#90EE90,stroke:#006400,stroke-width:3px
+    classDef decision fill:#FFD700,stroke:#FF8C00,stroke-width:2px
+    classDef existing fill:#87CEEB,stroke:#4682B4,stroke-width:2px

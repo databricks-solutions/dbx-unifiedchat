@@ -1,0 +1,20 @@
+# The main pipeline for kumc_poc
+
+resources:
+  pipelines:
+    kumc_poc_etl:
+      name: kumc_poc_etl
+      catalog: ${var.catalog}
+      schema: ${var.schema}
+      serverless: true
+      root_path: "../src/kumc_poc_etl"
+
+      libraries:
+        - glob:
+            include: ../src/kumc_poc_etl/transformations/**
+
+      environment:
+        dependencies:
+          # We include every dependency defined by pyproject.toml by defining an editable environment
+          # that points to the folder where pyproject.toml is deployed.
+          - --editable ${workspace.file_path}
