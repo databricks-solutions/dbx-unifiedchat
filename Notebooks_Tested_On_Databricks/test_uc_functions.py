@@ -1,4 +1,5 @@
 # Databricks notebook source
+# DBTITLE 1,Install Packages
 # MAGIC %pip install databricks-langchain databricks-vectorsearch
 
 # COMMAND ----------
@@ -89,12 +90,10 @@ context
 
 # COMMAND ----------
 
-
 from databricks_langchain import ChatDatabricks
 
 # Initialize LLM for analysis
-llm = ChatDatabricks(endpoint="databricks-claude-sonnet-4-5")
-
+llm = ChatDatabricks(endpoint="databricks-claude-haiku-4-5")# "databricks-claude-sonnet-4-5"
 
 # COMMAND ----------
 
@@ -103,6 +102,7 @@ llm = ChatDatabricks(endpoint="databricks-claude-sonnet-4-5")
 
 # COMMAND ----------
 
+# DBTITLE 1,Simulate Mock Testing Questions
 
 query = "Provide me three questions each need to be answered by joining two or more Genie spaces."
 
@@ -157,6 +157,7 @@ except json.JSONDecodeError as e:
 
 # COMMAND ----------
 
+# DBTITLE 1,Clarification Agent
 
 """
 Analyze a user query and create an execution plan.
@@ -186,10 +187,16 @@ Returns:
 from databricks_langchain import ChatDatabricks
 
 # Initialize LLM for analysis
-llm = ChatDatabricks(endpoint="databricks-claude-sonnet-4-5")
+llm = ChatDatabricks(endpoint="databricks-claude-haiku-4-5")
 
 query = "How many patients are ?"
 query = "How many patients are in the dataset (total unique patients)?"
+query = 'What is the average cost of medical claims in 2024?' # reminds not clear and provide hints to clarify, see below next query.
+query = "What is the average cost per medical claim? For cost, use the average allowed amount per claim as a whole."
+query = "Calculate the average allowed amount using the procedure table (procedure-level allowed amounts), then average across all unique claims"
+query = "Calculate the average allowed amount per procedure line, then for each claim calculate the sum of all procedure allowed amounts, then average those claim totals across all unique claims"
+query = 'What is the average cost of medical claims in 2024?' # reminds not clear and provide hints to clarify, see below next query.
+
 
 # Step 1: Check query clarity
 # TODO: include {context} in the prompt, context could be some part of the VS results that is relevant to the question
@@ -231,7 +238,6 @@ clarity_response
 
 # COMMAND ----------
 
-
 # Extract JSON from the response (handle markdown code blocks)
 response_text = clarity_response.content
 
@@ -271,6 +277,8 @@ num_results: int = 5
 query = "What is the average cost of medical claims for patients diagnosed with diabetes, broken down by insurance payer type and patient age group?"
 query = "How many patients are 65 years old and above?"
 query = "How many medical claims are above $500? How many Rx claims are above $1000?"
+query = "What is the average cost of medical claims for patients diagnosed with diabetes, broken down by insurance payer type and patient age group?"
+query = 'What is the average cost of medical claims in 2024?' # reminds not clear and provide hints to clarify, see below next query.
 query = "What is the average cost of medical claims for patients diagnosed with diabetes, broken down by insurance payer type and patient age group?"
 
 # Step 2: Search for relevant Genie spaces using AI Bridge VectorSearchRetrieverTool
@@ -362,6 +370,11 @@ query = "How many patients are 65 years old and above in 2024? Among these patie
 
 # COMMAND ----------
 
+query = 'What is the average cost of medical claims for patients diagnosed with diabetes, broken down by insurance payer type and patient age group? Use slow route.'
+
+# COMMAND ----------
+
+# DBTITLE 1,Create Planning Agent
 # Step 3: Create execution plan with relevant spaces
 # at least, relevant spaces have sorted by score in descending order, this will be additional context for the LLM.
 import json
@@ -369,7 +382,7 @@ import mlflow
 from databricks_langchain import ChatDatabricks
 
 # Initialize LLM for analysis
-llm = ChatDatabricks(endpoint="databricks-claude-sonnet-4-5")
+llm = ChatDatabricks(endpoint="databricks-claude-haiku-4-5")# "databricks-claude-sonnet-4-5"
 
 planning_prompt = f"""
 You are a query planning expert. Analyze the following question and create an execution plan.
@@ -409,6 +422,8 @@ Break down the question and determine:
 
 Return your analysis as JSON:
 {{
+    "original_query":{query},
+    "vector_search_relevant_spaces_info":{[(sp['space_id'], sp['space_title']) for sp in relevant_spaces]},
     "question_clear": true,
     "sub_questions": ["sub-question 1", "sub-question 2", ...],
     "requires_multiple_spaces": true/false,
@@ -432,16 +447,12 @@ print(planning_prompt)
 mlflow.langchain.autolog()
 
 planning_response = llm.invoke(planning_prompt)
-plan_result = json.loads(planning_response.content.strip('```json'))
+plan_result = json.loads(planning_response.content.strip('```json').strip('\n'))
 
 
 # COMMAND ----------
 
-planning_response
-
-# COMMAND ----------
-
-query
+print(planning_response.content.strip('```json').strip('\n'))
 
 # COMMAND ----------
 
@@ -449,7 +460,14 @@ plan_result
 
 # COMMAND ----------
 
-print(planning_prompt)
+# json.loads(planning_response.content.strip('```json'))
+
+# COMMAND ----------
+
+import time
+
+# Freeze execution for 3 hours (3 * 60 * 60 seconds)
+time.sleep(3 * 60 * 60)
 
 # COMMAND ----------
 
@@ -457,19 +475,7 @@ plan_result
 
 # COMMAND ----------
 
-plan_result
-
-# COMMAND ----------
-
-# from operator import itemgetter
-
-# keys = ["relevant_space_ids", "execution_plan"]
-# getter = itemgetter(*keys)
-# execuation_plan = dict(zip(keys, getter(plan_result)))
-# print(execuation_plan)  # {'a': 1, 'c': 3}
-
-# COMMAND ----------
-
+# DBTITLE 1,no-tool agent failure proof
 # this is no-tool agent version
 def synthesize_sql_fast_route(
     query: str,
@@ -513,8 +519,8 @@ def synthesize_sql_fast_route(
     - WHERE clauses for filtering
     - Appropriate aggregations
     - Column aliases for clarity
-    
-    Return ONLY the SQL query, no explanations or markdown formatting.
+    - Always use real column name existed in the data, never make up one
+    Return ONLY the SQL query, no explanations or markdown formatting. If SQL cannot be generated, explain what metadata is missing
     """
     
     response = llm.invoke(prompt)
@@ -540,7 +546,18 @@ print(sql_result)
 
 # MAGIC %md
 # MAGIC __Conclusion of no-tool agent version__
-# MAGIC 1. procedure.charge_amount doesn't exist at all.
+# MAGIC 1. on Dec 2025 test, procedure.charge_amount in the generated SQL query doesn't exist at all.
+# MAGIC 2. UPDATE: on Jan 7th 2026, due to we totally migrate the pipeline to new workspace (old wksp got deleted), the metainfo might have some change (e.g., space summary) after re-run the pipeline. 
+# MAGIC     - 1st test with Claude Sonnet 4.5: The SQL now makes more sense as it returns results sounds right (I have tested it in SQL editor).
+# MAGIC     - 2nd test with Claude Haiku 4.5: `AVG(mc.paid_gross_due) AS average_claim_cost`, as you can see we dont have such field in medical claim table; we do have this field in pharmacy claim table, however, our question is not calculating pharmacy claim cost.
+# MAGIC
+# MAGIC __Final Conclusion:__
+# MAGIC Without UC function tools, e.g., SQL tools querying the underlying metadata table, agent with LLM alone are not guranteed to work correctly with enough context/meta info. **Dont use `synthesize_sql_fast_route` without any tools being registered.**
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Create SQL Synthesis Agent (quick route) With UC Tools
 
 # COMMAND ----------
 
@@ -549,11 +566,6 @@ print(sql_result)
 # spark.sql(f'DROP FUNCTION IF EXISTS {CATALOG}.{SCHEMA}.get_table_overview');
 # spark.sql(f'DROP FUNCTION IF EXISTS {CATALOG}.{SCHEMA}.get_column_detail');
 # spark.sql(f'DROP FUNCTION IF EXISTS {CATALOG}.{SCHEMA}.get_space_details');
-
-# COMMAND ----------
-
-# MAGIC %md
-# MAGIC ## Create SQL Synthesis Agent (quick route)
 
 # COMMAND ----------
 
@@ -576,10 +588,201 @@ print("="*80)
 
 # COMMAND ----------
 
+# DBTITLE 1,Create UC Function Tools for SQL query
+"""
+Step 2: Create UC Functions using SQL
+
+Register SQL UC functions that query metadata at different levels
+All functions use LANGUAGE SQL for better performance and compatibility
+"""
+
+# UC Function 1: get_space_summary (SQL scalar function)
+spark.sql(f"""
+CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.get_space_summary(
+    space_ids_json STRING DEFAULT 'null' COMMENT 'JSON array of space IDs to query, or "null" to retrieve all spaces. Example: ["space_1", "space_2"] or "null"'
+)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT 'Get high-level summary of Genie spaces. Returns JSON with space summaries including chunk_id, chunk_type, space_title, and content.'
+RETURN
+    SELECT COALESCE(
+        to_json(
+            map_from_entries(
+                collect_list(
+                    struct(
+                        space_id,
+                        named_struct(
+                            'chunk_id', chunk_id,
+                            'chunk_type', chunk_type,
+                            'space_title', space_title,
+                            'content', searchable_content
+                        )
+                    )
+                )
+            )
+        ),
+        '{{}}'
+    ) as result
+    FROM {TABLE_NAME}
+    WHERE chunk_type = 'space_summary'
+    AND (
+        space_ids_json IS NULL 
+        OR TRIM(LOWER(space_ids_json)) IN ('null', 'none', '')
+        OR array_contains(from_json(space_ids_json, 'array<string>'), space_id)
+    )
+""")
+print("✓ Registered: get_space_summary")
+
+# UC Function 2: get_table_overview (SQL scalar function with grouping)
+spark.sql(f"""
+CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.get_table_overview(
+    space_ids_json STRING DEFAULT 'null' COMMENT 'JSON array of space IDs to query (required, prefer single space). Example: ["space_1"]',
+    table_names_json STRING DEFAULT 'null' COMMENT 'JSON array of table names to filter, or "null" for all tables in the specified spaces. Example: ["table1", "table2"] or "null"'
+)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT 'Get table-level metadata for specific Genie spaces. Returns JSON with table metadata including chunk_id, chunk_type, table_name, and content grouped by space.'
+RETURN
+    SELECT COALESCE(
+        to_json(
+            map_from_entries(
+                collect_list(
+                    struct(
+                        space_id,
+                        named_struct(
+                            'space_title', space_title,
+                            'tables', tables
+                        )
+                    )
+                )
+            )
+        ),
+        '{{}}'
+    ) as result
+    FROM (
+        SELECT 
+            space_id,
+            first(space_title) as space_title,
+            collect_list(
+                named_struct(
+                    'chunk_id', chunk_id,
+                    'chunk_type', chunk_type,
+                    'table_name', table_name,
+                    'content', searchable_content
+                )
+            ) as tables
+        FROM {TABLE_NAME}
+        WHERE chunk_type = 'table_overview'
+        AND array_contains(from_json(space_ids_json, 'array<string>'), space_id)
+        AND (
+            table_names_json IS NULL 
+            OR TRIM(LOWER(table_names_json)) IN ('null', 'none', '')
+            OR array_contains(from_json(table_names_json, 'array<string>'), table_name)
+        )
+        GROUP BY space_id
+    )
+""")
+print("✓ Registered: get_table_overview")
+
+# UC Function 3: get_column_detail (SQL scalar function with grouping)
+spark.sql(f"""
+CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.get_column_detail(
+    space_ids_json STRING DEFAULT 'null' COMMENT 'JSON array of space IDs to query (required, prefer single space). Example: ["space_1"]',
+    table_names_json STRING DEFAULT 'null' COMMENT 'JSON array of table names to filter (required, prefer single table). Example: ["table1"]',
+    column_names_json STRING DEFAULT 'null' COMMENT 'JSON array of column names to filter, or "null" for all columns in the specified tables. Example: ["col1", "col2"] or "null"'
+)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT 'Get column-level metadata for specific Genie spaces. Returns JSON with column metadata including chunk_id, chunk_type, table_name, column_name, and content grouped by space.'
+RETURN
+    SELECT COALESCE(
+        to_json(
+            map_from_entries(
+                collect_list(
+                    struct(
+                        space_id,
+                        named_struct(
+                            'space_title', space_title,
+                            'columns', columns
+                        )
+                    )
+                )
+            )
+        ),
+        '{{}}'
+    ) as result
+    FROM (
+        SELECT 
+            space_id,
+            first(space_title) as space_title,
+            collect_list(
+                named_struct(
+                    'chunk_id', chunk_id,
+                    'chunk_type', chunk_type,
+                    'table_name', table_name,
+                    'column_name', column_name,
+                    'content', searchable_content
+                )
+            ) as columns
+        FROM {TABLE_NAME}
+        WHERE chunk_type = 'column_detail'
+        AND array_contains(from_json(space_ids_json, 'array<string>'), space_id)
+        AND array_contains(from_json(table_names_json, 'array<string>'), table_name)
+        AND (
+            column_names_json IS NULL 
+            OR TRIM(LOWER(column_names_json)) IN ('null', 'none', '')
+            OR array_contains(from_json(column_names_json, 'array<string>'), column_name)
+        )
+        GROUP BY space_id
+    )
+""")
+print("✓ Registered: get_column_detail")
+
+# UC Function 4: get_space_details (SQL scalar function - last resort)
+spark.sql(f"""
+CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.get_space_details(
+    space_ids_json STRING DEFAULT 'null' COMMENT 'JSON array of space IDs to query (required). Example: ["space_1", "space_2"]. WARNING: Returns large metadata - use as LAST RESORT.'
+)
+RETURNS STRING
+LANGUAGE SQL
+COMMENT 'Get complete metadata for specific Genie spaces - use as LAST RESORT (token intensive). Returns JSON with complete space metadata including chunk_id, chunk_type, space_title, and all available metadata content.'
+RETURN
+    SELECT COALESCE(
+        to_json(
+            map_from_entries(
+                collect_list(
+                    struct(
+                        space_id,
+                        named_struct(
+                            'chunk_id', chunk_id,
+                            'chunk_type', chunk_type,
+                            'space_title', space_title,
+                            'complete_metadata', searchable_content
+                        )
+                    )
+                )
+            )
+        ),
+        '{{}}'
+    ) as result
+    FROM {TABLE_NAME}
+    WHERE chunk_type = 'space_details'
+    AND array_contains(from_json(space_ids_json, 'array<string>'), space_id)
+""")
+print("✓ Registered: get_space_details")
+
+print("\n" + "="*80)
+print("✅ All 4 UC SQL functions registered successfully!")
+print("="*80)
+
+
+# COMMAND ----------
+
 TABLE_NAME
 
 # COMMAND ----------
 
+# DBTITLE 1,Create quick route agent with UC tools
 """
 Step 3: Create LangGraph SQL Synthesis Agent with UC Function Toolkit
 
@@ -600,7 +803,10 @@ client = DatabricksFunctionClient()
 set_uc_function_client(client)
 
 # Initialize LLM
-LLM_ENDPOINT_NAME = "databricks-claude-sonnet-4-5"
+# experience:
+# 1. prefer to have a more powerful LLM here cause the task for this agent is complex
+# 2. I have experience that haiku couldn't work out an edge case but sonnet could.
+LLM_ENDPOINT_NAME = "databricks-claude-sonnet-4-5" # options: haiku, sonnet
 llm = ChatDatabricks(endpoint=LLM_ENDPOINT_NAME, temperature=0.1)
 
 # Create UC Function Toolkit with the registered functions
@@ -625,30 +831,36 @@ sql_synthesis_agent = create_agent(
     system_prompt=(
         "You are a specialized SQL synthesis agent in a multi-agent system.\n\n"
         "ROLE: You receive execution plans from the planning agent and generate SQL queries.\n\n"
-        "ASSUMPTIONS:\n"
+
+        "## ASSUMPTIONS:\n"
         "- The query has been clarified and validated by upstream agents\n"
         "- The planning agent has identified relevant spaces and execution strategy\n"
         "- Your ONLY job is to synthesize the SQL query based on the plan\n\n"
-        "WORKFLOW:\n"
-        "1. Review the execution plan and provided metadata from planning agent\n"
+
+        "## WORKFLOW:\n"
+        "1. Review the execution plan and the provided metadata from planning agent\n"
         "2. If metadata is sufficient → Generate SQL immediately\n"
         "3. If insufficient, tell users you need more metadata, and reveal the thinking process including analyzing which additional part of metadata might be useful\n"
         "4. Call minimal sufficient number of UC function tools with minimal sufficient argument values to help you synthesize the SQL query; call tools in this order, you dont have to finish the order, stop when you have enough metadata:\n"
         "   a) call get_space_summary for related spaces' information including its purpose, its processing logic and how its compotent tables are related and used. Find minimal sufficent needed tables or columns, then call next tool\n"
         "   b) call get_table_overview for specific tables' schemas and relationships, if still not clear about specific columns, call next tool\n"
         "   c) call get_column_detail for wanted column details and sample values\n"
-        "5. call get_space_details ONLY as last resort (token intensive!)\n\n"
-        "UC FUNCTION USAGE:\n"
+        "5. call get_space_details ONLY as last resort (token intensive!)\n"
+        "6. At last, if you still cannot find enough metadata in relevant spaces provided, dont stuck there. Expand the searching scope to all spaces mentioned in the execution plan's 'vector_search_relevant_spaces_info' field. Extract the space_id from 'vector_search_relevant_spaces_info'. \n\n"
+
+        "## UC FUNCTION USAGE:\n"
         "- Pass the argument values, e.g., space_ids_json STRING, table_names_json STRING, column_names_json STRING, each as a JSON array string: '[\"space_id_1\", \"space_id_2\"]' if you have specific space_ids or table_names or column_names to filter on; or pass 'null' if you need all entities under the parent level, e.g., query all tables under a space, then table_names_json should be 'null'; if you need all columns under a table, then column_names_json should be 'null'.\n"
-        "- Only limit the query to spaces listed in the execution plan's relevant_space_ids. Same applied to tables and columns since they are under the space.\n"
+        "- Only limit the query to spaces listed under the execution plan's relevant_space_ids. Same applied to tables and columns since they are under the space. In rare cases, you can search other spaces as WORKFLOW Item 6 described.\n"
         "- Adopt the rule of get_table_overview miminal sufficiency, i.e., if you need only two tables info in a space, call the get_table_overview with space_ids_json vale as '[\"space_id_1\"]', and table_names_json value as '[\"table_name_1\", \"table_name_2\"]', instead of passing table_names_json value as 'null' for getting all tables under a space.\n"
         "- Adopt the rule of get_column_detail miminal sufficiency, i.e., only query minimal sufficient columns details if you really need\n\n"
-        "OUTPUT REQUIREMENTS:\n"
+
+        "## OUTPUT REQUIREMENTS:\n"
         "- Generate complete, executable SQL with:\n"
         "  * Proper JOINs based on execution plan strategy\n"
         "  * WHERE clauses for filtering\n"
         "  * Appropriate aggregations\n"
         "  * Clear column aliases\n"
+        "  * Always use real column name existed in the data, never make up one\n"
         "- Return ONLY the SQL query without explanations or markdown formatting\n"
         "- If SQL cannot be generated, explain what metadata is missing"
     ),
@@ -675,28 +887,28 @@ print("✅ Configured for multi-agent system (expects Planning Agent input)")
 
 # COMMAND ----------
 
-# DBTITLE 1,test by a plan_result example
-plan_result = """{
-    "question_clear": true,
-    "sub_questions": [
-        "Identify patients diagnosed with diabetes from diagnosis codes",
-        "Get medical claim costs for diabetes patients",
-        "Determine insurance payer type for each claim",
-        "Calculate patient age from birth year and service date",
-        "Group patients into age groups",
-        "Calculate average claim cost by payer type and age group"
-    ],
-    "requires_multiple_spaces": true,
-    "relevant_space_ids": [
-        "01f0956a387714969edde65458dcc22a",
-        "01f0956a54af123e9cd23907e8167df9",
-        "01f0956a4b0512e2a8aa325ffbac821b"
-    ],
-    "requires_join": true,
-    "join_strategy": "fast_route",
-    "execution_plan": "Use fast_route to JOIN across three spaces: (1) HealthVerityProcedureDiagnosis to filter patients with diabetes diagnosis codes (ICD-10), (2) HealthVerityClaims to get medical claim costs and payer types, and (3) HealthVerityProviderEnrollment to get patient birth year for age calculation. JOIN on patient_id and claim_id, calculate age groups from birth year and service date, then aggregate average costs by payer type and age group."
-}"""
-plan_result = json.loads(plan_result.strip('```json'))
+# DBTITLE 1,(after restart) create a plan_result example
+# plan_result = """{
+#     "question_clear": true,
+#     "sub_questions": [
+#         "Identify patients diagnosed with diabetes from diagnosis codes",
+#         "Get medical claim costs for diabetes patients",
+#         "Determine insurance payer type for each claim",
+#         "Calculate patient age from birth year and service date",
+#         "Group patients into age groups",
+#         "Calculate average claim cost by payer type and age group"
+#     ],
+#     "requires_multiple_spaces": true,
+#     "relevant_space_ids": [
+#         "01f0956a387714969edde65458dcc22a",
+#         "01f0956a54af123e9cd23907e8167df9",
+#         "01f0956a4b0512e2a8aa325ffbac821b"
+#     ],
+#     "requires_join": true,
+#     "join_strategy": "fast_route",
+#     "execution_plan": "Use fast_route to JOIN across three spaces: (1) HealthVerityProcedureDiagnosis to filter patients with diabetes diagnosis codes (ICD-10), (2) HealthVerityClaims to get medical claim costs and payer types, and (3) HealthVerityProviderEnrollment to get patient birth year for age calculation. JOIN on patient_id and claim_id, calculate age groups from birth year and service date, then aggregate average costs by payer type and age group."
+# }"""
+# plan_result = json.loads(plan_result.strip('```json'))
 
 # COMMAND ----------
 
@@ -711,7 +923,7 @@ Demonstrates the agent using UC functions to intelligently query metadata
 """
 
 # Example query
-example_query = "What is the average cost of medical claims for patients diagnosed with diabetes, broken down by insurance payer type and patient age group?"
+example_query = plan_result['original_query']
 
 # Extract space_ids from earlier plan_result or relevant_spaces
 # For this example, we'll use the identified relevant spaces
@@ -739,9 +951,7 @@ agent_message = {
         {
             "role": "user",
             "content": f"""
-Generate a SQL query to answer this question: {example_query}
-
-Query Plan:
+Generate a SQL query to answer the question according to the following Query Plan:
 {json.dumps(plan_result, indent=2)}
 
 Use your available UC function tools to gather metadata intelligently.
@@ -749,6 +959,8 @@ Use your available UC function tools to gather metadata intelligently.
         }
     ]
 }
+# Generate a SQL query to answer this question: {example_query}
+
 
 # Enable MLflow autologging for tracing
 mlflow.langchain.autolog()
@@ -787,6 +999,8 @@ if result and "messages" in result:
         # Extract any code block
         import re
         sql_match = re.search(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
+    else:
+        sql_match = None
     
     if sql_match:
             print(sql_match.group(1).strip())
@@ -794,10 +1008,6 @@ if result and "messages" in result:
 # COMMAND ----------
 
 example_query
-
-# COMMAND ----------
-
-result['messages'][-3]
 
 # COMMAND ----------
 
@@ -810,6 +1020,8 @@ time.sleep(6 * 60 * 60)
 
 # MAGIC %md
 # MAGIC ## SQL Execuation Tool (dont register as UC function cause it contains spark operation)
+# MAGIC
+# MAGIC This is a tool and suppose Super Agent should call it to execute the SQL queries generated.
 
 # COMMAND ----------
 
@@ -975,6 +1187,362 @@ execute_sql_on_delta_tables(sql_query=result)
 
 # COMMAND ----------
 
+# DBTITLE 1,Create Genie Agent list
+from databricks_langchain.genie import GenieAgent
+from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableLambda
+from functools import partial
+
+# 2. Call the function to get space_summary chunks for the Genie Agents
+table_name = "yyang.multi_agent_genie.enriched_genie_docs_chunks"
+space_summary_df = query_delta_table(
+    table_name=table_name,
+    filter_field="chunk_type",
+    filter_value="space_summary",
+    select_fields=["space_id", "space_title", "searchable_content"],
+)
+
+
+# 3. Define the function to get space info by space_id
+def get_space_info_by_id(space_summary_df, space_id):
+    """
+    Query space_summary_df by space_id and return space_title and searchable_content.
+
+    Args:
+        space_summary_df: Spark DataFrame with columns including 'space_id', 'space_title', 'searchable_content'
+        space_id: The space_id to filter on
+
+    Returns:
+        Spark DataFrame with columns 'space_title' and 'searchable_content' for the given space_id
+    """
+    result_df = space_summary_df.filter(space_summary_df.space_id == space_id).select(
+        "space_title", "searchable_content"
+    )
+    return result_df
+
+# 4. enforce row limit helper
+def enforce_limit(messages, n=50):
+    """
+    Appends an instruction to the last user message to limit the result size.
+
+    Args:
+        messages: List of message dicts or LangChain Message objects.
+        n: Maximum number of rows to return (default: 50).
+
+    Returns:
+        Modified user message string with appended instruction to limit result size.
+    """
+    # syntax ref: https://api-docs.databricks.com/python/databricks-ai-bridge/latest/databricks_langchain.html#databricks_langchain.GenieAgent
+    last = messages[-1] if messages else {"content": ""}
+    content = last.get("content", "") if isinstance(last, dict) else last.content
+    # Lightweight instruction to constrain result size
+    return f"{content}\n\nPlease limit the result to at most {n} rows."
+
+# 5. partial function for invoke_genie_agent
+def invoke_genie_agent(genie_agent: RunnableLambda, question: str) -> dict:
+    """
+    Invoke the GenieAgent for this space with a user question.
+
+    Args:
+        genie_agent: a RunnableLambda GenieAgent instance
+        question: The user question as a string.
+
+    Returns:
+        The agent's response.
+    """
+    return genie_agent.invoke({"messages": [{"role": "user", "content": question}]})
+
+
+# genie_agents = {}
+genie_agents = []
+genie_agent_tools = []
+# 4. Create the Genie Agents
+for row in space_summary_df.collect():
+    space_id = row["space_id"]
+    space_title = row["space_title"]
+    searchable_content = row["searchable_content"]
+    genie_agent_name = f"Genie_{space_title}"
+    description = searchable_content
+    genie_agent = GenieAgent(
+        genie_space_id=space_id,
+        genie_agent_name=genie_agent_name,
+        description=description,
+        include_context=True,
+        message_processor=lambda msgs: enforce_limit(msgs, n=5)
+    )
+    genie_agents.append(genie_agent)
+    # genie_agents[space_id] = genie_agent.as_tool() # dict
+
+    # Wrap the agent call in a function that only takes a string argument. this func also return a func.
+    def make_agent_invoker(agent):
+        return lambda question: agent.invoke(
+            {"messages": [{"role": "user", "content": question}]}
+        )
+
+    runnable = RunnableLambda(make_agent_invoker(genie_agent))
+    runnable.name = genie_agent_name
+    runnable.description = description
+
+    genie_agent_tools.append(
+        runnable.as_tool(
+            name=genie_agent_name,
+            description=description,
+            arg_types={"question": str}
+        )
+    )
+
+    ##: -----(error) will throw arrow in runnable.as_tool() step
+    # partial_invoke_genie_agent = partial(invoke_genie_agent,
+    #                                      genie_agent=genie_agent) # now assign the value to realize genie_agent at function creation time.
+    # runnable = RunnableLambda(partial_invoke_genie_agent)
+    # runnable.name = genie_agent_name
+    # runnable.description = description
+    # genie_agent_tools.append(
+    #     runnable.as_tool(
+    #         name=genie_agent_name,
+    #         description=description,
+    #         arg_types={"question": str}
+    #     )
+    # )
+
+
+    ##: ------(bugs) cannot feed the right format for the question to be passed by agent to the tool)
+    # #: genie or as_tool must receive input in this format: {"messages": [{"role": "user", "content": "What are the claims for patients diagnosed with diabetes?"}]}
+    # genie_agent_tools.append(
+    #     genie_agent.as_tool(
+    #         name=genie_agent_name, description=description
+    #     )
+    # )
+
+
+    # #: ------(bugs) below register agent using RunnableLambda will incur bus of Super Agent assign first to the right tool (according to tool name appeared in the mlflow trace), but then the tool will call the RunnableLambda wrapper of the wrong agent. E.g., Genie_HealthVerityProcedureDiagnosis was correctly called ty super agent, but then, it calls the running lambda of Genie_HealthVerityProviderEnrollment, which is wrong.------
+    # print(genie_agent)
+    # one_turn_genie_agent = RunnableLambda(
+    #     lambda question: genie_agent.invoke(
+    #         {"messages": [{"role": "user", "content": f"{question}"}]}
+    #     )
+    # )
+    # genie_agent_tools.append(
+    #     one_turn_genie_agent.as_tool(
+    #         name=genie_agent_name, description=description, arg_types={"question": str}
+    #     )
+    # )
+
+
+# ##: ---1. bugs analysis from DA explanation (which I personally think is wrong):
+# The genie_agent used in your lambda inside RunnableLambda is captured from the local environment at the time the lambda function is created. This is standard Python closure behavior: the lambda "remembers" the value of genie_agent as it was when the lambda was defined, not as it might be changed later in the surrounding scope.
+
+# If you reassign genie_agent after creating the RunnableLambda, the lambda will still use the original genie_agent object it closed over at creation time.
+
+# ##: ---2. bugs analysis from copilot smart mode explanation:
+# Key points
+# • In Python, lambdas (and functions in general) capture variables by reference, not by value.
+# • That means the genie_agent inside your lambda is not frozen at function creation time. Instead, the lambda holds a reference to the name genie_agent in its enclosing lexical scope.
+# • When you later call one_turn_genie_agent(question), Python will resolve genie_agent at that moment by looking it up in the environment where the lambda was defined.
+# Implications
+# • If genie_agent was already defined when you created the lambda, the lambda will use that object.
+# • If you reassign genie_agent later (e.g., genie_agent = SomeOtherAgent()), the lambda will now use the new object, because it always looks up the variable at runtime.
+# • If genie_agent is undefined at call time, you’ll get a NameError.
+
+# COMMAND ----------
+
+# DBTITLE 1,Create Genie Routing and SQL Synthesis Agent
+"""
+Create LangGraph SQL Synthesis Agent with UC Function Toolkit
+
+Uses Databricks LangGraph SDK with create_react_agent pattern
+"""
+
+from databricks_langchain import (
+    ChatDatabricks,
+    DatabricksFunctionClient,
+    UCFunctionToolkit,
+    set_uc_function_client,
+)
+from langchain.agents import create_agent
+import mlflow
+
+# Initialize Databricks Function Client
+client = DatabricksFunctionClient()
+set_uc_function_client(client)
+
+# Initialize LLM
+LLM_ENDPOINT_NAME = "databricks-claude-haiku-4-5"
+llm = ChatDatabricks(endpoint=LLM_ENDPOINT_NAME, temperature=0.1)
+
+# # Create UC Function Toolkit with the registered functions
+# uc_function_names = [
+# ]
+
+# uc_toolkit = UCFunctionToolkit(function_names=uc_function_names)
+# tools = uc_toolkit.tools
+tools = []
+tools.extend(genie_agent_tools)
+# tools.append(extract_genie_sql_tool)
+
+print(f"✓ Created UCFunctionToolkit with {len(tools)} tools:")
+# for tool, value in tools.items():
+#     print(f"  - {tool}:{value.name}")
+
+# Create SQL Synthesis Agent (specialized for multi-agent system)
+# Create SQL Synthesis Agent (specialized for multi-agent system)
+sql_synthesis_agent = create_agent(
+    model=llm,
+    tools=tools,
+    system_prompt=(
+"""You are a SQL synthesis agent, which can take analysis plan, and route queries to the corresponding Genie Agent.
+The Plan given to you is a JSON:
+{
+'original_query': 'The User's Question',
+'vector_search_relevant_spaces_info': [{'space_id': 'space_id_1',
+   'space_title': 'space_title_1'},
+  {'space_id': 'space_id_2',
+   'space_title': 'space_title_2'},
+  {'space_id': 'space_id_3',
+   'space_title': 'space_title_3'}],
+"question_clear": true,
+"sub_questions": ["sub-question 1", "sub-question 2", ...],
+"requires_multiple_spaces": true/false,
+"relevant_space_ids": ["space_id_1", "space_id_2", ...],
+"requires_join": true/false,
+"join_strategy": "fast_route" or "slow_route" or null,
+"execution_plan": "Brief description of execution plan",
+"genie_route_plan": {'space_id_1':'partial_question_1', 'space_id_2':'partial_question_2', 'space_id_3':'partial_question_3', ...} or null,}
+
+## Tool Calling Plan:
+1. Under the key of 'genie_route_plan' in the JSON, extracting 'partial_question_1' and feed to the right Genie Agent tool of 'space_id_1' with the input as a string. 
+2. Asynchronously send all other partial_questions to the corresponding Genie Agent tools accordingly.
+3. You have access to all Genie Agents as tools given to you; locate the proper Genie Agent Tool by searching the 'space_id_1' in the tool's description. After each Genie agent returns result, only extract the SQL string from the Genie tool output JSON {"thinking": thinking, "sql": sql, "answer": answer}.
+4. If you find you are still missing necessary analytical components (metrics, filters, dimensions, etc.) to assemble the final SQL, which might be due to some genie agent tool may not have the necessary information being assigned, try to leverage other most likely Genie agents to find the missing pieces.
+
+## Disaster Recovery (DR) Plan:
+1. If one Genie agent tool fail to generate a SQL query, allow retry AS IS only one time; 
+2. If fail again, try to reframe the partial question 'partial_question_1' according to the error msg returned by the genie tool, e.g., genie tool may say "I dont have information for cost related information", you can remove those components in the 'partial_question_1' which doesn't exist in the genie tool. For example, if the genie tool "Genie_MemberBenefits" doesn't contain benefit cost related information, you can reframe the question by removing the cost-related components in the 'partial_question_1', generate 'partial_question_1_v2' and try again. Only try once;
+3. If fail again, return response as is. 
+
+
+## Overall SQL Synthesis Plan:
+Then, you can combine all the SQL pieces into a single SQL query, and return the final SQL query.
+OUTPUT REQUIREMENTS:
+- Generate complete, executable SQL with:
+  * Proper JOINs based on execution plan strategy
+  * WHERE clauses for filtering
+  * Appropriate aggregations
+  * Clear column aliases
+  * Always use real column name existed in the data, never make up one
+- Return ONLY the SQL query without explanations or markdown formatting
+- If SQL cannot be generated, explain what metadata is missing"""
+    )
+)
+
+# backup:
+# """{'space_id_1': RunnableLambda(...),
+#     'space_id_2': RunnableLambda(...),
+#     'space_id_3': RunnableLambda(...)}\n
+# """
+# Use the mapping table given to you to assign the question to the correct tool by searching tool id by tool name.
+# mapping table format like this:
+# - space_id_1:Genie_tool_name_1
+# - space_id_1:Genie_tool_name_2
+# - space_id_1:Genie_tool_name_3
+# After each Genie agent returns result, only extract the SQL string by using the 'extract_genie_sql_tool' tool.
+
+print("\n" + "="*80)
+print("✅ SQL Synthesis Agent created successfully!")
+print("="*80)
+print("\nAgent Configuration:")
+print(f"  - LLM: {LLM_ENDPOINT_NAME}")
+print(f"  - Tools: {len(tools)} UC functions")
+print(f"  - Agent Type: LangChain Tool-Calling Agent")
+
+
+# COMMAND ----------
+
+# DBTITLE 1,Test the Agent
+# Create the message for the agent
+agent_message = {
+    "messages": [
+        {
+            "role": "user",
+            "content": f"""
+Generate a SQL query to answer the question according to the Query Plan:
+{json.dumps(plan_result, indent=2)}
+"""
+        }
+    ]
+}
+
+# backup:
+# Use your available Genie Agent tools to generate SQL and finally assemble them into an overall SQL to answer the original question.
+
+print(agent_message)
+
+# Enable MLflow autologging for tracing
+mlflow.langchain.autolog()
+
+# Invoke the agent
+print("🤖 Invoking SQL Synthesis Agent...")
+print("="*80 + "\n")
+
+result = sql_synthesis_agent.invoke(agent_message)
+
+# COMMAND ----------
+
+# test
+execute_sql_on_delta_tables(sql_query=result)
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ### Dev/Test Codes Below
+
+# COMMAND ----------
+
+# DBTITLE 1,(not working under agent call this tool) extract_genie_sql_tool
+from langchain_core.tools import tool
+
+def extract_genie_response(resp: dict) -> dict:
+    """
+    Extracts 'thinking' (reasoning), 'sql', and 'answer' from Genie agent response.
+
+    Args:
+        resp: The response object from Genie agent, containing a 'messages' list.
+
+    Returns:
+        Tuple (thinking, sql, answer)
+    """
+    thinking = None
+    sql = None
+    answer = None
+
+    for msg in resp["messages"]:
+        if isinstance(msg, AIMessage):
+            if msg.name == "query_reasoning":
+                thinking = msg.content
+            elif msg.name == "query_sql":
+                sql = msg.content
+            elif msg.name == "query_result":
+                answer = msg.content
+    return thinking, sql, answer
+
+@tool("extract_genie_sql_tool", description="Extracts 'thinking' and 'sql' from a Genie agent response dict object as a dict {'thinking': str, 'sql': str}.")
+def extract_genie_sql_tool(resp: dict) -> dict:
+    """
+    LangChain tool wrapper for extract_genie_response.
+    Args:
+        resp: The response object from Genie agent, containing a 'messages' list.
+    Returns:
+        Dict with 'thinking', 'sql', and 'answer'
+    """
+    thinking, sql, _ = extract_genie_response(resp)
+    return {"thinking": thinking, "sql": sql}
+
+# COMMAND ----------
+
+extract_genie_sql_tool
+
+# COMMAND ----------
+
 # 2. Call the function to get space_summary chunks
 table_name = "yyang.multi_agent_genie.enriched_genie_docs_chunks"
 space_summary_df = query_delta_table(
@@ -1114,6 +1682,7 @@ agent = GenieAgent(
 
 # COMMAND ----------
 
+# DBTITLE 1,test single
 query = plan_result['genie_route_plan'][genie_space_id]
 # query = "What are the claim IDs and patient IDs for patients diagnosed with diabetes based on ICD-10 diagnosis codes? Please also list column of ICD-10 diagnosis codes" # use this one to check ICD-10
 # query = "What is the average cost of medical claims for patients diagnosed with diabetes, broken down by insurance payer type and patient age group?" # use this full complete query to test the agent if can still return meaningful result. however, even that, hard to control what is expected to return.
@@ -1179,165 +1748,6 @@ genie_agent_tools.append(
 
 # COMMAND ----------
 
-# DBTITLE 1,Create Genie Agent list
-# 2. Call the function to get space_summary chunks for the Genie Agents
-table_name = "yyang.multi_agent_genie.enriched_genie_docs_chunks"
-space_summary_df = query_delta_table(
-    table_name=table_name,
-    filter_field="chunk_type",
-    filter_value="space_summary",
-    select_fields=["space_id", "space_title", "searchable_content"],
-)
-
-
-# 3. Define the function to get space info by space_id
-def get_space_info_by_id(space_summary_df, space_id):
-    """
-    Query space_summary_df by space_id and return space_title and searchable_content.
-
-    Args:
-        space_summary_df: Spark DataFrame with columns including 'space_id', 'space_title', 'searchable_content'
-        space_id: The space_id to filter on
-
-    Returns:
-        Spark DataFrame with columns 'space_title' and 'searchable_content' for the given space_id
-    """
-    result_df = space_summary_df.filter(space_summary_df.space_id == space_id).select(
-        "space_title", "searchable_content"
-    )
-    return result_df
-
-# 4. enforce row limit helper
-def enforce_limit(messages, n=50):
-    """
-    Appends an instruction to the last user message to limit the result size.
-
-    Args:
-        messages: List of message dicts or LangChain Message objects.
-        n: Maximum number of rows to return (default: 50).
-
-    Returns:
-        Modified user message string with appended instruction to limit result size.
-    """
-    # syntax ref: https://api-docs.databricks.com/python/databricks-ai-bridge/latest/databricks_langchain.html#databricks_langchain.GenieAgent
-    last = messages[-1] if messages else {"content": ""}
-    content = last.get("content", "") if isinstance(last, dict) else last.content
-    # Lightweight instruction to constrain result size
-    return f"{content}\n\nPlease limit the result to at most {n} rows."
-
-# 5. partial function for invoke_genie_agent
-def invoke_genie_agent(genie_agent: RunnableLambda, question: str) -> dict:
-    """
-    Invoke the GenieAgent for this space with a user question.
-
-    Args:
-        genie_agent: a RunnableLambda GenieAgent instance
-        question: The user question as a string.
-
-    Returns:
-        The agent's response.
-    """
-    return genie_agent.invoke({"messages": [{"role": "user", "content": question}]})
-
-from databricks_langchain.genie import GenieAgent
-from langchain_core.messages import AIMessage
-from langchain_core.runnables import RunnableLambda
-from functools import partial
-
-
-# genie_agents = {}
-genie_agents = []
-genie_agent_tools = []
-# 4. Create the Genie Agents
-for row in space_summary_df.collect():
-    space_id = row["space_id"]
-    space_title = row["space_title"]
-    searchable_content = row["searchable_content"]
-    genie_agent_name = f"Genie_{space_title}"
-    description = searchable_content
-    genie_agent = GenieAgent(
-        genie_space_id=space_id,
-        genie_agent_name=genie_agent_name,
-        description=description,
-        include_context=True,
-        message_processor=lambda msgs: enforce_limit(msgs, n=5)
-    )
-    genie_agents.append(genie_agent)
-    # genie_agents[space_id] = genie_agent.as_tool() # dict
-
-    # Wrap the agent call in a function that only takes a string argument. this func also return a func.
-    def make_agent_invoker(agent):
-        return lambda question: agent.invoke(
-            {"messages": [{"role": "user", "content": question}]}
-        )
-
-    runnable = RunnableLambda(make_agent_invoker(genie_agent))
-    runnable.name = genie_agent_name
-    runnable.description = description
-
-    genie_agent_tools.append(
-        runnable.as_tool(
-            name=genie_agent_name,
-            description=description,
-            arg_types={"question": str}
-        )
-    )
-
-    ##: -----(error) will throw arrow in runnable.as_tool() step
-    # partial_invoke_genie_agent = partial(invoke_genie_agent,
-    #                                      genie_agent=genie_agent) # now assign the value to realize genie_agent at function creation time.
-    # runnable = RunnableLambda(partial_invoke_genie_agent)
-    # runnable.name = genie_agent_name
-    # runnable.description = description
-    # genie_agent_tools.append(
-    #     runnable.as_tool(
-    #         name=genie_agent_name,
-    #         description=description,
-    #         arg_types={"question": str}
-    #     )
-    # )
-
-
-    ##: ------(bugs) cannot feed the right format for the question to be passed by agent to the tool)
-    # #: genie or as_tool must receive input in this format: {"messages": [{"role": "user", "content": "What are the claims for patients diagnosed with diabetes?"}]}
-    # genie_agent_tools.append(
-    #     genie_agent.as_tool(
-    #         name=genie_agent_name, description=description
-    #     )
-    # )
-
-
-    # #: ------(bugs) below register agent using RunnableLambda will incur bus of Super Agent assign first to the right tool (according to tool name appeared in the mlflow trace), but then the tool will call the RunnableLambda wrapper of the wrong agent. E.g., Genie_HealthVerityProcedureDiagnosis was correctly called ty super agent, but then, it calls the running lambda of Genie_HealthVerityProviderEnrollment, which is wrong.------
-    # print(genie_agent)
-    # one_turn_genie_agent = RunnableLambda(
-    #     lambda question: genie_agent.invoke(
-    #         {"messages": [{"role": "user", "content": f"{question}"}]}
-    #     )
-    # )
-    # genie_agent_tools.append(
-    #     one_turn_genie_agent.as_tool(
-    #         name=genie_agent_name, description=description, arg_types={"question": str}
-    #     )
-    # )
-
-
-# ##: ---1. bugs analysis from DA explanation (which I personally think is wrong):
-# The genie_agent used in your lambda inside RunnableLambda is captured from the local environment at the time the lambda function is created. This is standard Python closure behavior: the lambda "remembers" the value of genie_agent as it was when the lambda was defined, not as it might be changed later in the surrounding scope.
-
-# If you reassign genie_agent after creating the RunnableLambda, the lambda will still use the original genie_agent object it closed over at creation time.
-
-# ##: ---2. bugs analysis from copilot smart mode explanation:
-# Key points
-# • In Python, lambdas (and functions in general) capture variables by reference, not by value.
-# • That means the genie_agent inside your lambda is not frozen at function creation time. Instead, the lambda holds a reference to the name genie_agent in its enclosing lexical scope.
-# • When you later call one_turn_genie_agent(question), Python will resolve genie_agent at that moment by looking it up in the environment where the lambda was defined.
-# Implications
-# • If genie_agent was already defined when you created the lambda, the lambda will use that object.
-# • If you reassign genie_agent later (e.g., genie_agent = SomeOtherAgent()), the lambda will now use the new object, because it always looks up the variable at runtime.
-# • If genie_agent is undefined at call time, you’ll get a NameError.
-
-# COMMAND ----------
-
 genie_agent.invoke({"messages": [{"role": "user", "content": "What are the claims for patients diagnosed with diabetes?"}]})
 
 # COMMAND ----------
@@ -1393,232 +1803,21 @@ for tool in tools:
 
 # COMMAND ----------
 
-genie_agents
-
-# COMMAND ----------
-
-genie_agent_tools
-
-# COMMAND ----------
-
-import time
-
-# Freeze execution for 4 hours (4 * 60 * 60 seconds)
-time.sleep(4 * 60 * 60)
-
-# COMMAND ----------
-
-# DBTITLE 1,extract_genie_sql_tool
-from langchain_core.tools import tool
-
-def extract_genie_response(resp: dict) -> dict:
-    """
-    Extracts 'thinking' (reasoning), 'sql', and 'answer' from Genie agent response.
-
-    Args:
-        resp: The response object from Genie agent, containing a 'messages' list.
-
-    Returns:
-        Tuple (thinking, sql, answer)
-    """
-    thinking = None
-    sql = None
-    answer = None
-
-    for msg in resp["messages"]:
-        if isinstance(msg, AIMessage):
-            if msg.name == "query_reasoning":
-                thinking = msg.content
-            elif msg.name == "query_sql":
-                sql = msg.content
-            elif msg.name == "query_result":
-                answer = msg.content
-    return thinking, sql, answer
-
-@tool("extract_genie_sql_tool", description="Extracts 'thinking' and 'sql' from a Genie agent response dict object as a dict {'thinking': str, 'sql': str}.")
-def extract_genie_sql_tool(resp: dict) -> dict:
-    """
-    LangChain tool wrapper for extract_genie_response.
-    Args:
-        resp: The response object from Genie agent, containing a 'messages' list.
-    Returns:
-        Dict with 'thinking', 'sql', and 'answer'
-    """
-    thinking, sql, _ = extract_genie_response(resp)
-    return {"thinking": thinking, "sql": sql}
-
-# COMMAND ----------
-
-extract_genie_sql_tool
-
-# COMMAND ----------
-
-# DBTITLE 1,Create Genie Routing and SQL Synthesis Agent
-"""
-Create LangGraph SQL Synthesis Agent with UC Function Toolkit
-
-Uses Databricks LangGraph SDK with create_react_agent pattern
-"""
-
-from databricks_langchain import (
-    ChatDatabricks,
-    DatabricksFunctionClient,
-    UCFunctionToolkit,
-    set_uc_function_client,
-)
-from langchain.agents import create_agent
-import mlflow
-
-# Initialize Databricks Function Client
-client = DatabricksFunctionClient()
-set_uc_function_client(client)
-
-# Initialize LLM
-LLM_ENDPOINT_NAME = "databricks-claude-sonnet-4-5"
-llm = ChatDatabricks(endpoint=LLM_ENDPOINT_NAME, temperature=0.1)
-
-# # Create UC Function Toolkit with the registered functions
-# uc_function_names = [
-# ]
-
-# uc_toolkit = UCFunctionToolkit(function_names=uc_function_names)
-# tools = uc_toolkit.tools
-tools = []
-tools.extend(genie_agent_tools)
-# tools.append(extract_genie_sql_tool)
-
-print(f"✓ Created UCFunctionToolkit with {len(tools)} tools:")
-# for tool, value in tools.items():
-#     print(f"  - {tool}:{value.name}")
-
-# Create SQL Synthesis Agent (specialized for multi-agent system)
-# Create SQL Synthesis Agent (specialized for multi-agent system)
-sql_synthesis_agent = create_agent(
-    model=llm,
-    tools=tools,
-    system_prompt=(
-"""You are a SQL synthesis agent, which can take analysis plan, and route queries to the corresponding Genie Agent.
-The Plan given to you is a JSON:
-{"question_clear": true,
-"sub_questions": ["sub-question 1", "sub-question 2", ...],
-"requires_multiple_spaces": true/false,
-"relevant_space_ids": ["space_id_1", "space_id_2", ...],
-"requires_join": true/false,
-"join_strategy": "fast_route" or "slow_route" or null,
-"execution_plan": "Brief description of execution plan",
-"genie_route_plan": {'space_id_1':'partial_question_1', 'space_id_2':'partial_question_2', 'space_id_3':'partial_question_3', ...} or null,}
-
-## Tool Calling Plan:
-1. Under the key of 'genie_route_plan' in the JSON, extracting 'partial_question_1' and feed to the right Genie Agent tool of 'space_id_1' with the input as a string. 
-2. Asynchronously send all other partial_questions to the corresponding Genie Agent tools accordingly.
-3. You have access to all Genie Agents as tools given to you; locate the proper Genie Agent Tool by searching the 'space_id_1' in the tool's description. After each Genie agent returns result, only extract the SQL string from the Genie tool output JSON {"thinking": thinking, "sql": sql, "answer": answer}.
-
-## Disaster Recovery (DR) Plan:
-1. If one Genie agent tool fail to generate a SQL query, allow retry AS IS only one time; 
-2. If fail again, try to reframe the partial question 'partial_question_1' according to the error msg returned by the genie tool, e.g., genie tool may say "I dont have information for cost related information", you can remove those components in the 'partial_question_1' which doesn't exist in the genie tool. For example, if the genie tool "Genie_MemberBenefits" doesn't contain benefit cost related information, you can reframe the question by removing the cost-related components in the 'partial_question_1', generate 'partial_question_1_v2' and try again. Only try once;
-3. if fail again, return response as is. 
-
-
-## Overall SQL Synthesis Plan:
-Then, you can combine all the SQL pieces into a single SQL query, and return the final SQL query.
-OUTPUT REQUIREMENTS:
-- Generate complete, executable SQL with:
-  * Proper JOINs based on execution plan strategy
-  * WHERE clauses for filtering
-  * Appropriate aggregations
-  * Clear column aliases
-- Return ONLY the SQL query without explanations or markdown formatting
-- If SQL cannot be generated, explain what metadata is missing"""
-    )
-)
-
-# backup:
-# """{'space_id_1': RunnableLambda(...),
-#     'space_id_2': RunnableLambda(...),
-#     'space_id_3': RunnableLambda(...)}\n
-# """
-# Use the mapping table given to you to assign the question to the correct tool by searching tool id by tool name.
-# mapping table format like this:
-# - space_id_1:Genie_tool_name_1
-# - space_id_1:Genie_tool_name_2
-# - space_id_1:Genie_tool_name_3
-# After each Genie agent returns result, only extract the SQL string by using the 'extract_genie_sql_tool' tool.
-
-print("\n" + "="*80)
-print("✅ SQL Synthesis Agent created successfully!")
-print("="*80)
-print("\nAgent Configuration:")
-print(f"  - LLM: {LLM_ENDPOINT_NAME}")
-print(f"  - Tools: {len(tools)} UC functions")
-print(f"  - Agent Type: LangChain Tool-Calling Agent")
-
-
-# COMMAND ----------
-
-#  - 01f0956a387714969edde65458dcc22a:Genie_HealthVerityClaims
-#   - 01f0956a4b0512e2a8aa325ffbac821b:Genie_HealthVerityProcedureDiagnosis
-#   - 01f0956a54af123e9cd23907e8167df9:Genie_HealthVerityProviderEnrollment
-
-# COMMAND ----------
-
-query = """What is the average cost of medical claims for patients diagnosed with diabetes, broken down by insurance payer type and patient age group? Use age group of this: 0-17
-18-34
-35-49
-50-64
-65+""" # use this full complete query to test the agent if can still return meaningful result. however, even that, hard to control what is expected to return.
-print(query)
-
-# COMMAND ----------
-
-tools
-
-# COMMAND ----------
-
-print(plan_result)
-
-# COMMAND ----------
-
-# DBTITLE 1,test it
-
-# Create the message for the agent
-agent_message = {
-    "messages": [
-        {
-            "role": "user",
-            "content": f"""
-Generate a SQL query to answer this question: {query}
-
-Query Plan:
-{json.dumps(plan_result, indent=2)}
-"""
-        }
-    ]
-}
-
-# backup:
-# Use your available Genie Agent tools to generate SQL and finally assemble them into an overall SQL to answer the original question.
-
-print(agent_message)
-
-# Enable MLflow autologging for tracing
-mlflow.langchain.autolog()
-
-# Invoke the agent
-print("🤖 Invoking SQL Synthesis Agent...")
-print("="*80 + "\n")
-
-result = sql_synthesis_agent.invoke(agent_message)
-
-# COMMAND ----------
-
 # MAGIC %md
-# MAGIC ## SQL Query Validation Agent
+# MAGIC ## (Optional) SQL Query Validation Agent
 # MAGIC
-# MAGIC ## Validation Plan:
-# MAGIC After collecting all SQL queries from all genie tools (skip the ones that fail even after DR plan), compare to the original question and all "sub_questions" in the plan JSON, identify if every components are present:
-# MAGIC 1. if all components present, go to next phase of Overall SQL Synthesis
-# MAGIC 2. if some components are missing, call UC functions tool you have access to, following these steps:
-# MAGIC     a. 
+# MAGIC ### Validation Plan:
+# MAGIC Validate the SQL is executable by checking the fields are all there in the tables before calling SQL Execuation Tool.
+# MAGIC
+# MAGIC ### Skip Plan:
+# MAGIC 1. However, the validation agent will again use the UC functions of SQL tools to verify the table/column names and joins in the synthesized SQL are legit, which will be time consuming.
+# MAGIC
+# MAGIC 2. **An efficient alternative** is to directly call the execution tool return msg to super agent and super agent decide next step.
+# MAGIC
+
+# COMMAND ----------
+
+
 
 # COMMAND ----------
 
