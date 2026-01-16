@@ -433,7 +433,6 @@ Only return valid JSON, no explanations.
         
         # Create execution plan
         plan = self.create_execution_plan(query, relevant_spaces)
-        plan["relevant_spaces"] = relevant_spaces
         
         return plan
 
@@ -1183,12 +1182,13 @@ def planning_node(state: AgentState) -> AgentState:
     state["join_strategy"] = plan.get("join_strategy")
     state["execution_plan"] = plan.get("execution_plan", "")
     state["genie_route_plan"] = plan.get("genie_route_plan")
+    state["vector_search_relevant_spaces_info"] = plan.get("vector_search_relevant_spaces_info", [])
     # Note: relevant_spaces with searchable_content removed to save tokens
     # Only store space_id and space_title in vector_search_relevant_spaces_info
-    state["vector_search_relevant_spaces_info"] = [
-        {"space_id": sp["space_id"], "space_title": sp["space_title"]}
-        for sp in plan.get("relevant_spaces", [])
-    ]
+    # state["vector_search_relevant_spaces_info"] = [
+    #     {"space_id": sp["space_id"], "space_title": sp["space_title"]}
+    #     for sp in plan.get("relevant_spaces", [])
+    # ]
     
     # Determine next agent
     if state["join_strategy"] == "slow_route":
@@ -1242,24 +1242,36 @@ def sql_synthesis_fast_node(state: AgentState) -> AgentState:
         
         if has_sql and sql_query and explanation:
             state["sql_query"] = sql_query
-            state["explanation"] = explanation
             state["has_sql"] = has_sql
             state["next_agent"] = "sql_execution"
             print("✓ SQL query synthesized successfully")
             print(f"SQL Preview: {sql_query[:200]}...")
             if explanation:
                 print(f"Agent Explanation: {explanation[:200]}...")
+            
+            # Add message with SQL synthesis explanation
+            state["messages"].append(
+                AIMessage(content=f"SQL Synthesis (Fast Route):\n{explanation}")
+            )
         else:
             print("⚠ No SQL generated - agent explanation:")
             print(f"  {explanation}")
             state["synthesis_error"] = "Cannot generate SQL query"
             state["next_agent"] = "summarize"
+            
+            # Add message with explanation even if no SQL
+            state["messages"].append(
+                AIMessage(content=f"SQL Synthesis Failed (Fast Route):\n{explanation}")
+            )
         
     except Exception as e:
         print(f"❌ SQL synthesis failed: {e}")
         state["synthesis_error"] = str(e)
         state["sql_synthesis_explanation"] = str(e)
         state["next_agent"] = "end"
+        state["messages"].append(
+                AIMessage(content=f"SQL Synthesis Failed (Fast Route):\n{state["sql_synthesis_explanation"]}")
+            )
     
     return state
 
@@ -1305,23 +1317,35 @@ def sql_synthesis_slow_node(state: AgentState) -> AgentState:
         if has_sql and sql_query and explanation:
             state["sql_query"] = sql_query
             state["next_agent"] = "sql_execution"
-            state["explanation"] = explanation
             state["has_sql"] = has_sql
             print("✓ SQL fragments combined successfully")
             print(f"SQL Preview: {sql_query[:200]}...")
             if explanation:
                 print(f"Agent Explanation: {explanation[:200]}...")
+            
+            # Add message with SQL synthesis explanation
+            state["messages"].append(
+                AIMessage(content=f"SQL Synthesis (Slow Route):\n{explanation}")
+            )
         else:
             print("⚠ No SQL generated - agent explanation:")
             print(f"  {explanation}")
             state["synthesis_error"] = "Cannot generate SQL query from Genie agent fragments"
             state["next_agent"] = "summarize"
+            
+            # Add message with explanation even if no SQL
+            state["messages"].append(
+                AIMessage(content=f"SQL Synthesis Failed (Slow Route):\n{explanation}")
+            )
         
     except Exception as e:
         print(f"❌ SQL synthesis failed: {e}")
         state["synthesis_error"] = str(e)
         state["sql_synthesis_explanation"] = str(e)
         state["next_agent"] = "end"
+        state["messages"].append(
+                AIMessage(content=f"SQL Synthesis Failed (Slow Route):\n{state["sql_synthesis_explanation"]}")
+            )
     
     return state
 
