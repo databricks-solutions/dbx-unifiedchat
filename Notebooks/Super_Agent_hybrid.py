@@ -843,7 +843,7 @@ class SQLExecutionAgent:
                 1) The result from invoke the SQL synthesis agent (dict with messages)
                 2) The SQL query string (can be raw SQL or contain markdown code blocks)
             max_rows: Maximum number of rows to return (default: 100)
-            return_format: Format of the result - "dict", "dataframe", "json", or "markdown"
+            return_format: Format of the result - "dict", "json", or "markdown"
             
         Returns:
             Dictionary containing:
@@ -852,8 +852,6 @@ class SQLExecutionAgent:
             - result: Any - Query results in requested format
             - row_count: int - Number of rows returned
             - columns: List[str] - Column names
-            - dataframe: DataFrame - Spark DataFrame (for further processing)
-            - execution_plan: str - Spark execution plan (optional)
             - error: str - Error message if failed (optional)
         """
         from pyspark.sql import SparkSession
@@ -899,9 +897,7 @@ class SQLExecutionAgent:
             print(f"📋 Columns: {', '.join(columns)}\n")
             
             # Step 5: Format results based on return_format
-            if return_format == "dataframe":
-                result_data = df.toPandas()
-            elif return_format == "json":
+            if return_format == "json":
                 result_data = df.toJSON().collect()
             elif return_format == "markdown":
                 # Create markdown table
@@ -940,7 +936,6 @@ class SQLExecutionAgent:
                 "result": None,
                 "row_count": 0,
                 "columns": [],
-                "dataframe": None,
                 "error": error_msg
             }
     
@@ -1372,7 +1367,16 @@ def summarize_node(state: AgentState) -> AgentState:
     Result summarize node wrapping ResultSummarizeAgent class.
     
     This is the final node that all workflow paths go through.
-    Generates a natural language summary of what happened during execution.
+    Generates a natural language summary AND preserves all workflow data.
+    
+    Returns state with ALL fields preserved including:
+    - sql_query: Generated SQL query
+    - execution_result: Query execution results
+    - sql_synthesis_explanation: SQL generation explanation
+    - synthesis_error: SQL generation errors (if any)
+    - execution_error: Query execution errors (if any)
+    - execution_plan: Planning agent's execution plan
+    - final_summary: Natural language summary (NEW)
     """
     print("\n" + "="*80)
     print("📝 RESULT SUMMARIZE AGENT")
@@ -1384,10 +1388,31 @@ def summarize_node(state: AgentState) -> AgentState:
     
     print(f"\n✅ Summary Generated:")
     print(f"{summary}")
-    print("="*80)
     
-    # Store summary in state
+    # Store summary in state (all other fields are preserved automatically)
     state["final_summary"] = summary
+    
+    # Display what's being returned
+    print(f"\n📦 State Fields Being Returned:")
+    print(f"  ✓ final_summary: {len(summary)} chars")
+    if state.get("sql_query"):
+        print(f"  ✓ sql_query: {len(state['sql_query'])} chars")
+    if state.get("execution_result"):
+        exec_result = state["execution_result"]
+        if exec_result.get("success"):
+            print(f"  ✓ execution_result: {exec_result.get('row_count', 0)} rows")
+        else:
+            print(f"  ✓ execution_result: Failed - {exec_result.get('error', 'Unknown')[:50]}...")
+    if state.get("sql_synthesis_explanation"):
+        print(f"  ✓ sql_synthesis_explanation: {len(state['sql_synthesis_explanation'])} chars")
+    if state.get("execution_plan"):
+        print(f"  ✓ execution_plan: {state['execution_plan'][:80]}...")
+    if state.get("synthesis_error"):
+        print(f"  ⚠ synthesis_error: {state['synthesis_error'][:50]}...")
+    if state.get("execution_error"):
+        print(f"  ⚠ execution_error: {state['execution_error'][:50]}...")
+    
+    print("="*80)
     
     # Add summary as final message
     state["messages"].append(
@@ -1396,6 +1421,7 @@ def summarize_node(state: AgentState) -> AgentState:
     
     state["next_agent"] = "end"
     
+    # Return complete state with ALL fields preserved
     return state
 
 print("✓ All node wrappers defined (including summarize)")
@@ -1788,6 +1814,11 @@ def display_results(final_state: Dict[str, Any]):
         print(f"  {final_state.get('execution_plan')}")
         print(f"  Strategy: {final_state.get('join_strategy', 'N/A')}")
     
+    # Display SQL Synthesis Explanation
+    if final_state.get('sql_synthesis_explanation'):
+        print(f"\n💭 SQL Synthesis Explanation:")
+        print(f"  {final_state.get('sql_synthesis_explanation')}")
+    
     # Display SQL
     if final_state.get('sql_query'):
         print(f"\n💻 Generated SQL:")
@@ -1802,14 +1833,12 @@ def display_results(final_state: Dict[str, Any]):
         print(f"  Rows: {exec_result.get('row_count', 0)}")
         print(f"  Columns: {', '.join(exec_result.get('columns', []))}")
         
-        # Display results using Spark DataFrame
-        df = exec_result.get("dataframe")
-        if df is not None:
-            print(f"\n📊 Query Results:")
-            try:
-                display(df)  # Use Databricks display()
-            except:
-                df.show(n=min(100, exec_result.get('row_count', 0)), truncate=False)
+        # Display results preview
+        results = exec_result.get("result", [])
+        if results:
+            print(f"\n📊 Query Results (first 10 rows):")
+            for i, row in enumerate(results[:10], 1):
+                print(f"  Row {i}: {row}")
     elif exec_result and not exec_result.get('success'):
         print(f"\n❌ Execution Failed:")
         print(f"  Error: {exec_result.get('error', 'Unknown error')}")
@@ -2008,11 +2037,13 @@ else:
 # MAGIC - sql_synthesis_fast_node(state) → calls SQLSynthesisFastAgent, updates state
 # MAGIC - sql_synthesis_slow_node(state) → calls SQLSynthesisSlowAgent, updates state
 # MAGIC - sql_execution_node(state) → calls SQLExecutionAgent, updates state
+# MAGIC - summarize_node(state) → calls ResultSummarizeAgent, preserves ALL state fields
 # MAGIC
 # MAGIC State Management:
 # MAGIC - AgentState(TypedDict) with explicit fields
 # MAGIC - Full observability at every step
 # MAGIC - Easy to debug and monitor
+# MAGIC - ALL fields preserved in final state (sql_query, results, explanations, errors, summary)
 # MAGIC
 # MAGIC BENEFITS:
 # MAGIC ═════════
@@ -2031,10 +2062,19 @@ else:
 # MAGIC final_state = invoke_super_agent_hybrid("Your question here", thread_id="session_123")
 # MAGIC display_results(final_state)
 # MAGIC
-# MAGIC # Access results programmatically
+# MAGIC # Access ALL preserved fields programmatically
+# MAGIC summary = final_state['final_summary']  # Natural language summary
+# MAGIC sql = final_state.get('sql_query')  # Generated SQL
+# MAGIC explanation = final_state.get('sql_synthesis_explanation')  # SQL generation explanation
+# MAGIC plan = final_state.get('execution_plan')  # Execution plan
+# MAGIC 
 # MAGIC if final_state['execution_result']['success']:
-# MAGIC     data = final_state['execution_result']['result']
-# MAGIC     sql = final_state['sql_query']
+# MAGIC     data = final_state['execution_result']['result']  # Query results
+# MAGIC     row_count = final_state['execution_result']['row_count']  # Number of rows
+# MAGIC     columns = final_state['execution_result']['columns']  # Column names
+# MAGIC else:
+# MAGIC     error = final_state['execution_result'].get('error')  # Execution error
+# MAGIC     synthesis_error = final_state.get('synthesis_error')  # SQL generation error
 # MAGIC
 # MAGIC NEXT STEPS:
 # MAGIC ═══════════
