@@ -1,6 +1,6 @@
 # Databricks notebook source
 # DBTITLE 1,Install Packages
-# MAGIC %pip install databricks-langchain databricks-vectorsearch
+# MAGIC %pip install databricks-langchain==0.12.1 databricks-vectorsearch==0.63
 
 # COMMAND ----------
 
@@ -310,6 +310,10 @@ for doc in docs:
 
 if not relevant_spaces:
     relevant_spaces = []
+
+# COMMAND ----------
+
+docs
 
 # COMMAND ----------
 

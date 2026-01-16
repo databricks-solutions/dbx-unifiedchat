@@ -1,6 +1,6 @@
 # Databricks notebook source
 # DBTITLE 1,Install Packages
-# MAGIC %pip install databricks-langchain databricks-vectorsearch langgraph
+# MAGIC %pip install databricks-langchain==0.12.1 databricks-vectorsearch==0.63
 
 # COMMAND ----------
 
@@ -316,6 +316,7 @@ class PlanningAgent:
         
         relevant_spaces = []
         for doc in docs:
+            print(doc)
             relevant_spaces.append({
                 "space_id": doc.metadata.get("space_id", ""),
                 "space_title": doc.metadata.get("space_title", ""),
@@ -922,7 +923,6 @@ class SQLExecutionAgent:
                 "result": result_data,
                 "row_count": row_count,
                 "columns": columns,
-                "dataframe": df  # Keep original Spark DataFrame for further processing
             }
             
         except Exception as e:
@@ -1826,13 +1826,19 @@ def display_results(final_state: Dict[str, Any]):
 
 # COMMAND ----------
 
-# DBTITLE 1,Test Hybrid Super Agent (quick route)
 # Example test query
 test_query = "What is the average cost of medical claims per claim in 2024?"
 
 # Invoke Hybrid Super Agent
 final_state = invoke_super_agent_hybrid(test_query, thread_id="test_hybrid_001")
 
+# COMMAND ----------
+
+final_state
+
+# COMMAND ----------
+
+# DBTITLE 1,Test Hybrid Super Agent (quick route)
 # Display results
 display_results(final_state)
 
