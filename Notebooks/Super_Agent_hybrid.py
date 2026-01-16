@@ -1414,10 +1414,90 @@ def summarize_node(state: AgentState) -> AgentState:
     
     print("="*80)
     
-    # Add summary as final message
+    # Build comprehensive final message with ALL workflow information
+    final_message_parts = []
+    
+    # 1. Summary
+    final_message_parts.append(f"📝 **Summary:**\n{summary}\n")
+    
+    # 2. Original Query
+    if state.get("original_query"):
+        final_message_parts.append(f"🔍 **Original Query:**\n{state['original_query']}\n")
+    
+    # 3. Execution Plan
+    if state.get("execution_plan"):
+        final_message_parts.append(f"📋 **Execution Plan:**\n{state['execution_plan']}")
+        if state.get("join_strategy"):
+            final_message_parts.append(f"Strategy: {state['join_strategy']}\n")
+    
+    # 4. SQL Synthesis Explanation
+    if state.get("sql_synthesis_explanation"):
+        final_message_parts.append(f"💭 **SQL Synthesis Explanation:**\n{state['sql_synthesis_explanation']}\n")
+    
+    # 5. Generated SQL
+    if state.get("sql_query"):
+        final_message_parts.append(f"💻 **Generated SQL:**\n```sql\n{state['sql_query']}\n```\n")
+    
+    # 6. Execution Results
+    exec_result = state.get("execution_result")
+    if exec_result:
+        if exec_result.get("success"):
+            final_message_parts.append(f"✅ **Execution Successful:**\n")
+            final_message_parts.append(f"- Rows: {exec_result.get('row_count', 0)}\n")
+            final_message_parts.append(f"- Columns: {', '.join(exec_result.get('columns', []))}\n")
+            
+            # Convert results to pandas DataFrame and display
+            results = exec_result.get("result", [])
+            if results:
+                try:
+                    import pandas as pd
+                    df = pd.DataFrame(results)
+                    
+                    final_message_parts.append(f"\n📊 **Query Results:**\n")
+                    
+                    # Display DataFrame
+                    print("\n" + "="*80)
+                    print("📊 QUERY RESULTS (Pandas DataFrame)")
+                    print("="*80)
+                    try:
+                        display(df)  # Use Databricks display() for interactive view
+                    except:
+                        print(df.to_string())  # Fallback to string representation
+                    print("="*80 + "\n")
+                    
+                    # Add DataFrame info to message
+                    final_message_parts.append(f"DataFrame shape: {df.shape}\n")
+                    final_message_parts.append(f"Preview (first 5 rows):\n```\n{df.head().to_string()}\n```\n")
+                    
+                    # Note: DataFrame not stored in state (not msgpack serializable)
+                    # Users can recreate it from state['execution_result']['result']
+                    
+                except Exception as e:
+                    final_message_parts.append(f"⚠️ Could not convert to DataFrame: {e}\n")
+                    final_message_parts.append(f"Raw results (first 3): {results[:3]}\n")
+        else:
+            final_message_parts.append(f"❌ **Execution Failed:**\n")
+            final_message_parts.append(f"Error: {exec_result.get('error', 'Unknown error')}\n")
+    
+    # 7. Errors (if any)
+    if state.get("synthesis_error"):
+        final_message_parts.append(f"❌ **Synthesis Error:**\n{state['synthesis_error']}\n")
+    if state.get("execution_error"):
+        final_message_parts.append(f"❌ **Execution Error:**\n{state['execution_error']}\n")
+    
+    # 8. Relevant Spaces (if any)
+    if state.get("relevant_space_ids"):
+        final_message_parts.append(f"\n🎯 **Relevant Genie Spaces:** {len(state['relevant_space_ids'])} spaces analyzed\n")
+    
+    # Combine all parts into final comprehensive message
+    comprehensive_message = "\n".join(final_message_parts)
+    
+    # Add comprehensive message to state messages
     state["messages"].append(
-        AIMessage(content=summary)
+        AIMessage(content=comprehensive_message)
     )
+    
+    print(f"\n✅ Comprehensive final message created ({len(comprehensive_message)} chars)")
     
     state["next_agent"] = "end"
     
@@ -1852,6 +1932,50 @@ def display_results(final_state: Dict[str, Any]):
         print(f"  {final_state.get('execution_error')}")
     
     print("\n" + "="*80)
+
+# COMMAND ----------
+
+# DBTITLE 1,Helper Function: Get Results as DataFrame
+def get_results_as_dataframe(final_state: Dict[str, Any]):
+    """
+    Convert execution results to pandas DataFrame for easy analysis.
+    
+    Args:
+        final_state: The final state from invoke_super_agent_hybrid()
+        
+    Returns:
+        pandas.DataFrame or None if no results
+        
+    Example:
+        final_state = invoke_super_agent_hybrid("Show claims")
+        df = get_results_as_dataframe(final_state)
+        if df is not None:
+            print(df.describe())
+            df.plot()
+    """
+    import pandas as pd
+    
+    exec_result = final_state.get('execution_result')
+    if not exec_result or not exec_result.get('success'):
+        print("⚠️ No successful execution results to convert")
+        return None
+    
+    results = exec_result.get('result', [])
+    if not results:
+        print("⚠️ No data in results")
+        return None
+    
+    try:
+        df = pd.DataFrame(results)
+        print(f"✅ Converted {len(results)} rows to pandas DataFrame")
+        print(f"Shape: {df.shape}")
+        print(f"Columns: {list(df.columns)}")
+        return df
+    except Exception as e:
+        print(f"❌ Error converting to DataFrame: {e}")
+        return None
+
+print("✓ Helper functions defined")
 
 # COMMAND ----------
 
