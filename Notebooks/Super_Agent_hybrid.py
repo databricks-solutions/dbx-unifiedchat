@@ -1799,7 +1799,19 @@ def invoke_super_agent_hybrid(query: str, thread_id: str = "default") -> Dict[st
     initial_state = {
         "original_query": query,
         "question_clear": False,
-        "messages": [HumanMessage(content=query)],
+        "messages": [
+            SystemMessage(content="""You are a multi-agent Q&A analysis system.
+Your role is to help users query and analyze cross-domain data.
+
+Guidelines:
+- Always explain your reasoning and execution plan
+- Validate SQL queries before execution
+- Provide clear, comprehensive summaries
+- If information is missing, ask for clarification (max once)
+- Use UC functions and Genie agents to generate accurate SQL
+- Return results with proper context and explanations"""),
+            HumanMessage(content=query)
+        ],
         "next_agent": "clarification"
     }
     
