@@ -1059,13 +1059,16 @@ class ResultSummarizeAgent:
 """
         
         prompt += """
-**Task:** Generate a 2-3 sentence summary in natural language that:
+**Task:** Generate a detailed summary in natural language that:
 1. Describes what the user asked for
 2. Explains what the system did (planning, SQL generation, execution)
 3. States the outcome (success with X rows, error, needs clarification, etc.)
+4. print out SQL synthesis explanation if any SQL was generated
+5. print out SQL if any SQL was generated; make it the code block
+6. print out the result itself (like a table).
 
-Keep it concise and user-friendly. Do not include code or technical jargon unless necessary.
-Return ONLY the summary text, no explanations or meta-commentary.
+
+Keep it concise and user-friendly. 
 """
         
         return prompt
