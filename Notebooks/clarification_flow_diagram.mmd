@@ -1,0 +1,114 @@
+```mermaid
+graph TD
+    Start[User Query: Vague] --> Clarif1[Clarification Node]
+    
+    Clarif1 --> Check1{Query Clear?}
+    
+    Check1 -->|Yes| Plan1[Planning Node<br/>Uses: original_query]
+    Check1 -->|No| Store1[Store clarification_message]
+    
+    Store1 --> Return1[Return to User<br/>Ask for clarification]
+    
+    Return1 --> UserResp[User Provides<br/>Clarification Response]
+    
+    UserResp --> Clarif2[Clarification Node<br/>Re-entry]
+    
+    Clarif2 --> Preserve[PRESERVE Context:<br/>✅ original_query unchanged<br/>✅ clarification_message preserved<br/>✅ user_clarification_response stored]
+    
+    Preserve --> Combine[CREATE combined_query_context:<br/>Original Query + Clarification + Response]
+    
+    Combine --> Plan2[Planning Node<br/>Uses: combined_query_context]
+    
+    Plan1 --> SQL[SQL Synthesis]
+    Plan2 --> SQL
+    
+    SQL --> Exec[SQL Execution]
+    
+    Exec --> Summary[Result Summary]
+    
+    Summary --> End1[End - Results Returned]
+    
+    End1 -.Follow-up Query.-> FollowUp[ask_follow_up_query]
+    
+    FollowUp --> ThreadMem[Thread Memory<br/>Restores previous context]
+    
+    ThreadMem --> NewClarif[Clarification Node<br/>With previous context]
+    
+    NewClarif --> Plan3[Planning Node<br/>Has access to previous conversation]
+    
+    Plan3 --> SQL2[SQL Synthesis<br/>With conversation context]
+    
+    SQL2 --> Exec2[SQL Execution]
+    
+    Exec2 --> Summary2[Result Summary]
+    
+    Summary2 --> End2[End - Follow-up Results]
+    
+    style Preserve fill:#90EE90
+    style Combine fill:#90EE90
+    style ThreadMem fill:#87CEEB
+    style Plan2 fill:#FFD700
+    style Plan3 fill:#FFD700
+
+classDef improved fill:#90EE90,stroke:#228B22,stroke-width:3px
+classDef context fill:#87CEEB,stroke:#4682B4,stroke-width:3px
+classDef combined fill:#FFD700,stroke:#FF8C00,stroke-width:3px
+```
+
+## Flow Explanation
+
+### Clarification Flow (Green Highlights = Improvements)
+
+1. **User Query (Vague)** → Clarification Node detects ambiguity
+2. **Clarification Request** → Agent asks for clarification
+3. **User Responds** → Clarification Node re-entry
+4. **✅ PRESERVE Context** (NEW):
+   - `original_query`: Unchanged
+   - `clarification_message`: Preserved
+   - `user_clarification_response`: Stored
+5. **✅ CREATE Combined Context** (NEW):
+   - Structured combination of all three
+   - Passed to Planning Node
+6. **Planning Node** → Uses `combined_query_context`
+7. **Continue Workflow** → SQL Synthesis → Execution → Summary
+
+### Follow-Up Query Flow (Blue Highlights = New Feature)
+
+1. **Results Returned** → User satisfied
+2. **Follow-Up Query** → User asks related question
+3. **✅ Thread Memory** (NEW):
+   - Restores previous messages
+   - Restores previous state
+   - Restores previous results
+4. **Clarification Node** → With previous context available
+5. **Planning Node** → Has access to entire conversation
+6. **Continue Workflow** → With full conversation context
+
+### Key Improvements
+
+- **Green Boxes**: Context preservation and combination (NEW)
+- **Blue Boxes**: Thread-based conversation continuity (NEW)
+- **Yellow Boxes**: Planning agent with enhanced context (IMPROVED)
+
+### Before vs. After
+
+#### Before (❌)
+```
+Vague Query → Clarification → User Response
+    ↓
+original_query = "Vague Query [User Clarification: Response]"
+    ↓
+Planning Agent (confused by jumbled string)
+```
+
+#### After (✅)
+```
+Vague Query → Clarification → User Response
+    ↓
+original_query = "Vague Query" (preserved)
+clarification_message = "Agent's question"
+user_clarification_response = "User's answer"
+combined_query_context = Structured combination
+    ↓
+Planning Agent (has full structured context)
+```

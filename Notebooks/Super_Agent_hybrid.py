@@ -161,6 +161,8 @@ class AgentState(TypedDict):
     clarification_options: Optional[List[str]]
     clarification_count: Optional[int]  # Track clarification attempts (max 1)
     user_clarification_response: Optional[str]  # User's response to clarification
+    clarification_message: Optional[str]  # The clarification question asked by agent
+    combined_query_context: Optional[str]  # Combined context: original + clarification + response
     
     # Planning
     sub_questions: Optional[List[str]]
@@ -1089,6 +1091,12 @@ def clarification_node(state: AgentState) -> AgentState:
     
     Handles up to 1 clarification request. If user provides clarification,
     incorporates it and proceeds to planning.
+    
+    IMPORTANT: This node COMBINES context instead of overwriting:
+    - Preserves original_query unchanged
+    - Stores clarification_message separately
+    - Stores user_clarification_response separately
+    - Creates combined_query_context for planning agent
     """
     print("\n" + "="*80)
     print("🔍 CLARIFICATION AGENT")
@@ -1101,14 +1109,32 @@ def clarification_node(state: AgentState) -> AgentState:
     user_response = state.get("user_clarification_response")
     if user_response and clarification_count > 0:
         print("✓ User provided clarification - incorporating feedback")
-        # Append user's clarification to the original query
+        
+        # IMPORTANT: Do NOT overwrite original_query - keep it unchanged
+        # Instead, create a combined context for planning agent
         original = state["original_query"]
-        state["original_query"] = f"{original} [User Clarification: {user_response}]"
+        clarif_msg = state.get("clarification_message", "")
+        
+        # Build combined query context with structured format
+        combined_context = f"""**Original Query**: {original}
+
+**Clarification Question**: {clarif_msg}
+
+**User's Answer**: {user_response}
+
+**Context**: The user was asked for clarification and provided additional information. Use all three pieces of information together to understand the complete intent."""
+        
+        state["combined_query_context"] = combined_context
         state["question_clear"] = True
         state["next_agent"] = "planning"
         
+        print(f"   Original Query (preserved): {original}")
+        print(f"   Clarification Message: {clarif_msg}")
+        print(f"   User Response: {user_response}")
+        print(f"   ✓ Combined context created for planning agent")
+        
         state["messages"].append(
-            SystemMessage(content=f"User clarification incorporated: {user_response}")
+            SystemMessage(content=f"User clarification incorporated: {user_response}\nCombined context created with original query, clarification question, and user answer.")
         )
         
         return state
@@ -1128,6 +1154,8 @@ def clarification_node(state: AgentState) -> AgentState:
     if state["question_clear"]:
         print("✓ Query is clear - proceeding to planning")
         state["next_agent"] = "planning"
+        # No clarification needed, so combined context is just the original query
+        state["combined_query_context"] = state["original_query"]
     else:
         print("⚠ Query needs clarification (attempt 1 of 1)")
         print(f"   Reason: {state['clarification_needed']}")
@@ -1142,7 +1170,7 @@ def clarification_node(state: AgentState) -> AgentState:
         # Route to summarize to show clarification request
         state["next_agent"] = "summarize"
         
-        # Add message prompting user for clarification
+        # Build and store clarification message
         clarification_message = (
             f"I need clarification: {state['clarification_needed']}\n\n"
             f"Please choose one of the following options or provide your own clarification:\n"
@@ -1150,6 +1178,9 @@ def clarification_node(state: AgentState) -> AgentState:
         if state["clarification_options"]:
             for i, opt in enumerate(state["clarification_options"], 1):
                 clarification_message += f"{i}. {opt}\n"
+        
+        # Store the clarification message in state
+        state["clarification_message"] = clarification_message
         
         state["messages"].append(
             AIMessage(content=clarification_message)
@@ -1166,12 +1197,23 @@ def planning_node(state: AgentState) -> AgentState:
     """
     Planning node wrapping PlanningAgent class.
     Combines OOP modularity with explicit state management.
+    
+    Uses combined_query_context if available (from clarification flow),
+    otherwise uses original_query.
     """
     print("\n" + "="*80)
     print("📋 PLANNING AGENT")
     print("="*80)
     
-    query = state["original_query"]
+    # Use combined_query_context if available (includes clarification context)
+    # Otherwise fall back to original_query
+    query = state.get("combined_query_context") or state["original_query"]
+    
+    if state.get("combined_query_context"):
+        print("✓ Using combined query context (includes clarification)")
+    else:
+        print("✓ Using original query (no clarification needed)")
+    
     llm = ChatDatabricks(endpoint=LLM_ENDPOINT_PLANNING)
     
     # Use OOP agent
@@ -1705,31 +1747,132 @@ class SuperAgentHybridResponsesAgent(ResponsesAgent):
         """
         Make a streaming prediction.
         
+        Handles three scenarios:
+        1. New query: Fresh start with new original_query
+        2. Clarification response: User answering agent's clarification question
+        3. Follow-up query: New query with access to previous conversation context
+        
+        The thread-based memory system (MemorySaver) automatically preserves and restores
+        conversation context across all scenarios.
+        
         Args:
-            request: The request containing input messages
+            request: The request containing:
+                - input: List of messages (user query is the last message)
+                - custom_inputs: Dict with optional keys:
+                    - thread_id (str): Thread identifier for conversation continuity (default: "default")
+                    - is_clarification_response (bool): Set to True when user is answering clarification
+                    - clarification_count (int): Preserved from previous state
+                    - original_query (str): Preserved from previous state for clarification responses
+                    - clarification_message (str): Preserved from previous state for clarification responses
             
         Yields:
             ResponsesAgentStreamEvent for each step in the workflow
+            
+        Usage in Model Serving:
+            # New query
+            POST /invocations
+            {
+                "messages": [{"role": "user", "content": "Show me patient data"}],
+                "custom_inputs": {"thread_id": "session_001"}
+            }
+            
+            # Clarification response (after agent asked for clarification)
+            POST /invocations
+            {
+                "messages": [{"role": "user", "content": "Patient count by age group"}],
+                "custom_inputs": {
+                    "thread_id": "session_001",  # Must match previous call
+                    "is_clarification_response": true,
+                    "original_query": "Show me patient data",  # From previous state
+                    "clarification_message": "...",  # From previous state
+                    "clarification_count": 1  # From previous state
+                }
+            }
+            
+            # Follow-up query
+            POST /invocations
+            {
+                "messages": [{"role": "user", "content": "Now show by gender"}],
+                "custom_inputs": {"thread_id": "session_001"}  # Same thread_id
+            }
         """
         # Convert request input to chat completions format
         cc_msgs = to_chat_completions_input([i.model_dump() for i in request.input])
         
-        # Initialize state with messages
-        initial_state = {
-            "original_query": cc_msgs[-1]["content"] if cc_msgs else "",
-            "question_clear": False,
-            "messages": [HumanMessage(content=msg["content"]) for msg in cc_msgs if msg["role"] == "user"],
-            "next_agent": "clarification"
-        }
+        # Get the latest user message
+        latest_query = cc_msgs[-1]["content"] if cc_msgs else ""
         
-        # Configure with thread ID
+        # Configure with thread ID for conversation continuity
+        # The MemorySaver checkpoint will restore previous state for this thread
         thread_id = request.custom_inputs.get("thread_id", "default") if request.custom_inputs else "default"
         config = {"configurable": {"thread_id": thread_id}}
+        
+        # Check if this is a clarification response
+        # When True, the user is answering the agent's clarification question
+        is_clarification_response = request.custom_inputs.get("is_clarification_response", False) if request.custom_inputs else False
+        
+        # Initialize state based on scenario
+        if is_clarification_response:
+            # Scenario 2: Clarification Response
+            # User is answering the agent's clarification question
+            # We need to preserve state from previous call and add user's response
+            
+            # Get preserved state from custom_inputs (caller must pass these)
+            original_query = request.custom_inputs.get("original_query", latest_query)
+            clarification_message = request.custom_inputs.get("clarification_message", "")
+            clarification_count = request.custom_inputs.get("clarification_count", 1)
+            
+            initial_state = {
+                # Preserve from previous state
+                "original_query": original_query,  # Keep original unchanged
+                "clarification_message": clarification_message,  # Keep clarification question
+                "clarification_count": clarification_count,  # Keep count
+                
+                # Add user's clarification response
+                "user_clarification_response": latest_query,
+                "question_clear": False,  # Will be set to True by clarification_node
+                
+                # Messages
+                "messages": [HumanMessage(content=f"Clarification response: {latest_query}")],
+                
+                # Route back to clarification node to process response
+                "next_agent": "clarification"
+            }
+            
+        else:
+            # Scenario 1 & 3: New Query or Follow-Up Query
+            # For both scenarios, we start fresh but thread memory will restore context
+            # The key difference:
+            # - New query (Scenario 1): No previous context in thread memory
+            # - Follow-up query (Scenario 3): Thread memory restores previous conversation
+            
+            initial_state = {
+                "original_query": latest_query,
+                "question_clear": False,
+                "messages": [
+                    SystemMessage(content="""You are a multi-agent Q&A analysis system.
+Your role is to help users query and analyze cross-domain data.
+
+Guidelines:
+- Always explain your reasoning and execution plan
+- Validate SQL queries before execution
+- Provide clear, comprehensive summaries
+- If information is missing, ask for clarification (max once)
+- Use UC functions and Genie agents to generate accurate SQL
+- Return results with proper context and explanations"""),
+                    HumanMessage(content=latest_query)
+                ],
+                "next_agent": "clarification"
+            }
         
         first_message = True
         seen_ids = set()
         
         # Stream the workflow execution
+        # The MemorySaver checkpoint will:
+        # 1. Restore previous state from thread_id (if exists)
+        # 2. Merge with initial_state (initial_state takes precedence for specified fields)
+        # 3. Preserve conversation history across turns
         for _, events in self.agent.stream(initial_state, config, stream_mode=["updates"]):
             new_msgs = [
                 msg
@@ -1849,6 +1992,9 @@ def respond_to_clarification(
     Use this function when the agent requests clarification. Provide your
     clarification and the workflow will continue to planning and execution.
     
+    IMPORTANT: This function preserves conversation history and state from
+    the previous turn, leveraging the thread-based memory system.
+    
     Args:
         clarification_response: Your clarification/answer to the agent's question
         previous_state: The state returned from the previous invoke call
@@ -1878,32 +2024,121 @@ def respond_to_clarification(
     print("="*80)
     print(f"User Response: {clarification_response}")
     print(f"Thread ID: {thread_id}")
+    print(f"Original Query: {previous_state['original_query']}")
     print("="*80)
     
-    # Create new state with user's clarification response
+    # Create new state that PRESERVES previous state and adds clarification response
+    # The thread memory will automatically restore previous conversation context
     new_state = {
-        "original_query": previous_state["original_query"],
-        "question_clear": False,
+        "original_query": previous_state["original_query"],  # Keep original unchanged
+        "question_clear": False,  # Will be set to True by clarification node
         "clarification_count": previous_state.get("clarification_count", 1),
-        "user_clarification_response": clarification_response,
+        "clarification_message": previous_state.get("clarification_message", ""),  # Preserve clarification message
+        "user_clarification_response": clarification_response,  # Store user's answer
         "messages": [
-            HumanMessage(content=previous_state["original_query"]),
-            HumanMessage(content=f"Clarification: {clarification_response}")
+            # Add user's clarification response as a new message
+            HumanMessage(content=f"Clarification response: {clarification_response}")
         ],
         "next_agent": "clarification"  # Re-enter clarification node to process response
     }
     
     # Configure with thread (must match previous call)
+    # The thread memory system will restore previous conversation state
     config = {"configurable": {"thread_id": thread_id}}
     
     # Enable MLflow tracing
     mlflow.langchain.autolog()
     
-    # Continue the workflow
+    print("✓ State prepared with preserved context")
+    print(f"  - Original query preserved: {new_state['original_query']}")
+    print(f"  - Clarification message preserved: {new_state.get('clarification_message', 'N/A')[:50]}...")
+    print(f"  - User response added: {clarification_response}")
+    
+    # Continue the workflow - thread memory will merge with previous state
     final_state = super_agent_hybrid.invoke(new_state, config)
     
     print("\n" + "="*80)
     print("✅ WORKFLOW COMPLETE AFTER CLARIFICATION")
+    print("="*80)
+    
+    return final_state
+
+# COMMAND ----------
+
+# DBTITLE 1,Helper Function: Follow-Up Query
+def ask_follow_up_query(
+    new_query: str,
+    thread_id: str = "default"
+) -> Dict[str, Any]:
+    """
+    Ask a follow-up query in the same conversation thread.
+    
+    This function enables conversation continuity - the agent will have access
+    to all previous queries, clarifications, and results in the same thread.
+    
+    Use this for:
+    - Asking a completely new question while maintaining context
+    - Asking a related question that builds on previous results
+    - Requesting different analysis of the same data
+    
+    Args:
+        new_query: The new question to ask
+        thread_id: Thread ID for conversation tracking (use same thread_id as previous calls)
+    
+    Returns:
+        Final state with execution results
+    
+    Example:
+        # First query
+        state1 = invoke_super_agent_hybrid("Show me patient count", thread_id="session_001")
+        display_results(state1)
+        
+        # Follow-up query in same conversation
+        state2 = ask_follow_up_query(
+            "Now show me the average age by gender",
+            thread_id="session_001"
+        )
+        display_results(state2)
+        
+        # Another follow-up
+        state3 = ask_follow_up_query(
+            "What about diabetes patients only?",
+            thread_id="session_001"
+        )
+        display_results(state3)
+    """
+    print("\n" + "="*80)
+    print("💬 FOLLOW-UP QUERY")
+    print("="*80)
+    print(f"New Query: {new_query}")
+    print(f"Thread ID: {thread_id}")
+    print(f"✓ This query will have access to previous conversation context")
+    print("="*80)
+    
+    # Create state for new query
+    # The thread memory will automatically restore previous conversation context
+    new_state = {
+        "original_query": new_query,
+        "question_clear": False,
+        "messages": [
+            HumanMessage(content=new_query)
+        ],
+        "next_agent": "clarification"
+    }
+    
+    # Configure with thread ID to restore conversation context
+    config = {"configurable": {"thread_id": thread_id}}
+    
+    # Enable MLflow tracing
+    mlflow.langchain.autolog()
+    
+    print("✓ Invoking agent with conversation context from thread")
+    
+    # Invoke the workflow - thread memory will merge with previous states
+    final_state = super_agent_hybrid.invoke(new_state, config)
+    
+    print("\n" + "="*80)
+    print("✅ FOLLOW-UP QUERY COMPLETE")
     print("="*80)
     
     return final_state
@@ -2285,6 +2520,236 @@ else:
 # MAGIC
 # MAGIC ===================================================================================
 # MAGIC ```
+
+# COMMAND ----------
+
+# DBTITLE 1,Example: Complete Clarification Flow with Context Preservation
+# MAGIC %md
+# MAGIC ### Example: Clarification Flow with Context Preservation
+# MAGIC 
+# MAGIC This example demonstrates how the agent:
+# MAGIC 1. Detects vague queries and asks for clarification
+# MAGIC 2. **PRESERVES** original query, clarification message, and user response separately
+# MAGIC 3. **COMBINES** all context for planning agent
+# MAGIC 4. Continues workflow seamlessly
+
+"""
+# Example 1: Clarification Flow with Context Combination
+session_id = "demo_clarification_001"
+
+# Step 1: Ask a vague query
+print("="*80)
+print("STEP 1: Initial vague query")
+print("="*80)
+state1 = invoke_super_agent_hybrid(
+    "Show me the data about patients",  # Vague - what data? which patients?
+    thread_id=session_id
+)
+
+# Check if clarification is needed
+if not state1.get('question_clear'):
+    print("\n" + "="*80)
+    print("CLARIFICATION REQUESTED BY AGENT")
+    print("="*80)
+    print(f"Original Query (preserved): {state1['original_query']}")
+    print(f"Clarification Needed: {state1['clarification_needed']}")
+    print(f"Options: {state1['clarification_options']}")
+    
+    # Step 2: User provides clarification
+    print("\n" + "="*80)
+    print("STEP 2: User provides clarification")
+    print("="*80)
+    state2 = respond_to_clarification(
+        "Show me patient count grouped by age group",
+        previous_state=state1,
+        thread_id=session_id
+    )
+    
+    # Verify context was properly combined
+    print("\n" + "="*80)
+    print("CONTEXT VERIFICATION")
+    print("="*80)
+    print(f"✓ Original Query Preserved: {state2.get('original_query')}")
+    print(f"✓ Clarification Message: {state2.get('clarification_message', 'N/A')[:100]}...")
+    print(f"✓ User Response: {state2.get('user_clarification_response')}")
+    print(f"✓ Combined Context Created: {state2.get('combined_query_context') is not None}")
+    
+    display_results(state2)
+else:
+    display_results(state1)
+"""
+
+# COMMAND ----------
+
+# DBTITLE 1,Example: Follow-Up Queries with Conversation Continuity
+# MAGIC %md
+# MAGIC ### Example: Follow-Up Queries with Conversation Continuity
+# MAGIC 
+# MAGIC This example demonstrates conversation continuity across multiple queries:
+# MAGIC - Each new query has access to previous conversation context
+# MAGIC - Thread-based memory preserves state across invocations
+# MAGIC - Users can ask related follow-up questions naturally
+
+"""
+# Example 2: Multi-Turn Conversation with Follow-Ups
+session_id = "demo_followup_001"
+
+# Turn 1: First query
+print("="*80)
+print("TURN 1: Initial Query")
+print("="*80)
+state1 = invoke_super_agent_hybrid(
+    "How many active plan members do we have?",
+    thread_id=session_id
+)
+display_results(state1)
+
+# Turn 2: Follow-up query building on Turn 1
+print("\n" + "="*80)
+print("TURN 2: Follow-Up Query")
+print("="*80)
+state2 = ask_follow_up_query(
+    "What's the breakdown by age group?",  # Refers to "active plan members" from Turn 1
+    thread_id=session_id
+)
+display_results(state2)
+
+# Turn 3: Another follow-up
+print("\n" + "="*80)
+print("TURN 3: Second Follow-Up")
+print("="*80)
+state3 = ask_follow_up_query(
+    "Now show me the gender distribution for the 50+ age group",  # Builds on previous context
+    thread_id=session_id
+)
+display_results(state3)
+
+# Turn 4: Completely new question in same thread
+print("\n" + "="*80)
+print("TURN 4: New Question (but same thread)")
+print("="*80)
+state4 = ask_follow_up_query(
+    "Which medications are most prescribed for diabetes patients?",  # New topic
+    thread_id=session_id
+)
+display_results(state4)
+
+print("\n" + "="*80)
+print("✅ CONVERSATION SUMMARY")
+print("="*80)
+print(f"Session ID: {session_id}")
+print(f"Total Turns: 4")
+print(f"✓ All queries had access to previous conversation context")
+print(f"✓ Thread-based memory preserved state across invocations")
+print("="*80)
+"""
+
+# COMMAND ----------
+
+# DBTITLE 1,Example: Clarification + Follow-Up Combined
+# MAGIC %md
+# MAGIC ### Example: Clarification + Follow-Up Combined
+# MAGIC 
+# MAGIC This example shows the complete workflow:
+# MAGIC 1. Vague query → Clarification requested
+# MAGIC 2. User clarifies → Workflow completes
+# MAGIC 3. Follow-up query → Uses context from Turn 1+2
+
+"""
+# Example 3: Complete Multi-Turn Workflow
+session_id = "demo_complete_001"
+
+# Turn 1: Vague query triggers clarification
+print("="*80)
+print("TURN 1: Vague Query")
+print("="*80)
+state1 = invoke_super_agent_hybrid(
+    "Show me patient costs",  # Vague - what costs? which patients?
+    thread_id=session_id
+)
+
+if not state1.get('question_clear'):
+    # Turn 2: Respond to clarification
+    print("\n" + "="*80)
+    print("TURN 2: Clarification Response")
+    print("="*80)
+    state2 = respond_to_clarification(
+        "Show me average total claim costs for diabetic patients by insurance type",
+        previous_state=state1,
+        thread_id=session_id
+    )
+    display_results(state2)
+    
+    # Turn 3: Follow-up question
+    print("\n" + "="*80)
+    print("TURN 3: Follow-Up After Clarification")
+    print("="*80)
+    state3 = ask_follow_up_query(
+        "What about only Medicare patients over 65?",  # Refines previous query
+        thread_id=session_id
+    )
+    display_results(state3)
+    
+    # Turn 4: Another follow-up
+    print("\n" + "="*80)
+    print("TURN 4: Second Follow-Up")
+    print("="*80)
+    state4 = ask_follow_up_query(
+        "Compare that to Medicaid patients in the same age group",
+        thread_id=session_id
+    )
+    display_results(state4)
+    
+    print("\n" + "="*80)
+    print("✅ WORKFLOW SUMMARY")
+    print("="*80)
+    print(f"Session ID: {session_id}")
+    print(f"Turn 1: Vague query → Clarification requested")
+    print(f"Turn 2: User clarified → Context combined and preserved")
+    print(f"Turn 3-4: Follow-ups → Used combined context from Turn 1+2")
+    print(f"✓ Original query always preserved")
+    print(f"✓ Clarification context properly combined")
+    print(f"✓ Thread memory maintained conversation continuity")
+    print("="*80)
+"""
+
+# COMMAND ----------
+
+# DBTITLE 1,Example: Multiple Conversations with Different Threads
+# MAGIC %md
+# MAGIC ### Example: Multiple Parallel Conversations
+# MAGIC 
+# MAGIC Thread IDs enable multiple independent conversations:
+# MAGIC - Each thread maintains its own conversation context
+# MAGIC - Different users or sessions don't interfere with each other
+
+"""
+# Example 4: Multiple Independent Conversations
+# Conversation A: Patient demographics
+thread_a = "user_alice_session_001"
+stateA1 = invoke_super_agent_hybrid("Show patient count by age", thread_id=thread_a)
+stateA2 = ask_follow_up_query("Now by gender", thread_id=thread_a)
+stateA3 = ask_follow_up_query("Focus on 50+ age group", thread_id=thread_a)
+
+# Conversation B: Medication analysis (completely independent)
+thread_b = "user_bob_session_001"
+stateB1 = invoke_super_agent_hybrid("Which drugs are most prescribed?", thread_id=thread_b)
+stateB2 = ask_follow_up_query("For diabetes patients only", thread_id=thread_b)
+
+# Conversation C: Cost analysis (independent)
+thread_c = "user_charlie_session_001"
+stateC1 = invoke_super_agent_hybrid("Average claim costs", thread_id=thread_c)
+
+print("\n" + "="*80)
+print("✅ MULTIPLE CONVERSATIONS")
+print("="*80)
+print(f"Thread A ({thread_a}): 3 turns about patient demographics")
+print(f"Thread B ({thread_b}): 2 turns about medications")
+print(f"Thread C ({thread_c}): 1 turn about costs")
+print(f"✓ All threads maintained independent conversation contexts")
+print(f"✓ No cross-contamination between threads")
+print("="*80)
+"""
 
 # COMMAND ----------
 
