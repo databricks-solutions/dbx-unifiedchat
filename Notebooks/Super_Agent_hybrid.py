@@ -950,18 +950,32 @@ class SQLSynthesisGenieAgent:
                 
                 if sql:
                     sql_fragments[space_id] = {
+                        "success": True,
                         "question": partial_question,
                         "thinking": thinking if thinking else "No reasoning provided",
                         "sql": sql
                     }
-                    print(f"  ✓ Got SQL from space {space_id}")
+                    print(f"  ✓ Got SQL {sql} from space {space_id}")
                     if thinking:
                         print(f"    Reasoning: {thinking[:100]}...")
                 else:
                     print(f"  ⚠ No SQL returned from space {space_id}")
-                    
+                    sql_fragments[space_id] = {
+                        "success": False,
+                        "question": partial_question,
+                        "thinking": thinking if thinking else "No reasoning provided",
+                        "sql": None,
+                        "error": "No SQL returned from space"
+                    }
             except Exception as e:
                 print(f"❌ Error querying space {space_id}: {e}")
+                sql_fragments[space_id] = {
+                    "success": False,
+                    "question": partial_question,
+                    "thinking": None,
+                    "sql": None,
+                    "error": str(e)
+                }
         
         return sql_fragments
     
@@ -977,7 +991,7 @@ class SQLSynthesisGenieAgent:
         Args:
             original_query: Original user question
             execution_plan: Execution plan description
-            sql_fragments: SQL fragments from Genie agents
+            sql_fragments: SQL fragments from Genie agents (with "success", "sql", "thinking" fields)
             
         Returns:
             Dictionary with:
@@ -985,6 +999,22 @@ class SQLSynthesisGenieAgent:
             - explanation: str - Agent's explanation/reasoning
             - has_sql: bool - Whether SQL was successfully extracted
         """
+        # Format SQL fragments for better readability in prompt
+        fragments_formatted = []
+        for space_id, fragment in sql_fragments.items():
+            fragment_str = f"""
+Space ID: {space_id}
+Question: {fragment.get('question', 'N/A')}
+Thinking: {fragment.get('thinking', 'N/A')}
+SQL Fragment:
+```sql
+{fragment.get('sql', 'N/A')}
+```
+"""
+            fragments_formatted.append(fragment_str)
+        
+        fragments_text = "\n---\n".join(fragments_formatted)
+        
         combine_prompt = f"""
 You are an expert SQL developer. Combine the following SQL fragments into a single executable SQL query.
 
@@ -993,15 +1023,18 @@ Original Question: {original_query}
 Execution Plan: {execution_plan}
 
 SQL Fragments from Genie Agents:
-{json.dumps(sql_fragments, indent=2)}
+{fragments_text}
 
 Generate a complete SQL query that:
-1. Combines these fragments with proper JOINs
-2. Answers the original question
+1. Combines these fragments with proper JOINs based on common columns
+2. Answers the original question completely
 3. Uses real table and column names from the fragments
 4. Includes proper WHERE clauses and aggregations
+5. Ensures the query is executable and returns meaningful results
 
-Return ONLY the final SQL query, no explanations or markdown.
+Return your response with:
+1. Your explanation combining both the individual Genie thinking and your own reasoning
+2. The final SQL query in a ```sql code block
 """
         
         response = self.llm.invoke(combine_prompt)
@@ -1074,6 +1107,24 @@ Return ONLY the final SQL query, no explanations or markdown.
                 "explanation": "No SQL fragments collected from Genie agents. Unable to generate query.",
                 "has_sql": False
             }
+        
+        # Validate all Genie agents returned SQL successfully
+        failed_spaces = []
+        for space_id, fragment in sql_fragments.items():
+            if not fragment.get("success", False):
+                error_msg = fragment.get("error", "Unknown error")
+                failed_spaces.append(f"{space_id}: {error_msg}")
+        
+        if failed_spaces:
+            error_details = "\n".join(failed_spaces)
+            return {
+                "sql": None,
+                "explanation": f"Cannot combine SQL fragments - some Genie agents failed:\n{error_details}",
+                "has_sql": False
+            }
+        
+        # All fragments successful - proceed to combine
+        print(f"✓ All {len(sql_fragments)} Genie agents returned SQL successfully")
         
         # Combine SQL fragments
         result = self.combine_sql_fragments(
