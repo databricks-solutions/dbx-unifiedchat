@@ -1367,10 +1367,12 @@ class ResultSummarizeAgent:
                 if exec_result.get('success'):
                     row_count = exec_result.get('row_count', 0)
                     columns = exec_result.get('columns', [])
+                    result = exec_result.get('result', [])
                     prompt += f"""**Execution:** ✅ Successful
-**Results:** {row_count} rows returned
+**Rows:** {row_count} rows returned
 **Columns:** {', '.join(columns[:5])}{'...' if len(columns) > 5 else ''}
 
+**Result:** {json.dumps(result, indent=2)}
 """
                 elif execution_error:
                     prompt += f"""**Execution:** ❌ Failed
