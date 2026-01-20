@@ -1645,7 +1645,7 @@ def sql_synthesis_table_node(state: AgentState) -> AgentState:
         print(f"❌ SQL synthesis failed: {e}")
         state["synthesis_error"] = str(e)
         state["sql_synthesis_explanation"] = str(e)
-        state["next_agent"] = "end"
+        # Route to summarize via conditional edge (route_after_synthesis)
         state["messages"].append(
                 AIMessage(content=f"SQL Synthesis Failed (Table Route):\n{state["sql_synthesis_explanation"]}")
             )
@@ -1672,7 +1672,7 @@ def sql_synthesis_genie_node(state: AgentState) -> AgentState:
     if not relevant_spaces:
         print("❌ No relevant_spaces found in state")
         state["synthesis_error"] = "No relevant spaces available for genie route"
-        state["next_agent"] = "end"
+        # Route to summarize via conditional edge (route_after_synthesis)
         return state
     
     # Use OOP agent - only creates Genie agents for relevant spaces
@@ -1683,7 +1683,7 @@ def sql_synthesis_genie_node(state: AgentState) -> AgentState:
     if not genie_route_plan:
         print("❌ No genie_route_plan found in state")
         state["synthesis_error"] = "No routing plan available for genie route"
-        state["next_agent"] = "end"
+        # Route to summarize via conditional edge (route_after_synthesis)
         return state
     
     try:
@@ -1730,7 +1730,7 @@ def sql_synthesis_genie_node(state: AgentState) -> AgentState:
         print(f"❌ SQL synthesis failed: {e}")
         state["synthesis_error"] = str(e)
         state["sql_synthesis_explanation"] = str(e)
-        state["next_agent"] = "end"
+        # Route to summarize via conditional edge (route_after_synthesis)
         state["messages"].append(
                 AIMessage(content=f"SQL Synthesis Failed (Genie Route):\n{state["sql_synthesis_explanation"]}")
             )
@@ -1752,7 +1752,7 @@ def sql_execution_node(state: AgentState) -> AgentState:
     if not sql_query:
         print("❌ No SQL query to execute")
         state["execution_error"] = "No SQL query provided"
-        state["next_agent"] = "end"
+        # Route to summarize via fixed edge (sql_execution → summarize)
         return state
     
     # Use OOP agent
@@ -1921,8 +1921,7 @@ def summarize_node(state: AgentState) -> AgentState:
     
     print(f"\n✅ Comprehensive final message created ({len(comprehensive_message)} chars)")
     
-    state["next_agent"] = "end"
-    
+    # Route to END via fixed edge (summarize → END)
     # Return complete state with ALL fields preserved
     return state
 
