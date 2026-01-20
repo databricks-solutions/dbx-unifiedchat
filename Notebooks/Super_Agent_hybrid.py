@@ -1494,8 +1494,8 @@ def clarification_node(state: AgentState) -> AgentState:
         # Increment clarification count
         state["clarification_count"] = clarification_count + 1
         
-        # Route to summarize to show clarification request
-        state["next_agent"] = "summarize"
+        # Route to END to show clarification request (routing controlled by route_after_clarification)
+        # The actual routing is handled by the conditional edge which checks question_clear flag
         
         # Build and store clarification message
         clarification_message = (
