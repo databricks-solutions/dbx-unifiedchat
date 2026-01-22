@@ -389,7 +389,7 @@ class AgentState(TypedDict):
     combined_query_context: Optional[str]  # Combined context: original + clarification + response
     
     # Planning
-    plan: Optional[str]
+    plan: Optional[Dict[str, Any]]
     sub_questions: Optional[List[str]]
     requires_multiple_spaces: Optional[bool]
     relevant_space_ids: Optional[List[str]]
