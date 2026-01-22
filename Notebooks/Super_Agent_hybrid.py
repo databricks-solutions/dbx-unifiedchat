@@ -1647,7 +1647,7 @@ def sql_synthesis_table_node(state: AgentState) -> AgentState:
         state["sql_synthesis_explanation"] = str(e)
         # Route to summarize via conditional edge (route_after_synthesis)
         state["messages"].append(
-                AIMessage(content=f"SQL Synthesis Failed (Table Route):\n{state["sql_synthesis_explanation"]}")
+                AIMessage(content=f"SQL Synthesis Failed (Table Route):\n{state['sql_synthesis_explanation']}")
             )
     
     return state
@@ -1732,7 +1732,7 @@ def sql_synthesis_genie_node(state: AgentState) -> AgentState:
         state["sql_synthesis_explanation"] = str(e)
         # Route to summarize via conditional edge (route_after_synthesis)
         state["messages"].append(
-                AIMessage(content=f"SQL Synthesis Failed (Genie Route):\n{state["sql_synthesis_explanation"]}")
+                AIMessage(content=f"SQL Synthesis Failed (Genie Route):\n{state['sql_synthesis_explanation']}")
             )
     
     return state
