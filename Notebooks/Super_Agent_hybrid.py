@@ -2574,10 +2574,111 @@ Uses DatabricksStore with semantic search to find relevant memories.
 
 # COMMAND ----------
 
+# DBTITLE 1,Helper: Find All Required Resources for Deployment
+"""
+Run this helper to automatically discover all resources needed for deployment.
+This ensures you don't miss any Genie spaces, tables, or UC functions.
+"""
+
+# # Uncomment to discover resources
+# from databricks.sdk import WorkspaceClient
+# 
+# print("="*80)
+# print("DISCOVERING DEPLOYMENT RESOURCES")
+# print("="*80)
+# 
+# # 1. Genie Space IDs (from config)
+# print("\n[1/4] Genie Space IDs:")
+# GENIE_SPACE_IDS = config.table_metadata.genie_space_ids
+# for space_id in GENIE_SPACE_IDS:
+#     print(f"  - {space_id}")
+# 
+# # 2. SQL Warehouse ID (you need to provide this manually)
+# print("\n[2/4] SQL Warehouse ID:")
+# print("  ⚠️ TODO: Get from SQL Warehouses UI → Click warehouse → Copy ID from URL or Details")
+# print("  Example: 'abc123def456'")
+# SQL_WAREHOUSE_ID = "your_warehouse_id"  # UPDATE THIS!
+# 
+# # 3. Query underlying tables used by Genie spaces
+# print("\n[3/4] Querying underlying tables from metadata...")
+# try:
+#     query = f"""
+#     SELECT DISTINCT table_name 
+#     FROM {TABLE_NAME}
+#     WHERE table_name IS NOT NULL
+#     ORDER BY table_name
+#     """
+#     
+#     w = WorkspaceClient()
+#     # Note: You'll need a SQL Warehouse to run this query
+#     # For now, we'll show the query to run manually
+#     print(f"  Run this query in Databricks SQL:")
+#     print(f"  {query}")
+#     print("\n  Example output:")
+#     print(f"    - {CATALOG}.{SCHEMA}.patient_demographics")
+#     print(f"    - {CATALOG}.{SCHEMA}.clinical_trials")
+#     print(f"    - {CATALOG}.{SCHEMA}.medication_orders")
+# except Exception as e:
+#     print(f"  ⚠️ Query failed: {e}")
+#     print(f"  Please run manually in SQL Editor")
+# 
+# # 4. Generate resource list code
+# print("\n[4/4] Generated Resources Code:")
+# print("="*80)
+# print("""
+# # Copy this into your deployment cell:
+# 
+# UNDERLYING_TABLES = [
+#     # TODO: Add tables from query above
+#     # f"{CATALOG}.{SCHEMA}.patient_demographics",
+#     # f"{CATALOG}.{SCHEMA}.clinical_trials",
+# ]
+# 
+# resources = [
+#     # LLM endpoints
+#     DatabricksServingEndpoint(LLM_ENDPOINT_CLARIFICATION),
+#     DatabricksServingEndpoint(LLM_ENDPOINT_PLANNING),
+#     DatabricksServingEndpoint(LLM_ENDPOINT_SQL_SYNTHESIS),
+#     DatabricksServingEndpoint(LLM_ENDPOINT_SUMMARIZE),
+#     DatabricksServingEndpoint(EMBEDDING_ENDPOINT),
+#     
+#     # Lakebase for state management
+#     DatabricksLakebase(database_instance_name=LAKEBASE_INSTANCE_NAME),
+#     
+#     # Vector Search
+#     DatabricksVectorSearchIndex(index_name=VECTOR_SEARCH_INDEX),
+#     
+#     # SQL Warehouse
+#     DatabricksSQLWarehouse(warehouse_id=SQL_WAREHOUSE_ID),
+#     
+#     # Genie Spaces (from config)
+#     *[DatabricksGenieSpace(genie_space_id=space_id) for space_id in GENIE_SPACE_IDS],
+#     
+#     # Tables
+#     DatabricksTable(table_name=TABLE_NAME),  # Metadata table
+#     *[DatabricksTable(table_name=table) for table in UNDERLYING_TABLES],
+#     
+#     # UC Functions
+#     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_summary"),
+#     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_table_overview"),
+#     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_column_detail"),
+#     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_details"),
+# ]
+# """)
+# print("="*80)
+
+# COMMAND ----------
+
 # DBTITLE 1,Deploy Agent to Model Serving with Memory Support
 """
 Register and deploy the agent with Lakebase resources for automatic authentication.
 This enables the agent to access Lakebase in Model Serving without manual credentials.
+
+⚠️ IMPORTANT: Before deploying, run the helper cell above to discover all required resources!
+
+Per Databricks docs: "if you log a Genie Space, you must also log its tables, 
+SQL Warehouses, and Unity Catalog functions"
+Ref: https://docs.databricks.com/aws/en/generative-ai/agent-framework/agent-authentication
 """
 
 # # Step 1: Log model with resources
@@ -2585,9 +2686,17 @@ This enables the agent to access Lakebase in Model Serving without manual creden
 #     DatabricksServingEndpoint,
 #     DatabricksLakebase,
 #     DatabricksFunction,
-#     DatabricksVectorSearchIndex
+#     DatabricksVectorSearchIndex,
+#     DatabricksGenieSpace,
+#     DatabricksSQLWarehouse,
+#     DatabricksTable,
 # )
 # from pkg_resources import get_distribution
+# 
+# # Get Genie space IDs and warehouse from config
+# GENIE_SPACE_IDS = config.table_metadata.genie_space_ids
+# # TODO: Update with your actual SQL Warehouse ID used by Genie spaces
+# SQL_WAREHOUSE_ID = "your_warehouse_id"  # Get from Databricks SQL Warehouses UI
 # 
 # # Declare all resources the agent needs
 # resources = [
@@ -2604,7 +2713,20 @@ This enables the agent to access Lakebase in Model Serving without manual creden
 #     # Vector Search Index
 #     DatabricksVectorSearchIndex(index_name=VECTOR_SEARCH_INDEX),
 #     
-#     # UC Functions
+#     # SQL Warehouse (required for Genie spaces and UC functions)
+#     DatabricksSQLWarehouse(warehouse_id=SQL_WAREHOUSE_ID),
+#     
+#     # Genie Spaces (IMPORTANT: Must declare all Genie spaces used by the agent!)
+#     *[DatabricksGenieSpace(genie_space_id=space_id) for space_id in GENIE_SPACE_IDS],
+#     
+#     # Tables (metadata enrichment table + underlying Genie tables)
+#     # Metadata enrichment table used by UC functions
+#     DatabricksTable(table_name=TABLE_NAME),
+#     # TODO: Add underlying tables that Genie spaces access
+#     # Example: DatabricksTable(table_name=f"{CATALOG}.{SCHEMA}.patient_demographics"),
+#     # You can query these from: SELECT DISTINCT table_name FROM enriched_genie_docs_chunks
+#     
+#     # UC Functions (metadata querying tools)
 #     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_summary"),
 #     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_table_overview"),
 #     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_column_detail"),
