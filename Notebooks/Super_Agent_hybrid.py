@@ -12,6 +12,13 @@
 """
 Configuration loaded from config.py and .env file.
 To update configuration, edit .env file instead of this notebook.
+
+RELOADING CONFIGURATION AFTER CHANGING .env:
+If you modify the .env file, you need to reload the configuration:
+1. Change the line below from: config = get_config()
+   To: config = get_config(reload=True)
+2. Re-run this cell to reload all config values
+3. Re-extract any config variables you need (CATALOG, SCHEMA, etc.)
 """
 
 # Import centralized configuration
@@ -27,6 +34,8 @@ if parent_dir not in sys.path:
 from config import get_config
 
 # Load configuration from .env
+# NOTE: If you change .env file, call get_config(reload=True) to reload
+# Example: config = get_config(reload=True)
 config = get_config()
 
 # Extract configuration values
@@ -45,6 +54,9 @@ LLM_ENDPOINT_SUMMARIZE = config.llm.endpoint_name
 LAKEBASE_INSTANCE_NAME = config.lakebase.instance_name
 EMBEDDING_ENDPOINT = config.lakebase.embedding_endpoint
 EMBEDDING_DIMS = config.lakebase.embedding_dims
+
+# Table Metadata configuration (from .env)
+SQL_WAREHOUSE_ID = config.table_metadata.sql_warehouse_id
 
 # Print configuration summary
 config.print_summary()

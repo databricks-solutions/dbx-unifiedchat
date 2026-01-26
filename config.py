@@ -96,6 +96,7 @@ class TableMetadataConfig:
     genie_exports_volume: str
     enriched_docs_table: str
     genie_space_ids: list[str]
+    sql_warehouse_id: str
     
     @classmethod
     def from_env(cls, uc_config: UnityCatalogConfig) -> 'TableMetadataConfig':
@@ -114,6 +115,7 @@ class TableMetadataConfig:
             genie_exports_volume=os.getenv("GENIE_EXPORTS_VOLUME", default_volume),
             enriched_docs_table=os.getenv("ENRICHED_DOCS_TABLE", default_table),
             genie_space_ids=space_ids,
+            sql_warehouse_id=os.getenv("SQL_WAREHOUSE_ID", ""),
         )
 
 
@@ -246,6 +248,7 @@ class AgentConfig:
         print(f"  Max Unique Values: {self.table_metadata.max_unique_values}")
         print(f"  Exports Volume: {self.table_metadata.genie_exports_volume}")
         print(f"  Enriched Docs Table: {self.table_metadata.enriched_docs_table}")
+        print(f"  SQL Warehouse ID: {self.table_metadata.sql_warehouse_id}")
         print(f"  Genie Space IDs: {len(self.table_metadata.genie_space_ids)} spaces")
         for i, sid in enumerate(self.table_metadata.genie_space_ids, 1):
             print(f"    {i}. {sid}")
@@ -271,7 +274,7 @@ def get_config(reload: bool = False) -> AgentConfig:
     Get or create the global configuration instance.
     
     Args:
-        reload: If True, reload configuration from environment
+        reload: If True, reload configuration from environment (including .env file)
         
     Returns:
         AgentConfig instance
@@ -279,6 +282,9 @@ def get_config(reload: bool = False) -> AgentConfig:
     global _config
     
     if _config is None or reload:
+        # Reload .env file if reloading (override existing env vars)
+        if reload:
+            load_dotenv(override=True)
         _config = AgentConfig.from_env()
         _config.validate()
     
