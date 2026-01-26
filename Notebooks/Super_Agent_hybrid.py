@@ -1412,6 +1412,31 @@ print("="*80)
 # MAGIC         self.name = "ResultSummarize"
 # MAGIC         self.llm = llm
 # MAGIC     
+# MAGIC     @staticmethod
+# MAGIC     def _safe_json_dumps(obj: Any, indent: int = 2) -> str:
+# MAGIC         """
+# MAGIC         Safely serialize objects to JSON, converting dates/datetime to strings.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             obj: Object to serialize
+# MAGIC             indent: JSON indentation level
+# MAGIC             
+# MAGIC         Returns:
+# MAGIC             JSON string with date/datetime objects converted to ISO format strings
+# MAGIC         """
+# MAGIC         from datetime import date, datetime
+# MAGIC         from decimal import Decimal
+# MAGIC         
+# MAGIC         def default_handler(o):
+# MAGIC             if isinstance(o, (date, datetime)):
+# MAGIC                 return o.isoformat()
+# MAGIC             elif isinstance(o, Decimal):
+# MAGIC                 return float(o)
+# MAGIC             else:
+# MAGIC                 raise TypeError(f'Object of type {o.__class__.__name__} is not JSON serializable')
+# MAGIC         
+# MAGIC         return json.dumps(obj, indent=indent, default=default_handler)
+# MAGIC     
 # MAGIC     def generate_summary(self, state: AgentState) -> str:
 # MAGIC         """
 # MAGIC         Generate a natural language summary of the workflow execution.
@@ -1490,7 +1515,7 @@ print("="*80)
 # MAGIC **Rows:** {row_count} rows returned
 # MAGIC **Columns:** {', '.join(columns[:5])}{'...' if len(columns) > 5 else ''}
 # MAGIC
-# MAGIC **Result:** {json.dumps(result, indent=2)}
+# MAGIC **Result:** {self._safe_json_dumps(result, indent=2)}
 # MAGIC """
 # MAGIC                 elif execution_error:
 # MAGIC                     prompt += f"""**Execution:** ❌ Failed

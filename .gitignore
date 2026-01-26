@@ -3,3 +3,7 @@
 .env
 .venv
 **/__pycache__/**
+
+# Agent files (auto-generated from notebook)
+agent.py
+Notebooks/agent.py
