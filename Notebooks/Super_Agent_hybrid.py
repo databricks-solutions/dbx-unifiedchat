@@ -36,7 +36,7 @@ from config import get_config
 # Load configuration from .env
 # NOTE: If you change .env file, call get_config(reload=True) to reload
 # Example: config = get_config(reload=True)
-config = get_config()
+config = get_config(reload=True)
 
 # Extract configuration values
 CATALOG = config.unity_catalog.catalog_name
@@ -315,7 +315,7 @@ print("="*80)
 
 # COMMAND ----------
 
-# DBTITLE 1,%%writefile agent.py
+# DBTITLE 1,📝💾%%writefile agent.py
 # MAGIC %%writefile agent.py
 # MAGIC """
 # MAGIC Super Agent (Hybrid Architecture) - Multi-Agent System Orchestrator
@@ -583,7 +583,7 @@ print("="*80)
 # MAGIC     messages: Annotated[List, operator.add]
 # MAGIC     
 # MAGIC print("✓ Agent State defined with explicit fields for observability")
-# MAGIC 
+# MAGIC
 # MAGIC # State Reset Template
 # MAGIC # All per-query execution fields that should be cleared for each new query.
 # MAGIC # This prevents stale data from persisting across queries when using CheckpointSaver.
@@ -618,15 +618,15 @@ print("="*80)
 # MAGIC     # Summary (per-query)
 # MAGIC     "final_summary": None,
 # MAGIC }
-# MAGIC 
+# MAGIC
 # MAGIC # NOTE: Fields intentionally NOT in template (managed elsewhere):
 # MAGIC # - clarification_count: Reset by is_new_question() in clarification_node
 # MAGIC # - last_clarified_query: Used for intent detection, persists
 # MAGIC # - messages: Managed by operator.add in AgentState, persists
 # MAGIC # - user_id, thread_id, user_preferences: Identity/context, persists
-# MAGIC 
+# MAGIC
 # MAGIC print("✓ State reset template defined for per-query field clearing")
-# MAGIC 
+# MAGIC
 # MAGIC class ClarificationAgent:
 # MAGIC     """
 # MAGIC     Agent responsible for checking query clarity.
@@ -1609,7 +1609,7 @@ print("="*80)
 # MAGIC         return self.generate_summary(state)
 # MAGIC
 # MAGIC print("✓ ResultSummarizeAgent class defined")
-# MAGIC 
+# MAGIC
 # MAGIC def is_new_question(current_query: str, messages: List, llm: Runnable) -> bool:
 # MAGIC     """
 # MAGIC     Detect if current query is a new question vs follow-up/refinement.
@@ -1669,7 +1669,7 @@ print("="*80)
 # MAGIC         return True  # Default to new question if detection fails
 # MAGIC
 # MAGIC print("✓ Intent detection function defined")
-# MAGIC 
+# MAGIC
 # MAGIC def clarification_node(state: AgentState) -> dict:
 # MAGIC     """
 # MAGIC     Clarification node wrapping ClarificationAgent class.
@@ -3021,6 +3021,7 @@ This will show agent thinking, tool calls, intermediate results, and routing dec
 # print("All agent execution steps are now visible to users in real-time.")
 # print(f"{'='*80}\n")
 
+
 # COMMAND ----------
 
 # DBTITLE 1,Test Agent with Short-term Memory (multiple chat rounds)
@@ -3030,33 +3031,84 @@ This works across distributed Model Serving instances via CheckpointSaver.
 """
 
 # Example 1: Start a new conversation
-# thread_id = str(uuid4())
-# print(f"Starting conversation with thread_id: {thread_id}")
-# 
-# from mlflow.types.responses import ResponsesAgentRequest
-# 
-# # First message
-# result1 = AGENT.predict(ResponsesAgentRequest(
-#     input=[{"role": "user", "content": "Show me patient demographics"}],
-#     custom_inputs={"thread_id": thread_id}
-# ))
-# print("\n--- Response 1 ---")
-# print(result1.model_dump(exclude_none=True))
-# 
-# # Second message - agent should remember context
-# result2 = AGENT.predict(ResponsesAgentRequest(
-#     input=[{"role": "user", "content": "Filter by age > 50"}],
-#     custom_inputs={"thread_id": thread_id}  # Same thread_id
-# ))
-# print("\n--- Response 2 (with context) ---")
-# print(result2.model_dump(exclude_none=True))
-# 
-# # Third message without thread_id - fresh conversation
-# result3 = AGENT.predict(ResponsesAgentRequest(
-#     input=[{"role": "user", "content": "What was I asking about?"}]
-# ))
-# print("\n--- Response 3 (no context) ---")
-# print(result3.model_dump(exclude_none=True))
+thread_id = str(uuid4())
+print(f"Starting conversation with thread_id: {thread_id}")
+
+from mlflow.types.responses import ResponsesAgentRequest
+
+# First message
+result1 = AGENT.predict(ResponsesAgentRequest(
+    input=[{"role": "user", "content": "Show me patient demographics"}],
+    custom_inputs={"thread_id": thread_id}
+))
+print("\n--- Response 1 ---")
+print(result1.model_dump(exclude_none=True))
+
+# Second message - agent should remember context
+result2 = AGENT.predict(ResponsesAgentRequest(
+    input=[{"role": "user", "content": "Filter by age > 50"}],
+    custom_inputs={"thread_id": thread_id}  # Same thread_id
+))
+print("\n--- Response 2 (with context) ---")
+print(result2.model_dump(exclude_none=True))
+
+# Third message without thread_id - fresh conversation
+result3 = AGENT.predict(ResponsesAgentRequest(
+    input=[{"role": "user", "content": "What was I asking about?"}]
+))
+print("\n--- Response 3 (no context) ---")
+print(result3.model_dump(exclude_none=True))
+
+# COMMAND ----------
+
+# Second message - agent should remember context
+result2 = AGENT.predict(ResponsesAgentRequest(
+    input=[{"role": "user", "content": "Filter patients where current age (as of today) is greater than 50"}],
+    custom_inputs={"thread_id": thread_id}  # Same thread_id
+))
+print("\n--- Response 2 (with context) ---")
+print(result2.model_dump(exclude_none=True))
+
+# COMMAND ----------
+
+# Second message - agent should remember context
+result2 = AGENT.predict(ResponsesAgentRequest(
+    input=[{"role": "user", "content": "What is the average cost of medical claims for patients diagnosed with diabetes, broken down by insurance payer type and patient age group?"}],
+    custom_inputs={"thread_id": thread_id}  # Same thread_id
+))
+print("\n--- Response 2 (with context) ---")
+print(result2.model_dump(exclude_none=True))
+
+# COMMAND ----------
+
+thread_id = str(uuid4)
+# new message -
+result2 = AGENT.predict(ResponsesAgentRequest(
+    input=[{"role": "user", "content": "What is the average cost of medical claims for patients diagnosed with diabetes, broken down by insurance payer type and patient age group? Use Genie Route"}],
+    custom_inputs={"thread_id": thread_id}  # new thread_id
+))
+print("\n--- Response 2 (with context) ---")
+print(result2.model_dump(exclude_none=True))
+
+# COMMAND ----------
+
+    # "clarification_options": [
+    #     "Use procedure-level charges (line_charge or line_allowed from procedure table) linked to medical claims with diabetes diagnoses, joined with enrollment data for age calculation",
+    #     "Use total claim costs by aggregating all procedure line items per claim for diabetes patients, broken down by pay_type from medical_claim and age groups from enrollment",
+    #     "Clarify which cost metric you need: line charges, allowed amounts, or paid amounts, and confirm if you want medical claims only or include pharmacy costs"
+    # ]
+follow_up_msg = """
+1. line allowed
+2. by medical claim
+"""
+# clarify message -
+result2 = AGENT.predict(ResponsesAgentRequest(
+    input=[{"role": "user", "content": f"{follow_up_msg}"}],
+    custom_inputs={"thread_id": thread_id}  # new thread_id
+))
+print("\n--- Response 2 (with context) ---")
+print(result2.model_dump(exclude_none=True))
+
 
 # COMMAND ----------
 
@@ -3097,44 +3149,7 @@ Uses DatabricksStore with semantic search to find relevant memories.
 
 # COMMAND ----------
 
-# DBTITLE 1,🔄 Test agent.py (Recommended Workflow)
-# Import agent from agent.py (tests the deployment file!)
-%run agent.py
-"""
-RECOMMENDED WORKFLOW:
-1. Edit agent.py directly (use IDE, get autocomplete, syntax highlighting)
-2. Run this cell to test the agent.py file
-3. Make any revisions needed in agent.py
-4. Re-run this cell to test
-5. When ready, proceed to deployment
-
-ALTERNATIVE: If you prefer to develop in the notebook, see SYNC_WORKFLOW.md
-for instructions on using %%writefile to sync notebook → agent.py
-
-This cell imports AGENT from agent.py, so you're testing the exact code
-that will be deployed!
-"""
-
-
-
-print("\n" + "="*80)
-print("✅ AGENT LOADED FROM agent.py")
-print("="*80)
-print("This is the EXACT code that will be deployed to Model Serving!")
-print("\nFeatures:")
-print("  ✓ Short-term memory (CheckpointSaver)")
-print("  ✓ Long-term memory (DatabricksStore)")
-print("  ✓ ModelConfig for configuration")
-print("  ✓ Distributed serving ready")
-print("\nTo make changes:")
-print("  1. Edit ../agent.py")
-print("  2. Re-run this cell to test")
-print("  3. Deploy when ready!")
-print("="*80)
-
-# COMMAND ----------
-
-# DBTITLE 1,Helper: Find All Required Resources for Deployment
+# DBTITLE 1,📡🔍Helper: Find All Required Resources for Deployment
 """
 Run this helper to automatically discover all resources needed for deployment.
 This ensures you don't miss any Genie spaces, tables, or UC functions.
@@ -3224,7 +3239,7 @@ print("="*80)
 
 # COMMAND ----------
 
-# DBTITLE 1,Deploy Agent to Model Serving with Memory Support
+# DBTITLE 1,🚀🤖Deploy Agent to Model Serving with Memory Support
 """
 Register and deploy the agent with Lakebase resources for automatic authentication.
 This enables the agent to access Lakebase in Model Serving without manual credentials.
@@ -3237,6 +3252,8 @@ Ref: https://docs.databricks.com/aws/en/generative-ai/agent-framework/agent-auth
 """
 
 # Step 1: Log model with resources
+import mlflow
+import logging
 from mlflow.models.resources import (
     DatabricksServingEndpoint,
     DatabricksLakebase,
