@@ -356,6 +356,30 @@ print("="*80)
 # MAGIC     CheckpointSaver,  # For short-term memory (distributed serving)
 # MAGIC     DatabricksStore,  # For long-term memory (user preferences)
 # MAGIC )
+# MAGIC
+# MAGIC # Import conversation management modules
+# MAGIC import sys
+# MAGIC from pathlib import Path
+# MAGIC # Add kumc_poc to path if not already present
+# MAGIC kumc_poc_path = str(Path(__file__).parent.parent / "kumc_poc") if '__file__' in globals() else "../kumc_poc"
+# MAGIC if kumc_poc_path not in sys.path:
+# MAGIC     sys.path.insert(0, kumc_poc_path)
+# MAGIC
+# MAGIC from kumc_poc.conversation_models import (
+# MAGIC     ConversationTurn,
+# MAGIC     ClarificationRequest,
+# MAGIC     IntentMetadata,
+# MAGIC     create_conversation_turn,
+# MAGIC     create_clarification_request,
+# MAGIC     find_turn_by_id,
+# MAGIC     format_clarification_message,
+# MAGIC     get_reset_state_template
+# MAGIC )
+# MAGIC from kumc_poc.intent_detection_service import (
+# MAGIC     IntentDetectionAgent,
+# MAGIC     create_intent_metadata_from_result,
+# MAGIC     should_skip_clarification_for_intent
+# MAGIC )
 # MAGIC from databricks_langchain.genie import GenieAgent
 # MAGIC from langchain.agents import create_agent
 # MAGIC from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, AIMessageChunk
@@ -588,40 +612,37 @@ print("="*80)
 # MAGIC # All per-query execution fields that should be cleared for each new query.
 # MAGIC # This prevents stale data from persisting across queries when using CheckpointSaver.
 # MAGIC # Used by both Model Serving (run_agent) and local testing (invoke_super_agent_hybrid).
-# MAGIC RESET_STATE_TEMPLATE = {
-# MAGIC     # Clarification fields (per-query)
-# MAGIC     "clarification_needed": None,
-# MAGIC     "clarification_options": None,
-# MAGIC     "combined_query_context": None,
+# MAGIC # Use the shared reset state template from conversation_models
+# MAGIC RESET_STATE_TEMPLATE = get_reset_state_template()
+# MAGIC
+# MAGIC # NOTE: Turn-based fields (current_turn, turn_history, intent_metadata) are NOT reset
+# MAGIC # They are managed by intent_detection_node and persist across queries within a conversation
+# MAGIC
+# MAGIC # For reference, the template now includes:
+# MAGIC # RESET_STATE_TEMPLATE = {
+# MAGIC     # Clarification fields (per-query) - SIMPLIFIED from 7 fields to 2
+# MAGIC     "pending_clarification": None,
+# MAGIC     "question_clear": False,
 # MAGIC     
 # MAGIC     # Planning fields (per-query)
-# MAGIC     "plan": None,
-# MAGIC     "sub_questions": None,
-# MAGIC     "requires_multiple_spaces": None,
-# MAGIC     "relevant_space_ids": None,
-# MAGIC     "relevant_spaces": None,
-# MAGIC     "vector_search_relevant_spaces_info": None,
-# MAGIC     "requires_join": None,
-# MAGIC     "join_strategy": None,
-# MAGIC     "execution_plan": None,
-# MAGIC     "genie_route_plan": None,
-# MAGIC     
-# MAGIC     # SQL fields (per-query)
-# MAGIC     "sql_query": None,
-# MAGIC     "sql_synthesis_explanation": None,
-# MAGIC     "synthesis_error": None,
-# MAGIC     
-# MAGIC     # Execution fields (per-query)
-# MAGIC     "execution_result": None,
-# MAGIC     "execution_error": None,
-# MAGIC     
-# MAGIC     # Summary (per-query)
-# MAGIC     "final_summary": None,
-# MAGIC }
+# MAGIC     #"plan": None,
+# MAGIC     #"sub_questions": None,
+# MAGIC     # ... (rest defined in conversation_models.get_reset_state_template())
+# MAGIC # }
 # MAGIC
 # MAGIC # NOTE: Fields intentionally NOT in template (managed elsewhere):
-# MAGIC # - clarification_count: Reset by is_new_question() in clarification_node
-# MAGIC # - last_clarified_query: Used for intent detection, persists
+# MAGIC # NEW TURN-BASED FIELDS (persist across queries):
+# MAGIC # - current_turn: Set by intent_detection_node for each query
+# MAGIC # - turn_history: Accumulated by reducer, persists across conversation
+# MAGIC # - intent_metadata: Set by intent_detection_node for each query
+# MAGIC #
+# MAGIC # DEPRECATED FIELDS (removed):
+# MAGIC # - clarification_count: Replaced by adaptive strategy + turn history
+# MAGIC # - last_clarified_query: Replaced by turn_history with pending_clarification
+# MAGIC # - combined_query_context: Replaced by current_turn.context_summary
+# MAGIC # - clarification_needed, clarification_options: Replaced by pending_clarification
+# MAGIC #
+# MAGIC # PERSISTENT FIELDS (not reset):
 # MAGIC # - messages: Managed by operator.add in AgentState, persists
 # MAGIC # - user_id, thread_id, user_preferences: Identity/context, persists
 # MAGIC
@@ -1610,123 +1631,187 @@ print("="*80)
 # MAGIC
 # MAGIC print("✓ ResultSummarizeAgent class defined")
 # MAGIC
-# MAGIC def find_most_recent_clarification_context(messages: List) -> tuple[str | None, str | None]:
+# MAGIC # ==============================================================================
+# MAGIC # DEPRECATED FUNCTIONS (Replaced by Intent Detection Service)
+# MAGIC # ==============================================================================
+# MAGIC # The following functions have been replaced by the IntentDetectionAgent:
+# MAGIC # - find_most_recent_clarification_context() → Intent detection handles this
+# MAGIC # - is_new_question() → Intent detection provides intent_type classification
+# MAGIC #
+# MAGIC # These have been removed to simplify the codebase. See:
+# MAGIC # - kumc_poc/intent_detection_service.py for the replacement
+# MAGIC # - kumc_poc/conversation_models.py for the new data models
+# MAGIC # ==============================================================================
+# MAGIC
+# MAGIC # ==============================================================================
+# MAGIC # Intent Detection Node (NEW - First-Class Service)
+# MAGIC # ==============================================================================
+# MAGIC
+# MAGIC def intent_detection_node(state: AgentState) -> dict:
 # MAGIC     """
-# MAGIC     Find the most recent clarification context from message history.
+# MAGIC     Dedicated node for intent classification and context building.
 # MAGIC     
-# MAGIC     This helper function extracts the pattern used to find:
-# MAGIC     1. The HumanMessage query that triggered the most recent clarification
-# MAGIC     2. The AI clarification message itself
+# MAGIC     This runs BEFORE clarification to inform all downstream logic including:
+# MAGIC     - Clarification decisions (skip for clarification_response)
+# MAGIC     - Planning strategies (different approaches for refinements vs new questions)
+# MAGIC     - Business logic (billing, analytics, routing)
 # MAGIC     
-# MAGIC     Pattern: Find the last AI clarification message, then find the HumanMessage
-# MAGIC     that came RIGHT BEFORE it. This ensures we get the correct question for
-# MAGIC     the current clarification flow, not an old one from earlier in the thread.
+# MAGIC     Returns: Dictionary with turn tracking and intent metadata updates
+# MAGIC     """
+# MAGIC     from langgraph.config import get_stream_writer
 # MAGIC     
-# MAGIC     OPTIMIZED: Single-pass algorithm that tracks index during iteration,
-# MAGIC     eliminating redundant index search and reducing from 3 passes to ~1.5 passes.
+# MAGIC     writer = get_stream_writer()
+# MAGIC     
+# MAGIC     print("\n" + "="*80)
+# MAGIC     print("🎯 INTENT DETECTION AGENT")
+# MAGIC     print("="*80)
+# MAGIC     
+# MAGIC     # Get current query and conversation context
+# MAGIC     messages = state.get("messages", [])
+# MAGIC     current_query = messages[-1].content if messages else ""
+# MAGIC     turn_history = state.get("turn_history", [])
+# MAGIC     
+# MAGIC     writer({"type": "agent_start", "agent": "intent_detection", "query": current_query})
+# MAGIC     
+# MAGIC     # Initialize Intent Detection Agent
+# MAGIC     llm = ChatDatabricks(endpoint=LLM_ENDPOINT_CLARIFICATION)
+# MAGIC     intent_agent = IntentDetectionAgent(llm)
+# MAGIC     
+# MAGIC     # Detect intent
+# MAGIC     intent_result = intent_agent.detect_intent(
+# MAGIC         current_query=current_query,
+# MAGIC         turn_history=turn_history,
+# MAGIC         messages=messages
+# MAGIC     )
+# MAGIC     
+# MAGIC     # Create conversation turn
+# MAGIC     turn = create_conversation_turn(
+# MAGIC         query=current_query,
+# MAGIC         intent_type=intent_result["intent_type"],
+# MAGIC         parent_turn_id=intent_result.get("parent_turn_id"),
+# MAGIC         context_summary=intent_result.get("context_summary"),
+# MAGIC         triggered_clarification=False,  # Will be updated by clarification node
+# MAGIC         metadata=intent_result.get("metadata", {})
+# MAGIC     )
+# MAGIC     
+# MAGIC     # Create intent metadata
+# MAGIC     intent_metadata = create_intent_metadata_from_result(intent_result)
+# MAGIC     
+# MAGIC     # Emit intent detection event
+# MAGIC     writer({
+# MAGIC         "type": "intent_detected",
+# MAGIC         "intent_type": intent_result["intent_type"],
+# MAGIC         "confidence": intent_result["confidence"],
+# MAGIC         "reasoning": intent_result["reasoning"],
+# MAGIC         "topic_change_score": intent_result["topic_change_score"],
+# MAGIC         "complexity": intent_metadata["complexity"]
+# MAGIC     })
+# MAGIC     
+# MAGIC     print(f"✓ Intent detected: {intent_result['intent_type']}")
+# MAGIC     print(f"  Confidence: {intent_result['confidence']:.2f}")
+# MAGIC     print(f"  Topic Change: {intent_result['topic_change_score']:.2f}")
+# MAGIC     print(f"  Complexity: {intent_metadata['complexity']}")
+# MAGIC     print(f"  Context Summary: {intent_result.get('context_summary', 'N/A')[:100]}...")
+# MAGIC     
+# MAGIC     # Return state updates
+# MAGIC     return {
+# MAGIC         "current_turn": turn,
+# MAGIC         "turn_history": [turn],  # Reducer will append
+# MAGIC         "intent_metadata": intent_metadata,
+# MAGIC         "next_agent": "clarification",
+# MAGIC         "messages": [
+# MAGIC             SystemMessage(content=f"Intent detected: {intent_result['intent_type']} (confidence: {intent_result['confidence']:.2f})")
+# MAGIC         ]
+# MAGIC     }
+# MAGIC
+# MAGIC print("✓ Intent detection node defined")
+# MAGIC
+# MAGIC # ==============================================================================
+# MAGIC # Adaptive Clarification Strategy (NEW)
+# MAGIC # ==============================================================================
+# MAGIC
+# MAGIC def adaptive_clarification_strategy(
+# MAGIC     clarity_result: Dict[str, Any],
+# MAGIC     intent_metadata: IntentMetadata,
+# MAGIC     turn_history: List[ConversationTurn]
+# MAGIC ) -> bool:
+# MAGIC     """
+# MAGIC     Decide whether to ask for clarification based on multiple factors.
+# MAGIC     
+# MAGIC     No hard count limits - adaptive based on context, query complexity,
+# MAGIC     recent clarification frequency, and business rules.
 # MAGIC     
 # MAGIC     Args:
-# MAGIC         messages: List of message objects from state
+# MAGIC         clarity_result: Result from ClarificationAgent.check_clarity()
+# MAGIC         intent_metadata: Metadata from intent detection
+# MAGIC         turn_history: List of recent conversation turns
 # MAGIC     
 # MAGIC     Returns:
-# MAGIC         Tuple of (human_query_content, ai_clarification_content)
-# MAGIC         Returns (None, None) if no clarification context found
-# MAGIC     
-# MAGIC     Performance: O(n) worst case, typically much faster due to early exits.
-# MAGIC     For long message queues (1000+ messages), this is ~50% faster than the
-# MAGIC     previous implementation.
+# MAGIC         True if clarification should be requested, False otherwise
 # MAGIC     """
-# MAGIC     from langchain_core.messages import AIMessage, HumanMessage
+# MAGIC     print("\n🤔 Evaluating adaptive clarification strategy...")
 # MAGIC     
-# MAGIC     # OPTIMIZED: Single reverse pass - track index while finding AI clarification message
-# MAGIC     # This eliminates the redundant second pass to find the index
-# MAGIC     last_ai_clarification_idx = None
-# MAGIC     last_ai_clarification_content = None
+# MAGIC     # Factor 1: Ambiguity severity (from clarity check)
+# MAGIC     ambiguity_score = clarity_result.get("ambiguity_score", 0.5)
+# MAGIC     if ambiguity_score < 0.3:
+# MAGIC         print(f"  ✓ Factor 1: Low ambiguity ({ambiguity_score:.2f}) - skip clarification")
+# MAGIC         return False
+# MAGIC     print(f"  • Factor 1: Ambiguity score = {ambiguity_score:.2f} (threshold: 0.3)")
 # MAGIC     
-# MAGIC     for i in range(len(messages) - 1, -1, -1):
-# MAGIC         msg = messages[i]
-# MAGIC         if isinstance(msg, AIMessage):
-# MAGIC             # Cache content.lower() to avoid repeated string operations
-# MAGIC             content_lower = msg.content.lower()
-# MAGIC             if "clarification" in content_lower or "I need clarification" in msg.content:
-# MAGIC                 last_ai_clarification_idx = i
-# MAGIC                 last_ai_clarification_content = msg.content
-# MAGIC                 break  # Early exit: found the most recent clarification
+# MAGIC     # Factor 2: Recent clarification frequency (don't annoy users)
+# MAGIC     recent_turns = turn_history[-5:] if len(turn_history) >= 5 else turn_history
+# MAGIC     recent_clarifications = sum(1 for t in recent_turns if t.get("triggered_clarification"))
+# MAGIC     if recent_clarifications >= 2:
+# MAGIC         print(f"  ✓ Factor 2: Too many recent clarifications ({recent_clarifications}/5) - skip")
+# MAGIC         return False
+# MAGIC     print(f"  • Factor 2: Recent clarifications = {recent_clarifications}/5 (max: 2)")
 # MAGIC     
-# MAGIC     if last_ai_clarification_idx is None:
-# MAGIC         return (None, None)
+# MAGIC     # Factor 3: Query complexity (simple queries don't need clarification)
+# MAGIC     complexity = intent_metadata.get("complexity", "moderate")
+# MAGIC     if complexity == "simple":
+# MAGIC         print(f"  ✓ Factor 3: Simple query - skip clarification")
+# MAGIC         return False
+# MAGIC     print(f"  • Factor 3: Complexity = {complexity}")
 # MAGIC     
-# MAGIC     # Find the last HumanMessage BEFORE the clarification message
-# MAGIC     # This is a partial reverse search from the clarification index
-# MAGIC     for i in range(last_ai_clarification_idx - 1, -1, -1):
-# MAGIC         if isinstance(messages[i], HumanMessage):
-# MAGIC             # Early exit: found the HumanMessage, return immediately
-# MAGIC             return (messages[i].content, last_ai_clarification_content)
+# MAGIC     # Factor 4: Confidence in best guess
+# MAGIC     best_guess_confidence = clarity_result.get("best_guess_confidence", 0.0)
+# MAGIC     if best_guess_confidence > 0.7:
+# MAGIC         print(f"  ✓ Factor 4: High confidence in best guess ({best_guess_confidence:.2f}) - skip")
+# MAGIC         return False
+# MAGIC     print(f"  • Factor 4: Best guess confidence = {best_guess_confidence:.2f} (threshold: 0.7)")
 # MAGIC     
-# MAGIC     # No HumanMessage found before clarification (edge case)
-# MAGIC     return (None, last_ai_clarification_content)
+# MAGIC     # Factor 5: Business rules (extensible for domain-specific needs)
+# MAGIC     domain = intent_metadata.get("domain", "")
+# MAGIC     urgent_domains = ["urgent_alerts", "simple_lookups", "operational_queries"]
+# MAGIC     if domain in urgent_domains:
+# MAGIC         print(f"  ✓ Factor 5: Urgent domain ({domain}) - skip clarification")
+# MAGIC         return False
+# MAGIC     print(f"  • Factor 5: Domain = {domain} (not urgent)")
+# MAGIC     
+# MAGIC     # Factor 6: Intent type (clarification responses should never trigger clarification)
+# MAGIC     intent_type = intent_metadata.get("intent_type", "")
+# MAGIC     if should_skip_clarification_for_intent(intent_type):
+# MAGIC         print(f"  ✓ Factor 6: Intent type ({intent_type}) should skip clarification")
+# MAGIC         return False
+# MAGIC     
+# MAGIC     print(f"  ✅ All factors passed - request clarification")
+# MAGIC     return True
 # MAGIC
-# MAGIC print("✓ Helper function for clarification context extraction defined")
+# MAGIC print("✓ Adaptive clarification strategy defined")
 # MAGIC
-# MAGIC def is_new_question(current_query: str, messages: List, llm: Runnable) -> bool:
-# MAGIC     """
-# MAGIC     Detect if current query is a new question vs follow-up/refinement.
-# MAGIC     Uses LLM to make intelligent determination based on conversation context.
-# MAGIC     
-# MAGIC     Args:
-# MAGIC         current_query: The current user query
-# MAGIC         messages: Message history from state
-# MAGIC         llm: LLM instance for intent detection
-# MAGIC     
-# MAGIC     Returns:
-# MAGIC         True if new question (reset clarification), False if follow-up (keep count)
-# MAGIC     """
-# MAGIC     # Find the MOST RECENT query that received clarification using unified helper
-# MAGIC     last_clarified_query, _ = find_most_recent_clarification_context(messages)
-# MAGIC     
-# MAGIC     if not last_clarified_query:
-# MAGIC         return True  # No previous clarification found, treat as new question
-# MAGIC     
-# MAGIC     # Use LLM to detect intent change
-# MAGIC     prompt = f"""Compare these two user queries and determine if they represent different questions:
-# MAGIC
-# MAGIC Previous Query: {last_clarified_query}
-# MAGIC
-# MAGIC Current Query: {current_query}
-# MAGIC
-# MAGIC Is the current query:
-# MAGIC A) NEW QUESTION - A completely different topic, question, or intent
-# MAGIC B) FOLLOW-UP - A refinement, clarification, drill-down, or continuation of the previous query
-# MAGIC
-# MAGIC Examples:
-# MAGIC - "Show patient data" → "Show medication costs" = NEW QUESTION (different topics)
-# MAGIC - "Show patient data" → "Can you break that down by age?" = FOLLOW-UP (refining same topic)
-# MAGIC - "Show active members" → "What about inactive ones?" = FOLLOW-UP (related query)
-# MAGIC - "Show claims data" → "Show provider metrics" = NEW QUESTION (different data domain)
-# MAGIC
-# MAGIC Return ONLY "NEW" or "FOLLOWUP" with no other text."""
-# MAGIC     
-# MAGIC     try:
-# MAGIC         response = llm.invoke(prompt).content.strip().upper()
-# MAGIC         is_new = "NEW" in response
-# MAGIC         print(f"   Intent Detection: {'NEW QUESTION' if is_new else 'FOLLOW-UP'}")
-# MAGIC         return is_new
-# MAGIC     except Exception as e:
-# MAGIC         print(f"⚠ Intent detection failed: {e}, defaulting to NEW question")
-# MAGIC         return True  # Default to new question if detection fails
-# MAGIC
-# MAGIC print("✓ Intent detection function defined")
+# MAGIC # ==============================================================================
+# MAGIC # Refactored Clarification Node (Turn-Based Context)
+# MAGIC # ==============================================================================
 # MAGIC
 # MAGIC def clarification_node(state: AgentState) -> dict:
 # MAGIC     """
-# MAGIC     Clarification node wrapping ClarificationAgent class.
-# MAGIC     Combines OOP modularity with explicit state management.
+# MAGIC     Simplified clarification node using turn-based context.
 # MAGIC     
-# MAGIC     Handles up to 1 clarification request. If user provides clarification,
-# MAGIC     incorporates it and proceeds to planning.
-# MAGIC     
-# MAGIC     SIMPLIFIED: Auto-detects clarification responses from messages array.
-# MAGIC     No need to manually pass state via custom_inputs.
+# MAGIC     IMPROVEMENTS:
+# MAGIC     - Uses current_turn instead of parsing messages
+# MAGIC     - No clarification_count tracking (uses adaptive strategy)
+# MAGIC     - Intent-aware (skips clarification for clarification_response)
+# MAGIC     - Unified ClarificationRequest object (no 7+ separate fields)
 # MAGIC     
 # MAGIC     Returns: Dictionary with only the state updates (for clean MLflow traces)
 # MAGIC     """
@@ -1738,146 +1823,146 @@ print("="*80)
 # MAGIC     print("🔍 CLARIFICATION AGENT")
 # MAGIC     print("="*80)
 # MAGIC     
-# MAGIC     # Emit agent start event
-# MAGIC     query = state["original_query"]
+# MAGIC     # Get current turn and intent from state (set by intent_detection_node)
+# MAGIC     current_turn = state.get("current_turn")
+# MAGIC     if not current_turn:
+# MAGIC         # Fallback for backward compatibility
+# MAGIC         print("⚠ No current_turn found, falling back to legacy behavior")
+# MAGIC         query = state.get("original_query", "")
+# MAGIC         current_turn = {"query": query, "intent_type": "new_question"}
+# MAGIC     
+# MAGIC     query = current_turn["query"]
+# MAGIC     intent_type = current_turn.get("intent_type", "new_question")
+# MAGIC     context_summary = current_turn.get("context_summary")
+# MAGIC     
 # MAGIC     writer({"type": "agent_start", "agent": "clarification", "query": query})
 # MAGIC     
-# MAGIC     # Get messages array from state
-# MAGIC     messages = state.get("messages", [])
+# MAGIC     print(f"Query: {query}")
+# MAGIC     print(f"Intent: {intent_type}")
 # MAGIC     
-# MAGIC     # Initialize clarification count if not present
-# MAGIC     clarification_count = state.get("clarification_count", 0)
-# MAGIC     
-# MAGIC     # INTENT DETECTION: Reset clarification count if this is a new question
-# MAGIC     # This allows each new question to receive clarification while preventing
-# MAGIC     # re-clarification for follow-ups or refinements
-# MAGIC     if clarification_count > 0 and len(messages) > 2:
-# MAGIC         print("🔄 Checking if query is new question or follow-up...")
-# MAGIC         writer({"type": "agent_thinking", "agent": "clarification", "content": "Checking if query is new question or follow-up..."})
-# MAGIC         llm = ChatDatabricks(endpoint=LLM_ENDPOINT_CLARIFICATION)
-# MAGIC         is_new = is_new_question(query, messages, llm)
-# MAGIC         if is_new:
-# MAGIC             print("✓ New question detected - resetting clarification count to 0")
-# MAGIC             writer({"type": "intent_detection", "result": "new_question", "reasoning": "Query is substantially different from previous clarification"})
-# MAGIC             clarification_count = 0
-# MAGIC         else:
-# MAGIC             print(f"✓ Follow-up detected - keeping clarification count at {clarification_count}")
-# MAGIC             writer({"type": "intent_detection", "result": "follow_up", "reasoning": f"Query is a follow-up or refinement (clarification_count={clarification_count})"})
-# MAGIC     
-# MAGIC     # AUTO-DETECT: Check if this is a user response to a previous clarification request
-# MAGIC     # Use unified helper function to find most recent clarification context
-# MAGIC     if len(messages) >= 2:
-# MAGIC         # Get the latest user message
-# MAGIC         latest_user_msg = messages[-1].content if messages else ""
+# MAGIC     # INTENT-AWARE: Skip clarification for clarification responses
+# MAGIC     if intent_type == "clarification_response":
+# MAGIC         print("✓ Intent is clarification_response - skipping clarity check")
+# MAGIC         print(f"  Using context summary from intent detection")
+# MAGIC         writer({"type": "clarification_skipped", "reason": "Intent is clarification_response"})
 # MAGIC         
-# MAGIC         # Use unified helper to find the most recent clarification context
-# MAGIC         original_query, clarification_question = find_most_recent_clarification_context(messages)
-# MAGIC         
-# MAGIC         # Check if we found a clarification context
-# MAGIC         if original_query and clarification_question:
-# MAGIC             print("✓ Auto-detected clarification response from message history")
-# MAGIC             
-# MAGIC             # Build combined query context with structured format
-# MAGIC             combined_context = f"""**Original Query**: {original_query}
-# MAGIC
-# MAGIC **Clarification Question**: {clarification_question}
-# MAGIC
-# MAGIC **User's Answer**: {latest_user_msg}
-# MAGIC
-# MAGIC **Context**: The user was asked for clarification and provided additional information. Use all three pieces of information together to understand the complete intent."""
-# MAGIC             
-# MAGIC             print(f"   Original Query: {original_query}")
-# MAGIC             print(f"   Clarification Question: {clarification_question[:100]}...")
-# MAGIC             print(f"   User Response: {latest_user_msg}")
-# MAGIC             print(f"   ✓ Combined context created for planning agent")
-# MAGIC             
-# MAGIC             # Return only updates (no in-place modifications)
-# MAGIC             return {
-# MAGIC                 "combined_query_context": combined_context,
-# MAGIC                 "question_clear": True,
-# MAGIC                 "next_agent": "planning",
-# MAGIC                 "messages": [
-# MAGIC                     SystemMessage(content=f"User clarification incorporated: {latest_user_msg}\nCombined context created with original query, clarification question, and user answer.")
-# MAGIC                 ]
-# MAGIC             }
+# MAGIC         return {
+# MAGIC             "question_clear": True,
+# MAGIC             "next_agent": "planning",
+# MAGIC             "pending_clarification": None,
+# MAGIC             "messages": [
+# MAGIC                 SystemMessage(content=f"Clarification response processed. Context: {context_summary[:200]}...")
+# MAGIC             ]
+# MAGIC         }
 # MAGIC     
-# MAGIC     # FIRST-TIME: No clarification response detected, check if query needs clarification
+# MAGIC     # Check if query needs clarification
 # MAGIC     llm = ChatDatabricks(endpoint=LLM_ENDPOINT_CLARIFICATION)
 # MAGIC     
-# MAGIC     # Use OOP agent with clarification count
-# MAGIC     # Load context fresh from table (no redeployment needed for updates)
 # MAGIC     writer({"type": "agent_thinking", "agent": "clarification", "content": "Analyzing query clarity..."})
 # MAGIC     clarification_agent = ClarificationAgent.from_table(llm, TABLE_NAME)
-# MAGIC     clarity_result = clarification_agent(query, clarification_count)
+# MAGIC     
+# MAGIC     # Call clarity check WITHOUT clarification_count (no longer needed)
+# MAGIC     clarity_result = clarification_agent.check_clarity(query, clarification_count=0)
 # MAGIC     
 # MAGIC     # Prepare state updates (don't modify state in-place)
 # MAGIC     question_clear = clarity_result.get("question_clear", True)
 # MAGIC     clarification_needed = clarity_result.get("clarification_needed")
-# MAGIC     clarification_options = clarity_result.get("clarification_options")
+# MAGIC     clarification_options = clarity_result.get("clarification_options", [])
 # MAGIC     
 # MAGIC     # Emit clarity analysis result
 # MAGIC     writer({"type": "clarity_analysis", "clear": question_clear, "reasoning": clarification_needed or "Query is clear and answerable"})
 # MAGIC     
-# MAGIC     # Build updates dictionary
-# MAGIC     updates = {
-# MAGIC         "question_clear": question_clear,
-# MAGIC         "clarification_needed": clarification_needed,
-# MAGIC         "clarification_options": clarification_options,
-# MAGIC         "messages": []  # Will append messages to this list
-# MAGIC     }
-# MAGIC     
 # MAGIC     if question_clear:
 # MAGIC         print("✓ Query is clear - proceeding to planning")
-# MAGIC         updates["next_agent"] = "planning"
-# MAGIC         # No clarification needed, so combined context is just the original query
-# MAGIC         updates["combined_query_context"] = state["original_query"]
-# MAGIC     else:
-# MAGIC         print("⚠ Query needs clarification (attempt 1 of 1)")
-# MAGIC         print(f"   Reason: {clarification_needed}")
-# MAGIC         if clarification_options:
-# MAGIC             print("   Options:")
-# MAGIC             for i, opt in enumerate(clarification_options, 1):
-# MAGIC                 print(f"     {i}. {opt}")
 # MAGIC         
-# MAGIC         # Increment clarification count and track this query
-# MAGIC         updates["clarification_count"] = clarification_count + 1
-# MAGIC         updates["last_clarified_query"] = query  # Track this query for intent detection
-# MAGIC         
-# MAGIC         # Route to END to show clarification request (routing controlled by route_after_clarification)
-# MAGIC         # The actual routing is handled by the conditional edge which checks question_clear flag
-# MAGIC         
-# MAGIC         # Build and store clarification message
-# MAGIC         clarification_message = (
-# MAGIC             f"I need clarification: {clarification_needed}\n\n"
-# MAGIC             f"Please choose one of the following options or provide your own clarification:\n"
-# MAGIC         )
-# MAGIC         if clarification_options:
-# MAGIC             for i, opt in enumerate(clarification_options, 1):
-# MAGIC                 clarification_message += f"{i}. {opt}\n"
-# MAGIC         
-# MAGIC         # Store the clarification message
-# MAGIC         updates["clarification_message"] = clarification_message
-# MAGIC         
-# MAGIC         # Add AI message
-# MAGIC         updates["messages"].append(
-# MAGIC             AIMessage(content=clarification_message)
-# MAGIC         )
+# MAGIC         return {
+# MAGIC             "question_clear": True,
+# MAGIC             "next_agent": "planning",
+# MAGIC             "pending_clarification": None,
+# MAGIC             "messages": [
+# MAGIC                 SystemMessage(content=f"Query is clear. Proceeding to planning.")
+# MAGIC             ]
+# MAGIC         }
 # MAGIC     
-# MAGIC     # Add system message
-# MAGIC     updates["messages"].append(
-# MAGIC         SystemMessage(content=f"Clarification result: {json.dumps(clarity_result, indent=2)}")
+# MAGIC     # Query is unclear - decide if we should ask for clarification using adaptive strategy
+# MAGIC     print("⚠ Query appears unclear - evaluating adaptive strategy...")
+# MAGIC     
+# MAGIC     intent_metadata = state.get("intent_metadata", {})
+# MAGIC     turn_history = state.get("turn_history", [])
+# MAGIC     
+# MAGIC     # Add ambiguity_score and best_guess to clarity_result for adaptive strategy
+# MAGIC     # (These should ideally come from ClarificationAgent, but we'll estimate for now)
+# MAGIC     clarity_result_enhanced = {
+# MAGIC         **clarity_result,
+# MAGIC         "ambiguity_score": 0.8 if not question_clear else 0.2,  # Estimate based on clarity
+# MAGIC         "best_guess": f"Interpreting as: {query}",  # Simple best guess
+# MAGIC         "best_guess_confidence": 0.4  # Low confidence if unclear
+# MAGIC     }
+# MAGIC     
+# MAGIC     should_clarify = adaptive_clarification_strategy(
+# MAGIC         clarity_result=clarity_result_enhanced,
+# MAGIC         intent_metadata=intent_metadata,
+# MAGIC         turn_history=turn_history
 # MAGIC     )
 # MAGIC     
-# MAGIC     return updates
+# MAGIC     if not should_clarify:
+# MAGIC         # Proceed with best-effort interpretation (don't ask for clarification)
+# MAGIC         print("✓ Adaptive strategy: proceeding with best-effort interpretation")
+# MAGIC         writer({"type": "clarification_skipped", "reason": "Adaptive strategy decided to proceed"})
+# MAGIC         
+# MAGIC         return {
+# MAGIC             "question_clear": True,  # Proceed despite ambiguity
+# MAGIC             "next_agent": "planning",
+# MAGIC             "pending_clarification": None,
+# MAGIC             "messages": [
+# MAGIC                 SystemMessage(content=f"Query has some ambiguity but proceeding with best-effort interpretation: {clarity_result_enhanced['best_guess']}")
+# MAGIC             ]
+# MAGIC         }
+# MAGIC     
+# MAGIC     # Request clarification
+# MAGIC     print("✅ Requesting clarification from user")
+# MAGIC     print(f"   Reason: {clarification_needed}")
+# MAGIC     if clarification_options:
+# MAGIC         print("   Options:")
+# MAGIC         for i, opt in enumerate(clarification_options, 1):
+# MAGIC             print(f"     {i}. {opt}")
+# MAGIC     
+# MAGIC     # Create unified ClarificationRequest object
+# MAGIC     clarification_request = create_clarification_request(
+# MAGIC         reason=clarification_needed or "Query needs more specificity",
+# MAGIC         options=clarification_options,
+# MAGIC         turn_id=current_turn["turn_id"],
+# MAGIC         best_guess=clarity_result_enhanced.get("best_guess"),
+# MAGIC         best_guess_confidence=clarity_result_enhanced.get("best_guess_confidence")
+# MAGIC     )
+# MAGIC     
+# MAGIC     # Format clarification message for user
+# MAGIC     clarification_message = format_clarification_message(clarification_request)
+# MAGIC     
+# MAGIC     # Update turn to mark that it triggered clarification
+# MAGIC     current_turn["triggered_clarification"] = True
+# MAGIC     
+# MAGIC     writer({"type": "clarification_requested", "reason": clarification_needed})
+# MAGIC     
+# MAGIC     return {
+# MAGIC         "question_clear": False,
+# MAGIC         "pending_clarification": clarification_request,
+# MAGIC         "current_turn": current_turn,  # Update with triggered_clarification flag
+# MAGIC         "messages": [
+# MAGIC             AIMessage(content=clarification_message),
+# MAGIC             SystemMessage(content=f"Clarification requested for turn {current_turn['turn_id']}")
+# MAGIC         ]
+# MAGIC     }
 # MAGIC
 # MAGIC
 # MAGIC def planning_node(state: AgentState) -> dict:
 # MAGIC     """
-# MAGIC     Planning node wrapping PlanningAgent class.
-# MAGIC     Combines OOP modularity with explicit state management.
+# MAGIC     Planning node wrapping PlanningAgent class using turn-based context.
 # MAGIC     
-# MAGIC     Uses combined_query_context if available (from clarification flow),
-# MAGIC     otherwise uses original_query.
+# MAGIC     IMPROVEMENTS:
+# MAGIC     - Uses current_turn.context_summary (LLM-generated) instead of manual combined_query_context
+# MAGIC     - Intent-aware planning (different strategies for refinements vs new questions)
+# MAGIC     - Clean separation from clarification logic
 # MAGIC     
 # MAGIC     Returns: Dictionary with only the state updates (for clean MLflow traces)
 # MAGIC     """
@@ -1889,17 +1974,33 @@ print("="*80)
 # MAGIC     print("📋 PLANNING AGENT")
 # MAGIC     print("="*80)
 # MAGIC     
-# MAGIC     # Use combined_query_context if available (includes clarification context)
-# MAGIC     # Otherwise fall back to original_query
-# MAGIC     query = state.get("combined_query_context") or state["original_query"]
+# MAGIC     # Get current turn and intent from state
+# MAGIC     current_turn = state.get("current_turn")
+# MAGIC     if not current_turn:
+# MAGIC         # Fallback for backward compatibility
+# MAGIC         print("⚠ No current_turn found, falling back to legacy behavior")
+# MAGIC         query = state.get("original_query", "")
+# MAGIC         intent_type = "new_question"
+# MAGIC         context_summary = None
+# MAGIC     else:
+# MAGIC         query = current_turn["query"]
+# MAGIC         intent_type = current_turn.get("intent_type", "new_question")
+# MAGIC         context_summary = current_turn.get("context_summary")
+# MAGIC     
+# MAGIC     # Use context_summary if available (LLM-generated from intent detection)
+# MAGIC     # This replaces the manual combined_query_context template
+# MAGIC     planning_query = context_summary or query
 # MAGIC     
 # MAGIC     # Emit agent start event
-# MAGIC     writer({"type": "agent_start", "agent": "planning", "query": query[:100]})
+# MAGIC     writer({"type": "agent_start", "agent": "planning", "query": planning_query[:100]})
 # MAGIC     
-# MAGIC     if state.get("combined_query_context"):
-# MAGIC         print("✓ Using combined query context (includes clarification)")
+# MAGIC     print(f"Query: {query}")
+# MAGIC     print(f"Intent: {intent_type}")
+# MAGIC     if context_summary:
+# MAGIC         print(f"✓ Using context summary from intent detection")
+# MAGIC         print(f"  Summary: {context_summary[:200]}...")
 # MAGIC     else:
-# MAGIC         print("✓ Using original query (no clarification needed)")
+# MAGIC         print(f"✓ Using query directly (no context needed)")
 # MAGIC     
 # MAGIC     llm = ChatDatabricks(endpoint=LLM_ENDPOINT_PLANNING)
 # MAGIC     
@@ -1910,7 +2011,8 @@ print("="*80)
 # MAGIC     writer({"type": "vector_search_start", "index": VECTOR_SEARCH_INDEX})
 # MAGIC     
 # MAGIC     # Get relevant spaces with full metadata (for Genie agents)
-# MAGIC     relevant_spaces_full = planning_agent.search_relevant_spaces(query)
+# MAGIC     # Use planning_query which includes context_summary if available
+# MAGIC     relevant_spaces_full = planning_agent.search_relevant_spaces(planning_query)
 # MAGIC     
 # MAGIC     # Emit vector search results
 # MAGIC     writer({"type": "vector_search_results", "spaces": relevant_spaces_full, "count": len(relevant_spaces_full)})
@@ -2353,6 +2455,62 @@ print("="*80)
 # MAGIC     }
 # MAGIC
 # MAGIC print("✓ All node wrappers defined (including summarize)")
+# MAGIC
+# MAGIC # ==============================================================================
+# MAGIC # Business Logic Integration Hooks (NEW)
+# MAGIC # ==============================================================================
+# MAGIC
+# MAGIC class BusinessLogicIntegration:
+# MAGIC     """
+# MAGIC     Example integration points for business logic using intent metadata.
+# MAGIC     
+# MAGIC     This demonstrates how to use the intent_metadata from intent detection
+# MAGIC     for billing, analytics, routing, and personalization.
+# MAGIC     """
+# MAGIC     
+# MAGIC     @staticmethod
+# MAGIC     def calculate_usage_cost(state: AgentState) -> Dict[str, Any]:
+# MAGIC         """Calculate usage cost based on intent type and complexity."""
+# MAGIC         intent_metadata = state.get("intent_metadata", {})
+# MAGIC         intent_type = intent_metadata.get("intent_type", "new_question")
+# MAGIC         complexity = intent_metadata.get("complexity", "moderate")
+# MAGIC         
+# MAGIC         base_rates = {
+# MAGIC             "new_question": 0.10,
+# MAGIC             "refinement": 0.05,
+# MAGIC             "continuation": 0.07,
+# MAGIC             "clarification_response": 0.00
+# MAGIC         }
+# MAGIC         complexity_multipliers = {"simple": 1.0, "moderate": 1.5, "complex": 2.0}
+# MAGIC         
+# MAGIC         base_cost = base_rates.get(intent_type, 0.10)
+# MAGIC         multiplier = complexity_multipliers.get(complexity, 1.5)
+# MAGIC         
+# MAGIC         return {
+# MAGIC             "total_cost": base_cost * multiplier,
+# MAGIC             "intent_type": intent_type,
+# MAGIC             "complexity": complexity
+# MAGIC         }
+# MAGIC     
+# MAGIC     @staticmethod
+# MAGIC     def log_analytics_event(state: AgentState) -> Dict[str, Any]:
+# MAGIC         """Log analytics event for conversation analysis."""
+# MAGIC         intent_metadata = state.get("intent_metadata", {})
+# MAGIC         current_turn = state.get("current_turn", {})
+# MAGIC         turn_history = state.get("turn_history", [])
+# MAGIC         
+# MAGIC         event = {
+# MAGIC             "event_type": "query_processed",
+# MAGIC             "intent_type": intent_metadata.get("intent_type"),
+# MAGIC             "complexity": intent_metadata.get("complexity"),
+# MAGIC             "turn_count": len(turn_history),
+# MAGIC             "clarification_requested": state.get("pending_clarification") is not None
+# MAGIC         }
+# MAGIC         print(f"📊 Analytics: {event['intent_type']} | {event['complexity']}")
+# MAGIC         return event
+# MAGIC
+# MAGIC print("✓ Business logic integration hooks defined")
+# MAGIC
 # MAGIC def create_super_agent_hybrid():
 # MAGIC     """
 # MAGIC     Create the Hybrid Super Agent LangGraph workflow.
@@ -2369,6 +2527,7 @@ print("="*80)
 # MAGIC     workflow = StateGraph(AgentState)
 # MAGIC     
 # MAGIC     # Add nodes (wrapping OOP agents)
+# MAGIC     workflow.add_node("intent_detection", intent_detection_node)  # NEW: Intent detection first
 # MAGIC     workflow.add_node("clarification", clarification_node)
 # MAGIC     workflow.add_node("planning", planning_node)
 # MAGIC     workflow.add_node("sql_synthesis_table", sql_synthesis_table_node)
@@ -2397,7 +2556,11 @@ print("="*80)
 # MAGIC         return "summarize"  # Summarize if synthesis error
 # MAGIC     
 # MAGIC     # Add edges with conditional routing
-# MAGIC     workflow.set_entry_point("clarification")
+# MAGIC     # NEW: Entry point is now intent_detection
+# MAGIC     workflow.set_entry_point("intent_detection")
+# MAGIC     
+# MAGIC     # Route from intent detection to clarification (always go to clarification)
+# MAGIC     workflow.add_edge("intent_detection", "clarification")
 # MAGIC     
 # MAGIC     workflow.add_conditional_edges(
 # MAGIC         "clarification",
