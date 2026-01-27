@@ -2604,6 +2604,73 @@ print("="*80)
 # MAGIC         
 # MAGIC         return None
 # MAGIC     
+# MAGIC     def make_json_serializable(self, obj):
+# MAGIC         """
+# MAGIC         Convert LangChain objects and other non-serializable objects to JSON-serializable format.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             obj: Object to convert
+# MAGIC             
+# MAGIC         Returns:
+# MAGIC             JSON-serializable version of the object
+# MAGIC         """
+# MAGIC         from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, SystemMessage, ToolMessage, AIMessageChunk
+# MAGIC         from uuid import UUID
+# MAGIC         
+# MAGIC         # Handle None
+# MAGIC         if obj is None:
+# MAGIC             return None
+# MAGIC         
+# MAGIC         # Handle UUID objects
+# MAGIC         if isinstance(obj, UUID):
+# MAGIC             return str(obj)
+# MAGIC         
+# MAGIC         # Handle bytes
+# MAGIC         if isinstance(obj, bytes):
+# MAGIC             try:
+# MAGIC                 return obj.decode('utf-8', errors='ignore')
+# MAGIC             except:
+# MAGIC                 return f"<bytes:{len(obj)}>"
+# MAGIC         
+# MAGIC         # Handle set
+# MAGIC         if isinstance(obj, set):
+# MAGIC             return [self.make_json_serializable(item) for item in obj]
+# MAGIC         
+# MAGIC         # Handle LangChain message objects
+# MAGIC         if isinstance(obj, BaseMessage):
+# MAGIC             msg_dict = {
+# MAGIC                 "type": obj.__class__.__name__,
+# MAGIC                 "content": str(obj.content) if obj.content else ""
+# MAGIC             }
+# MAGIC             if hasattr(obj, 'id') and obj.id:
+# MAGIC                 msg_dict["id"] = str(obj.id)
+# MAGIC             if hasattr(obj, 'name') and obj.name:
+# MAGIC                 msg_dict["name"] = obj.name
+# MAGIC             if hasattr(obj, 'tool_calls') and obj.tool_calls:
+# MAGIC                 # Recursively serialize tool calls
+# MAGIC                 msg_dict["tool_calls"] = [
+# MAGIC                     self.make_json_serializable(tc) for tc in obj.tool_calls[:2]
+# MAGIC                 ]  # Limit to 2 for brevity
+# MAGIC             return msg_dict
+# MAGIC         
+# MAGIC         # Handle dictionaries recursively
+# MAGIC         if isinstance(obj, dict):
+# MAGIC             return {str(k): self.make_json_serializable(v) for k, v in obj.items()}
+# MAGIC         
+# MAGIC         # Handle lists and tuples recursively
+# MAGIC         if isinstance(obj, (list, tuple)):
+# MAGIC             return [self.make_json_serializable(item) for item in obj]
+# MAGIC         
+# MAGIC         # Handle primitives
+# MAGIC         if isinstance(obj, (str, int, float, bool)):
+# MAGIC             return obj
+# MAGIC         
+# MAGIC         # For anything else, convert to string representation
+# MAGIC         try:
+# MAGIC             return str(obj)
+# MAGIC         except Exception:
+# MAGIC             return f"<{type(obj).__name__}>"
+# MAGIC     
 # MAGIC     def format_custom_event(self, custom_data: dict) -> str:
 # MAGIC         """
 # MAGIC         Format custom streaming events for user-friendly display.
@@ -2633,13 +2700,31 @@ print("="*80)
 # MAGIC             "genie_agent_call": lambda d: f"🤖 Calling Genie agent for space: {d.get('space_id', 'unknown')}",
 # MAGIC         }
 # MAGIC         
-# MAGIC         formatter = formatters.get(event_type, lambda d: f"ℹ️ {event_type}: {json.dumps(d, indent=2)}")
+# MAGIC         # Bulletproof JSON fallback handler
+# MAGIC         def json_fallback(obj):
+# MAGIC             """Final fallback for json.dumps() - converts anything to string."""
+# MAGIC             try:
+# MAGIC                 return str(obj)
+# MAGIC             except:
+# MAGIC                 return f"<{type(obj).__name__}>"
+# MAGIC         
+# MAGIC         # Fallback formatter now uses make_json_serializable with json_fallback
+# MAGIC         formatter = formatters.get(
+# MAGIC             event_type,
+# MAGIC             lambda d: f"ℹ️ {event_type}: {json.dumps(self.make_json_serializable(d), indent=2, default=json_fallback)}"
+# MAGIC         )
 # MAGIC         
 # MAGIC         try:
 # MAGIC             return formatter(custom_data)
 # MAGIC         except Exception as e:
 # MAGIC             logger.warning(f"Error formatting custom event {event_type}: {e}")
-# MAGIC             return f"ℹ️ {event_type}: {str(custom_data)}"
+# MAGIC             # Enhanced error handling with serialization fallback
+# MAGIC             try:
+# MAGIC                 serialized = self.make_json_serializable(custom_data)
+# MAGIC                 return f"ℹ️ {event_type}: {json.dumps(serialized, indent=2, default=json_fallback)}"
+# MAGIC             except Exception as e2:
+# MAGIC                 logger.warning(f"Error serializing custom event {event_type}: {e2}")
+# MAGIC                 return f"ℹ️ {event_type}: {str(custom_data)}"
 # MAGIC     
 # MAGIC     def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
 # MAGIC         """
@@ -2908,8 +2993,19 @@ print("="*80)
 # MAGIC                 elif event_type == "debug":
 # MAGIC                     try:
 # MAGIC                         debug_data = event_data
+# MAGIC                         # Convert to JSON-serializable format (handles LangChain messages)
+# MAGIC                         serializable_data = self.make_json_serializable(debug_data)
+# MAGIC                         
+# MAGIC                         # Bulletproof JSON serialization with fallback for ANY remaining non-serializable objects
+# MAGIC                         def json_fallback(obj):
+# MAGIC                             """Final fallback for json.dumps() - converts anything to string."""
+# MAGIC                             try:
+# MAGIC                                 return str(obj)
+# MAGIC                             except:
+# MAGIC                                 return f"<{type(obj).__name__}>"
+# MAGIC                         
 # MAGIC                         # Emit detailed debug information (truncated for readability)
-# MAGIC                         debug_str = json.dumps(debug_data, indent=2)
+# MAGIC                         debug_str = json.dumps(serializable_data, indent=2, default=json_fallback)
 # MAGIC                         if len(debug_str) > 500:
 # MAGIC                             debug_str = debug_str[:500] + "..."
 # MAGIC                         yield ResponsesAgentStreamEvent(
@@ -2980,9 +3076,12 @@ from agent import AGENT
 """
 Test the enhanced granular streaming to verify all execution steps are visible.
 This will show agent thinking, tool calls, intermediate results, and routing decisions.
+
+NOTE: Debug mode JSON serialization issue has been fixed!
+The make_json_serializable() method now properly handles LangChain message objects
+(AIMessage, SystemMessage, etc.) so debug events stream without errors.
 """
 
-#: Uncomment to test enhanced streaming:
 from mlflow.types.responses import ResponsesAgentRequest
 from uuid import uuid4
 
