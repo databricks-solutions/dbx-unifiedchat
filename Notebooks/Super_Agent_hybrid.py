@@ -377,9 +377,12 @@ from databricks_langchain.genie import GenieAgent
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, AIMessageChunk
 from langchain_core.runnables import Runnable, RunnableLambda, RunnableParallel, RunnableConfig
-from langchain_core.tools import tool
+from langchain_core.tools import tool, StructuredTool
 import mlflow
 import logging
+from pydantic import BaseModel, Field
+import json
+
 
 # LangGraph imports
 from langgraph.graph import StateGraph, END
@@ -1379,9 +1382,7 @@ class SQLSynthesisGenieAgent:
         
         Uses RunnableParallel pattern with StructuredTool for type safety.
         """
-        from pydantic import BaseModel, Field
-        from langchain.tools import StructuredTool
-        import json
+
         
         # Define GenieToolInput schema (must match the one used by individual tools)
         class GenieToolInput(BaseModel):
