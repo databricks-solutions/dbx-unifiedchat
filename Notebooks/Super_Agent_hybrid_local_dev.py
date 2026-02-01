@@ -1135,15 +1135,12 @@ OUTPUT REQUIREMENTS:
         if not genie_route_plan:
             return {}
         
-        # Build RunnableParallel dynamically based on genie_route_plan
-        # Filter to only include spaces we have executors for
+        # Build parallel tasks that expect a dict input like {"space_id1": "question1", ...}
         parallel_tasks = {}
-        for space_id, question in genie_route_plan.items():
+        for space_id in genie_route_plan.keys():
             if space_id in self.parallel_executors:
-                # Each executor is a RunnableLambda that takes a question string
-                # We need to bind the question to the runnable
                 parallel_tasks[space_id] = RunnableLambda(
-                    lambda q=question, sid=space_id: self.parallel_executors[sid].invoke(q)
+                    lambda inp, sid=space_id: self.parallel_executors[sid].invoke(inp[sid])
                 )
             else:
                 print(f"  ⚠ Warning: No executor found for space_id: {space_id}")
@@ -1159,8 +1156,8 @@ OUTPUT REQUIREMENTS:
         
         try:
             # Invoke all agents in parallel
-            # RunnableParallel.invoke() with empty dict as input since questions are pre-bound
-            results = parallel_runner.invoke({})
+            # Now invoke with the actual question mapping
+            results = parallel_runner.invoke(genie_route_plan)
             
             print(f"  ✅ Parallel invocation completed for {len(results)} agents")
             return results

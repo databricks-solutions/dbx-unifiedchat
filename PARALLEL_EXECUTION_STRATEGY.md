@@ -80,35 +80,61 @@ The `SQLSynthesisGenieAgent` now implements a **primary/fallback execution strat
 
 ## 💻 Implementation Details
 
+### Key Improvement: Input-Based Approach
+
+The implementation uses an **input-based approach** instead of pre-binding questions in closures:
+
+**Benefits:**
+- ✅ **Cleaner code**: No complex closure pre-binding
+- ✅ **Better LangChain integration**: Passes data through standard input mechanism
+- ✅ **Easier debugging**: Questions are in the input dict, not hidden in closures
+- ✅ **More maintainable**: Standard RunnableParallel pattern
+
+**How it works:**
+```python
+# Each RunnableLambda extracts its question from the input dict
+lambda inp, sid=space_id: self.parallel_executors[sid].invoke(inp[sid])
+
+# Invoke with the full genie_route_plan as input
+results = parallel_runner.invoke(genie_route_plan)
+# genie_route_plan = {"space_1": "question1", "space_2": "question2"}
+```
+
+## 💻 Implementation Details
+
 ### Primary Strategy Code
 
 ```python
-# Try RunnableParallel execution first
-if genie_route_plan:
-    print("🚀 PRIMARY STRATEGY: Attempting RunnableParallel execution...")
-    try:
-        # Invoke all Genie agents in parallel
-        parallel_results = self.invoke_genie_agents_parallel(genie_route_plan)
-        
-        if parallel_results:
-            # Extract SQL fragments
-            sql_fragments = {}
-            for space_id, result in parallel_results.items():
-                sql = extract_sql_from_result(result)
-                sql_fragments[space_id] = sql
-            
-            # Combine with LLM
-            combined_result = self.llm.invoke(combine_prompt)
-            
-            # Extract SQL
-            if has_sql and sql_query:
-                return {
-                    "sql": sql_query,
-                    "explanation": f"[Parallel Execution] {explanation}",
-                    "has_sql": True
-                }
-    except Exception as e:
-        use_parallel_fallback = True
+# Build parallel tasks that expect a dict input
+parallel_tasks = {}
+for space_id in genie_route_plan.keys():
+    if space_id in self.parallel_executors:
+        # Each lambda receives the full input dict and extracts its question
+        parallel_tasks[space_id] = RunnableLambda(
+            lambda inp, sid=space_id: self.parallel_executors[sid].invoke(inp[sid])
+        )
+
+# Create RunnableParallel with all tasks
+parallel_runner = RunnableParallel(**parallel_tasks)
+
+# Invoke with the actual question mapping (no pre-binding needed)
+results = parallel_runner.invoke(genie_route_plan)
+
+# Extract SQL fragments and combine
+sql_fragments = {}
+for space_id, result in results.items():
+    sql = extract_sql_from_result(result)
+    sql_fragments[space_id] = sql
+
+# Combine with LLM
+combined_result = self.llm.invoke(combine_prompt)
+
+# Return result
+return {
+    "sql": sql_query,
+    "explanation": f"[Parallel Execution] {explanation}",
+    "has_sql": True
+}
 ```
 
 ### Fallback Strategy Code
