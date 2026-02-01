@@ -42,19 +42,19 @@ Current Query: {current_query}
 
 Classify the query into ONE of these categories:
 
-1. **NEW_QUESTION**: A completely different topic, question, or data domain from previous queries
+1. **new_question**: A completely different topic, question, or data domain from previous queries
    - Example: "Show patient data" → "Show medication costs" (different topics)
    - Example: "Claims by provider" → "Member demographics" (different domain)
 
-2. **REFINEMENT**: Narrowing, filtering, or modifying the previous query on the same topic
+2. **refinement**: Narrowing, filtering, or modifying the previous query on the same topic
    - Example: "Show patient data" → "Only patients age 50+" (filtering same query)
    - Example: "Show active members" → "Break down by age group" (refining same data)
 
-3. **CLARIFICATION_RESPONSE**: User is answering the agent's clarification request
+3. **clarification_response**: User is answering the agent's clarification request
    - Example: Agent asks "Which metric?" → User says "Patient count" (answering question)
    - Pattern: Previous message from AI contains "clarification" or asks a question
 
-4. **CONTINUATION**: Follow-up question exploring the same topic from a different angle
+4. **continuation**: Follow-up question exploring the same topic from a different angle
    - Example: "Show active members" → "What about inactive ones?" (related but different)
    - Example: "Patient count by state" → "Now show by gender" (same domain, new dimension)
 
@@ -72,7 +72,7 @@ Also determine:
 Return ONLY valid JSON with this exact structure:
 
 {{
-    "intent_type": "NEW_QUESTION | REFINEMENT | CLARIFICATION_RESPONSE | CONTINUATION",
+    "intent_type": "new_question | refinement | clarification_response | continuation",
     "confidence": 0.95,
     "reasoning": "Brief 1-2 sentence explanation of classification",
     "topic_change_score": 0.8,
@@ -515,7 +515,7 @@ The planning agent should use all three pieces to understand the complete intent
             
             # Normalize intent_type to lowercase for consistency
             # LLM might return uppercase (CLARIFICATION_RESPONSE) or lowercase (clarification_response)
-            if "intent_type" in result:
+            if "intent_type" in result and result["intent_type"]:
                 result["intent_type"] = result["intent_type"].lower()
             
             print(f"✓ Intent: {result['intent_type']} (confidence: {result['confidence']:.2f})")
@@ -523,6 +523,10 @@ The planning agent should use all three pieces to understand the complete intent
             print(f"  Topic Change: {result['topic_change_score']:.2f}")
             print(f"  Domain: {result['metadata'].get('domain', 'unknown')}")
             print(f"  Complexity: {result['metadata'].get('complexity', 'unknown')}")
+            
+            # Final safety check: ensure intent_type is lowercase before returning
+            assert result["intent_type"] == result["intent_type"].lower(), \
+                f"Bug: intent_type should be lowercase but got {result['intent_type']}"
             
             return result
             

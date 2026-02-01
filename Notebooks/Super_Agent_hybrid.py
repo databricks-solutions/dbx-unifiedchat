@@ -1437,7 +1437,7 @@ Prerequisites:
 # MAGIC             print(f"{'='*80}")
 # MAGIC             print("📄 RESULTS PREVIEW (first 10 rows)")
 # MAGIC             print(f"{'='*80}")
-# MAGIC             df.show(n=min(10, row_count), truncate=False)
+# MAGIC             # df.show(n=min(10, row_count), truncate=False) # comment out to save time.
 # MAGIC             print(f"{'='*80}\n")
 # MAGIC             
 # MAGIC             return {
