@@ -1281,8 +1281,11 @@ class SQLSynthesisGenieAgent:
         1. Individual tool wrappers for LangGraph agent tool calling
         2. A parallel executor mapping for efficient batch invocation
         
-        Upgraded to use RunnableParallel pattern for better parallel execution.
+        Uses LangChain preferred syntax with Pydantic BaseModel and StructuredTool.
         """
+        from pydantic import BaseModel, Field
+        from langchain.tools import StructuredTool
+        
         def enforce_limit(messages, n=5):
             last = messages[-1] if messages else {"content": ""}
             content = last.get("content", "") if isinstance(last, dict) else last.content
@@ -1305,7 +1308,7 @@ class SQLSynthesisGenieAgent:
             genie_agent_name = f"Genie_{space_title}"
             description = searchable_content
             
-            # Create Genie agent
+            # Create Genie agent with message_processor
             genie_agent = GenieAgent(
                 genie_space_id=space_id,
                 genie_agent_name=genie_agent_name,
@@ -1315,7 +1318,47 @@ class SQLSynthesisGenieAgent:
             )
             self.genie_agents.append(genie_agent)
             
-            # Create agent invoker function using factory pattern to avoid closure issues
+            # Define tool input schema using Pydantic
+            class GenieToolInput(BaseModel):
+                question: str = Field(..., description="Natural-language query to run in the Genie Space")
+                conversation_id: Optional[str] = Field(None, description="Optional Genie conversation for continuity")
+            
+            # Create tool function using factory pattern to capture agent
+            def make_genie_tool_call(agent):
+                """Factory function to capture agent in closure properly"""
+                def _genie_tool_call(args: GenieToolInput):
+                    # GenieAgent expects a LangChain-style message list
+                    result = agent.invoke({
+                        "messages": [{"role": "user", "content": args.question}],
+                        "conversation_id": args.conversation_id,
+                    })
+                    # Extract final output + optional context
+                    out = {"conversation_id": result.get("conversation_id")}
+                    msgs = result["messages"]
+                    def _get(name): 
+                        return next((getattr(m, "content", "") for m in msgs if getattr(m, "name", None) == name), None)
+                    out["answer"] = _get("query_result") or ""
+                    reasoning = _get("query_reasoning")
+                    sql = _get("query_sql")
+                    if reasoning: out["reasoning"] = reasoning
+                    if sql: out["sql"] = sql
+                    return out
+                return _genie_tool_call
+            
+            # Create StructuredTool
+            genie_tool = StructuredTool(
+                name=genie_agent_name,
+                description=(
+                    f"Use for governed analytics queries (NL→SQL) in {space_title}. "
+                    f"{description}. "
+                    "Returns an answer and, when available, the generated SQL and reasoning."
+                ),
+                args_schema=GenieToolInput,
+                func=make_genie_tool_call(genie_agent),
+            )
+            self.genie_agent_tools.append(genie_tool)
+            
+            # Create parallel executor for batch invocation
             def make_agent_invoker(agent):
                 """Factory function to capture agent in closure properly"""
                 def invoke_agent(question: str):
@@ -1325,22 +1368,10 @@ class SQLSynthesisGenieAgent:
                     )
                 return invoke_agent
             
-            # Create a RunnableLambda for this agent
             agent_runnable = RunnableLambda(make_agent_invoker(genie_agent))
             agent_runnable.name = genie_agent_name
             agent_runnable.description = description
-            
-            # Store in parallel executors dict
             parallel_executors[space_id] = agent_runnable
-            
-            # Create tool wrapper for LangGraph agent
-            self.genie_agent_tools.append(
-                agent_runnable.as_tool(
-                    name=genie_agent_name,
-                    description=description,
-                    arg_types={"question": str}
-                )
-            )
             
             print(f"  ✓ Created Genie agent tool: {genie_agent_name} ({space_id})")
         
