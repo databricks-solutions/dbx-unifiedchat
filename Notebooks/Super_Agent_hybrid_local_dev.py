@@ -1046,33 +1046,136 @@ class SQLSynthesisGenieAgent:
         # Store parallel executors for batch invocation
         self.parallel_executors = parallel_executors
     
+    def _create_parallel_execution_tool(self):
+        """
+        Create a tool that allows the agent to invoke multiple Genie agents in parallel.
+        
+        This tool gives the agent control over parallel execution with the same
+        disaster recovery capabilities as individual tool calls.
+        """
+        def invoke_parallel_genie_agents(genie_route_plan: str) -> str:
+            """
+            Invoke multiple Genie agents in parallel for efficient SQL generation.
+            
+            Args:
+                genie_route_plan: JSON string mapping space_id to question.
+                    Example: '{"space_id_1": "Get member demographics", "space_id_2": "Get benefits"}'
+            
+            Returns:
+                JSON string with results from each Genie agent, keyed by space_id.
+                Each result contains the SQL query and thinking from that agent.
+            """
+            try:
+                # Parse the input JSON
+                import json
+                route_plan = json.loads(genie_route_plan)
+                
+                # Build parallel tasks
+                parallel_tasks = {}
+                for space_id in route_plan.keys():
+                    if space_id in self.parallel_executors:
+                        parallel_tasks[space_id] = RunnableLambda(
+                            lambda inp, sid=space_id: self.parallel_executors[sid].invoke(inp[sid])
+                        )
+                    else:
+                        return json.dumps({
+                            "error": f"No executor found for space_id: {space_id}",
+                            "available_space_ids": list(self.parallel_executors.keys())
+                        })
+                
+                if not parallel_tasks:
+                    return json.dumps({"error": "No valid parallel tasks to execute"})
+                
+                # Create and invoke parallel runner
+                parallel_runner = RunnableParallel(**parallel_tasks)
+                results = parallel_runner.invoke(route_plan)
+                
+                # Extract SQL from each result
+                extracted_results = {}
+                for space_id, result in results.items():
+                    extracted = {
+                        "space_id": space_id,
+                        "question": route_plan.get(space_id, ""),
+                        "sql": "",
+                        "thinking": "",
+                        "success": False
+                    }
+                    
+                    if isinstance(result, dict) and "messages" in result:
+                        messages = result.get("messages", [])
+                        
+                        # Extract thinking (query_reasoning)
+                        for msg in messages:
+                            if hasattr(msg, 'name') and msg.name == 'query_reasoning':
+                                extracted["thinking"] = msg.content if hasattr(msg, 'content') else ""
+                                break
+                        
+                        # Extract SQL (query_sql)
+                        for msg in messages:
+                            if hasattr(msg, 'name') and msg.name == 'query_sql':
+                                extracted["sql"] = msg.content if hasattr(msg, 'content') else ""
+                                extracted["success"] = True
+                                break
+                    
+                    extracted_results[space_id] = extracted
+                
+                return json.dumps(extracted_results, indent=2)
+                
+            except Exception as e:
+                return json.dumps({"error": f"Parallel execution failed: {str(e)}"})
+        
+        # Convert to LangChain tool
+        from langchain_core.tools import tool as langchain_tool
+        
+        parallel_tool = langchain_tool(invoke_parallel_genie_agents)
+        parallel_tool.name = "invoke_parallel_genie_agents"
+        parallel_tool.description = """
+Invoke multiple Genie agents in PARALLEL for fast SQL generation.
+
+Input: JSON string with space_id to question mapping
+Example: '{"space_01j9t0jhx009k25rvp67y1k7j0": "Get member demographics", "space_01j9t0jhx009k25rvp67y1k7j1": "Get benefit costs"}'
+
+Returns: JSON with SQL and thinking from each agent.
+
+Use this tool when:
+1. You need to query multiple Genie spaces simultaneously
+2. The queries are independent (no dependencies between them)
+3. You want faster execution than calling each agent sequentially
+
+After getting results, check if you have all needed SQL components. If missing information, you can:
+- Call this tool again with updated questions
+- Call individual Genie agent tools for specific missing pieces
+""".strip()
+        
+        return parallel_tool
+    
     def _create_sql_synthesis_agent(self):
         """
         Create LangGraph SQL Synthesis Agent with Genie agent tools.
         
         Uses Databricks LangGraph SDK with create_agent pattern.
-        Pattern copied from test_uc_functions.py lines 1375-1462
+        Includes both individual Genie agent tools AND a parallel execution tool.
         """
         tools = []
         tools.extend(self.genie_agent_tools)
         
-        print(f"✓ Created SQL Synthesis Agent with {len(tools)} Genie agent tools")
+        # Add parallel execution tool
+        parallel_tool = self._create_parallel_execution_tool()
+        tools.append(parallel_tool)
+        
+        print(f"✓ Created SQL Synthesis Agent with {len(self.genie_agent_tools)} Genie agent tools + 1 parallel execution tool")
         
         # Create SQL Synthesis Agent (specialized for multi-agent system)
         sql_synthesis_agent = create_agent(
             model=self.llm,
             tools=tools,
             system_prompt=(
-"""You are a SQL synthesis agent, which can take analysis plan, and route queries to the corresponding Genie Agent.
+"""You are a SQL synthesis agent with access to both INDIVIDUAL and PARALLEL Genie agent execution tools.
+
 The Plan given to you is a JSON:
 {
 'original_query': 'The User's Question',
-'vector_search_relevant_spaces_info': [{'space_id': 'space_id_1',
-   'space_title': 'space_title_1'},
-  {'space_id': 'space_id_2',
-   'space_title': 'space_title_2'},
-  {'space_id': 'space_id_3',
-   'space_title': 'space_title_3'}],
+'vector_search_relevant_spaces_info': [{'space_id': 'space_id_1', 'space_title': 'space_title_1'}, ...],
 "question_clear": true,
 "sub_questions": ["sub-question 1", "sub-question 2", ...],
 "requires_multiple_spaces": true/false,
@@ -1080,32 +1183,58 @@ The Plan given to you is a JSON:
 "requires_join": true/false,
 "join_strategy": "table_route" or "genie_route" or null,
 "execution_plan": "Brief description of execution plan",
-"genie_route_plan": {'space_id_1':'partial_question_1', 'space_id_2':'partial_question_2', 'space_id_3':'partial_question_3', ...} or null,}
+"genie_route_plan": {'space_id_1':'partial_question_1', 'space_id_2':'partial_question_2', ...} or null,}
 
-## Tool Calling Plan:
-1. Under the key of 'genie_route_plan' in the JSON, extracting 'partial_question_1' and feed to the right Genie Agent tool of 'space_id_1' with the input as a string. 
-2. Asynchronously send all other partial_questions to the corresponding Genie Agent tools accordingly.
-3. You have access to all Genie Agents as tools given to you; locate the proper Genie Agent Tool by searching the 'space_id_1' in the tool's description. After each Genie agent returns result, only extract the SQL string from the Genie tool output JSON {"thinking": thinking, "sql": sql, "answer": answer}.
-4. If you find you are still missing necessary analytical components (metrics, filters, dimensions, etc.) to assemble the final SQL, which might be due to some genie agent tool may not have the necessary information being assigned, try to leverage other most likely Genie agents to find the missing pieces.
+## TOOL EXECUTION STRATEGY:
 
-## Disaster Recovery (DR) Plan:
-1. If one Genie agent tool fail to generate a SQL query, allow retry AS IS only one time; 
-2. If fail again, try to reframe the partial question 'partial_question_1' according to the error msg returned by the genie tool, e.g., genie tool may say "I dont have information for cost related information", you can remove those components in the 'partial_question_1' which doesn't exist in the genie tool. For example, if the genie tool "Genie_MemberBenefits" doesn't contain benefit cost related information, you can reframe the question by removing the cost-related components in the 'partial_question_1', generate 'partial_question_1_v2' and try again. Only try once;
-3. If fail again, return response as is. 
+### OPTION 1: PARALLEL EXECUTION (Recommended for Speed)
+Use the `invoke_parallel_genie_agents` tool to query multiple Genie spaces simultaneously.
 
+1. Extract the genie_route_plan from the input JSON
+2. Convert it to a JSON string: '{"space_id_1": "question1", "space_id_2": "question2"}'
+3. Call: invoke_parallel_genie_agents(genie_route_plan='{"space_id_1": "question1", ...}')
+4. You'll receive JSON with SQL and thinking from ALL agents at once
+5. Check if you have all needed SQL components
+6. If missing information:
+   - Reframe questions and call invoke_parallel_genie_agents again with updated questions
+   - OR call specific individual Genie agent tools for missing pieces
 
-## Overall SQL Synthesis Plan:
-Then, you can combine all the SQL pieces into a single SQL query, and return the final SQL query.
+### OPTION 2: SEQUENTIAL EXECUTION (Use for Dependencies)
+Call individual Genie agent tools one by one when:
+- One query depends on results from another
+- You need more control over error handling for specific agents
+- You want to adaptively query based on previous results
+
+## DISASTER RECOVERY (DR) - WORKS FOR BOTH PARALLEL AND SEQUENTIAL:
+
+1. **First Attempt**: Try your query AS IS
+2. **If fails**: Analyze the error message
+   - If agent says "I don't have information for X", remove X from the question
+   - If agent returns empty/incomplete SQL, try rephrasing the question
+3. **Retry Once**: Call the same tool with updated question(s)
+4. **If still fails**: Try alternative Genie agents that might have the information
+5. **Final fallback**: Work with what you have and explain limitations
+
+## EXAMPLE PARALLEL EXECUTION WITH DR:
+
+Step 1: Call invoke_parallel_genie_agents with initial questions
+Step 2: Check results - if space_1 succeeded but space_2 failed
+Step 3: Keep space_1 SQL, retry space_2 with reframed question using invoke_parallel_genie_agents
+Step 4: Combine all successful SQL fragments
+
+## SQL SYNTHESIS:
+Combine all SQL fragments into a single query.
+
 OUTPUT REQUIREMENTS:
 - Generate complete, executable SQL with:
   * Proper JOINs based on execution plan strategy
-  * WHERE clauses for filtering
+  * WHERE clauses for filtering  
   * Appropriate aggregations
   * Clear column aliases
-  * Always use real column name existed in the data, never make up one
+  * Always use real column names from the data
 - Return your response with:
-1. Your explanation combining both the individual Genie thinking and your own reasoning
-2. The final SQL query in a ```sql code block"""
+  1. Your explanation (including which execution strategy you used)
+  2. The final SQL query in a ```sql code block"""
             )
         )
         
@@ -1171,11 +1300,14 @@ OUTPUT REQUIREMENTS:
         plan: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
-        Synthesize SQL using Genie agents (genie route) with autonomous tool calling.
+        Synthesize SQL using Genie agents with intelligent tool selection.
         
-        EXECUTION STRATEGY:
-        1. PRIMARY: Try RunnableParallel for fast parallel execution
-        2. FALLBACK: Use LangGraph agent with retries and DR if parallel fails
+        The agent has access to:
+        1. invoke_parallel_genie_agents tool - For fast parallel execution
+        2. Individual Genie agent tools - For sequential/dependent queries
+        
+        The agent autonomously decides which strategy to use and handles
+        disaster recovery with retry logic for both parallel and sequential execution.
         
         Args:
             plan: Complete plan dictionary from PlanningAgent containing:
@@ -1195,6 +1327,34 @@ OUTPUT REQUIREMENTS:
         """
         # Build the plan result JSON for the agent
         plan_result = plan
+        
+        print(f"\n{'='*80}")
+        print("🤖 SQL Synthesis Agent - Starting (with parallel execution tool)...")
+        print(f"{'='*80}")
+        print(f"Plan: {json.dumps(plan_result, indent=2)}")
+        print(f"{'='*80}\n")
+        
+        # Create the message for the agent
+        # The agent will autonomously decide whether to use:
+        # 1. invoke_parallel_genie_agents tool (fast parallel execution)
+        # 2. Individual Genie agent tools (sequential execution)
+        # 3. A combination of both strategies
+        agent_message = {
+            "messages": [
+                {
+                    "role": "user",
+                    "content": f"""
+Generate a SQL query to answer the question according to the Query Plan:
+{json.dumps(plan_result, indent=2)}
+
+RECOMMENDED APPROACH:
+If 'genie_route_plan' is provided with multiple spaces, consider using the invoke_parallel_genie_agents tool for faster execution.
+Convert the genie_route_plan to a JSON string and call the tool to get all SQL fragments in parallel.
+Then combine them into a final SQL query.
+"""
+                }
+            ]
+        }
         
         print(f"\n{'='*80}")
         print("🤖 SQL Synthesis Agent - Starting...")
