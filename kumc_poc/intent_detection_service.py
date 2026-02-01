@@ -211,10 +211,12 @@ class IntentDetectionAgent:
         messages: List
     ) -> Dict[str, Any]:
         """
-        Quick check if current query is a clarification response.
+        Two-phase check if current query is a clarification response.
         
-        This is a fast-path detection using pattern matching before
-        invoking the full LLM classification.
+        Phase 1 (Pattern Matching): Fast detection of unanswered clarification requests
+        Phase 2 (LLM Validation): Verify the user's message actually answers the clarification
+        
+        This prevents false positives when users ignore clarification and ask something else.
         
         IMPORTANT: Only detects unanswered clarification requests.
         If a clarification has already been answered by a HumanMessage,
@@ -230,6 +232,7 @@ class IntentDetectionAgent:
         if len(messages) < 2:
             return {"is_clarification_response": False}
         
+        # PHASE 1: Pattern Matching (Fast-path)
         # Look for recent AI clarification message (tightened to last 3 messages for recency)
         # Reduced from 5 to 3 to avoid stale clarification requests
         search_window = min(3, len(messages) - 1)
@@ -266,6 +269,16 @@ class IntentDetectionAgent:
                         continue
                     
                     # This is an UNANSWERED clarification request
+                    print(f"  ✓ Found unanswered clarification at index {i}")
+                    
+                    # PHASE 2: LLM Validation (Smart check)
+                    # Verify the user's current query actually answers the clarification
+                    # This prevents false positives like:
+                    #   AI: "Which age group? 1) 0-18, 2) 19-65, 3) 65+"
+                    #   User: "Actually, show me medications instead" ← Not a clarification response!
+                    
+                    clarification_question = msg.content
+                    
                     # Get original query that triggered the clarification
                     original_query = None
                     for j in range(i - 1, -1, -1):
@@ -273,15 +286,103 @@ class IntentDetectionAgent:
                             original_query = messages[j].content
                             break
                     
-                    print(f"  ✓ Found unanswered clarification at index {i}")
-                    return {
-                        "is_clarification_response": True,
-                        "clarification_question": msg.content,
-                        "original_query": original_query,
-                        "confidence": 0.9
-                    }
+                    # Use LLM to validate if current_query answers the clarification
+                    validation_result = self._validate_clarification_response(
+                        current_query=current_query,
+                        clarification_question=clarification_question,
+                        original_query=original_query
+                    )
+                    
+                    if validation_result["is_answer"]:
+                        print(f"  ✓ LLM confirmed: User is answering the clarification (confidence: {validation_result['confidence']:.2f})")
+                        return {
+                            "is_clarification_response": True,
+                            "clarification_question": clarification_question,
+                            "original_query": original_query,
+                            "confidence": validation_result["confidence"]
+                        }
+                    else:
+                        print(f"  ✗ LLM determined: User is NOT answering the clarification")
+                        print(f"    Reason: {validation_result['reasoning']}")
+                        # User ignored the clarification - continue searching or return False
+                        continue
         
         return {"is_clarification_response": False}
+    
+    def _validate_clarification_response(
+        self,
+        current_query: str,
+        clarification_question: str,
+        original_query: Optional[str]
+    ) -> Dict[str, Any]:
+        """
+        Use LLM to validate if the current query is actually answering the clarification.
+        
+        This prevents false positives when users change topics after a clarification request.
+        
+        Args:
+            current_query: User's current message
+            clarification_question: The AI's clarification question
+            original_query: The user's original query that triggered clarification
+        
+        Returns:
+            Dict with is_answer (bool), confidence (float), reasoning (str)
+        """
+        validation_prompt = f"""You are analyzing if a user's message is answering a clarification request.
+
+Original User Query: {original_query or "N/A"}
+
+Agent's Clarification Question:
+{clarification_question}
+
+User's Current Message:
+{current_query}
+
+Determine if the user's current message is:
+A) Answering/responding to the clarification question (e.g., choosing an option, providing the requested detail)
+B) Ignoring the clarification and asking something completely different
+
+Return ONLY valid JSON:
+{{
+    "is_answer": true or false,
+    "confidence": 0.95,
+    "reasoning": "Brief 1-sentence explanation"
+}}
+
+Examples:
+- Clarification: "Which age group? 1) 0-18, 2) 19-65" → User: "Option 2" → is_answer: true
+- Clarification: "Which age group? 1) 0-18, 2) 19-65" → User: "Show medications" → is_answer: false
+- Clarification: "Do you mean active or inactive?" → User: "Active ones" → is_answer: true
+- Clarification: "Do you mean active or inactive?" → User: "What about claims?" → is_answer: false
+"""
+        
+        try:
+            response = self.llm.invoke(validation_prompt)
+            content = response.content if hasattr(response, 'content') else str(response)
+            
+            # Parse JSON response
+            if "```json" in content:
+                content = content.split("```json")[1].split("```")[0].strip()
+            elif "```" in content:
+                content = content.split("```")[1].split("```")[0].strip()
+            
+            result = json.loads(content)
+            
+            return {
+                "is_answer": result.get("is_answer", False),
+                "confidence": result.get("confidence", 0.5),
+                "reasoning": result.get("reasoning", "No reasoning provided")
+            }
+            
+        except Exception as e:
+            print(f"  ⚠ Clarification validation failed: {e}")
+            # Conservative fallback: assume it IS an answer (to avoid breaking existing behavior)
+            # But with low confidence so downstream logic can handle it carefully
+            return {
+                "is_answer": True,
+                "confidence": 0.6,
+                "reasoning": f"Validation failed, assuming it's an answer: {str(e)}"
+            }
     
     def detect_intent(
         self,
@@ -307,10 +408,10 @@ class IntentDetectionAgent:
         print(f"{'='*80}")
         print(f"Query: {current_query}")
         
-        # Fast-path: Check for clarification response
+        # Smart two-phase check: Pattern matching + LLM validation
         clarification_check = self._check_for_clarification_response(current_query, messages)
         if clarification_check["is_clarification_response"]:
-            print("✓ Detected clarification response (fast-path)")
+            print("✓ Detected clarification response (validated by LLM)")
             
             # Generate intelligent context summary using LLM
             original_query = clarification_check.get("original_query", "")
@@ -383,6 +484,10 @@ The planning agent should use all three pieces to understand the complete intent
                 },
                 "parent_turn_id": turn_history[-1]["turn_id"] if turn_history else None
             }
+        
+        # If NOT a clarification response (either no clarification found, or user ignored it),
+        # fall through to full LLM-based intent detection
+        print("  → Not a clarification response, proceeding to full intent classification")
         
         # Full LLM-based intent detection
         conversation_context = self._format_conversation_context(
