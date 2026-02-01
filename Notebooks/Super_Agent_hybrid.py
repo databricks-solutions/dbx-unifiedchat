@@ -1370,9 +1370,7 @@ class SQLSynthesisGenieAgent:
         
         Uses RunnableParallel pattern with StructuredTool for type safety.
         """
-        from pydantic import BaseModel, Field
-        from langchain.tools import StructuredTool
-        import json
+
         
         # Define input schema for parallel execution
         class ParallelGenieInput(BaseModel):
