@@ -1736,6 +1736,9 @@ Prerequisites:
 # MAGIC     No hard count limits - adaptive based on context, query complexity,
 # MAGIC     recent clarification frequency, and business rules.
 # MAGIC     
+# MAGIC     IMPORTANT: This function should NEVER be called for clarification_response intents
+# MAGIC     because they should be caught by early-exit checks in clarification_node.
+# MAGIC     
 # MAGIC     Args:
 # MAGIC         clarity_result: Result from ClarificationAgent.check_clarity()
 # MAGIC         intent_metadata: Metadata from intent detection
@@ -1745,6 +1748,15 @@ Prerequisites:
 # MAGIC         True if clarification should be requested, False otherwise
 # MAGIC     """
 # MAGIC     print("\n🤔 Evaluating adaptive clarification strategy...")
+# MAGIC     
+# MAGIC     # DEFENSIVE ASSERTION: This should never be reached for clarification_response
+# MAGIC     intent_type = intent_metadata.get("intent_type", "")
+# MAGIC     if intent_type == "clarification_response":
+# MAGIC         print("🚨 CRITICAL WARNING: adaptive_clarification_strategy called with clarification_response!")
+# MAGIC         print("   This should NEVER happen - clarification_node should have exited early!")
+# MAGIC         print("   Forcing return False to prevent clarifying a clarification.")
+# MAGIC         print("   Please investigate why the early-exit check failed.")
+# MAGIC         return False
 # MAGIC     
 # MAGIC     # Factor 1: Ambiguity severity (from clarity check)
 # MAGIC     ambiguity_score = clarity_result.get("ambiguity_score", 0.5)
@@ -1845,18 +1857,45 @@ Prerequisites:
 # MAGIC     print(f"Query: {query}")
 # MAGIC     print(f"Intent: {intent_type}")
 # MAGIC     
-# MAGIC     # INTENT-AWARE: Skip clarification for clarification responses
-# MAGIC     if intent_type == "clarification_response":
-# MAGIC         print("✓ Intent is clarification_response - skipping clarity check")
-# MAGIC         print(f"  Using context summary from intent detection")
-# MAGIC         writer({"type": "clarification_skipped", "reason": "Intent is clarification_response"})
+# MAGIC     # DEFENSE-IN-DEPTH: Multiple layers of protection against clarifying clarification responses
+# MAGIC     # Layer 1: Primary check using helper function (consistent with adaptive strategy)
+# MAGIC     if should_skip_clarification_for_intent(intent_type):
+# MAGIC         print(f"✓✓ CLARIFICATION SKIP TRIGGERED (Layer 1) ✓✓")
+# MAGIC         print(f"   Intent type '{intent_type}' should never be clarified")
+# MAGIC         print(f"   Reason: User is already responding to a clarification request")
+# MAGIC         print(f"   Using context summary from intent detection (validated by 2-phase approach)")
+# MAGIC         print(f"   Context: {context_summary[:200] if context_summary else 'N/A'}...")
+# MAGIC         
+# MAGIC         writer({
+# MAGIC             "type": "clarification_skipped", 
+# MAGIC             "reason": f"Intent type '{intent_type}' should skip clarification",
+# MAGIC             "layer": "primary_intent_check",
+# MAGIC             "validated_by": "two_phase_detection"
+# MAGIC         })
 # MAGIC         
 # MAGIC         return {
 # MAGIC             "question_clear": True,
 # MAGIC             "next_agent": "planning",
 # MAGIC             "pending_clarification": None,
 # MAGIC             "messages": [
-# MAGIC                 SystemMessage(content=f"Clarification response processed. Context: {context_summary[:200]}...")
+# MAGIC                 SystemMessage(content=f"Clarification response processed (validated by 2-phase detection). Context: {context_summary[:200] if context_summary else 'N/A'}...")
+# MAGIC             ]
+# MAGIC         }
+# MAGIC     
+# MAGIC     # Layer 2: Explicit check for clarification_response (backward compatibility)
+# MAGIC     if intent_type == "clarification_response":
+# MAGIC         # This should never be reached due to Layer 1, but kept as defensive programming
+# MAGIC         print("⚠ WARNING: Layer 2 clarification skip triggered (should not happen!)")
+# MAGIC         print("  This indicates Layer 1 check may have failed - investigating...")
+# MAGIC         print(f"  Intent: {intent_type}")
+# MAGIC         writer({"type": "clarification_skipped", "reason": "Intent is clarification_response", "layer": "fallback_explicit_check"})
+# MAGIC         
+# MAGIC         return {
+# MAGIC             "question_clear": True,
+# MAGIC             "next_agent": "planning",
+# MAGIC             "pending_clarification": None,
+# MAGIC             "messages": [
+# MAGIC                 SystemMessage(content=f"Clarification response processed (fallback). Context: {context_summary[:200] if context_summary else 'N/A'}...")
 # MAGIC             ]
 # MAGIC         }
 # MAGIC     
