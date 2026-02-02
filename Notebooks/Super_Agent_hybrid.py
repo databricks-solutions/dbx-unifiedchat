@@ -4437,6 +4437,31 @@ result1 = AGENT.predict(ResponsesAgentRequest(
 
 # DBTITLE 1,switch to new topic
 follow_up_msg =  "What is the average cost of medical claims for patients diagnosed with diabetes, broken down by insurance payer type and patient age group? use genie route"
+# thread_id = f"test-streaming-{str(uuid4())[:8]}"
+print("thread_id in use:", thread_id)
+# follow up of thread from above, update here
+# First message
+result1 = AGENT.predict(ResponsesAgentRequest(
+    input=[{"role": "user", "content": f"{follow_up_msg}"}],
+    custom_inputs={"thread_id": f"{thread_id}"}
+))
+
+# COMMAND ----------
+
+follow_up_msg =  "now I want to include extra filter for members also diagnosed with CHF"
+# thread_id = f"test-streaming-{str(uuid4())[:8]}"
+print("thread_id in use:", thread_id)
+# follow up of thread from above, update here
+# First message
+result1 = AGENT.predict(ResponsesAgentRequest(
+    input=[{"role": "user", "content": f"{follow_up_msg}"}],
+    custom_inputs={"thread_id": f"{thread_id}"}
+))
+
+# COMMAND ----------
+
+# DBTITLE 1,new thread new topic
+follow_up_msg =  "What is the average cost of medical claims for patients diagnosed with diabetes, broken down by insurance payer type and patient age group? use table route"
 thread_id = f"test-streaming-{str(uuid4())[:8]}"
 print("thread_id in use:", thread_id)
 # follow up of thread from above, update here
@@ -4449,7 +4474,7 @@ result1 = AGENT.predict(ResponsesAgentRequest(
 # COMMAND ----------
 
 # DBTITLE 1,response to clarify
-follow_up_msg =  "you decide; use genie route"
+follow_up_msg =  "you decide"
 print("thread_id in use:", thread_id)
 # follow up of thread from above, update here
 # First message
