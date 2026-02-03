@@ -1858,8 +1858,22 @@ Prerequisites:
 # MAGIC             if sql_match:
 # MAGIC                 extracted_sql = sql_match.group(1).strip()
 # MAGIC         
-# MAGIC         # Step 2: Add LIMIT clause if not present (for safety)
-# MAGIC         if "limit" not in extracted_sql.lower():
+# MAGIC         # Step 2: Enforce LIMIT clause (for safety and token management)
+# MAGIC         # Always enforce max_rows limit, even if query already has LIMIT
+# MAGIC         limit_pattern = re.search(r'\bLIMIT\s+(\d+)\b', extracted_sql, re.IGNORECASE)
+# MAGIC         if limit_pattern:
+# MAGIC             existing_limit = int(limit_pattern.group(1))
+# MAGIC             if existing_limit > max_rows:
+# MAGIC                 # Replace existing LIMIT with max_rows if it exceeds the limit
+# MAGIC                 extracted_sql = re.sub(
+# MAGIC                     r'\bLIMIT\s+\d+\b', 
+# MAGIC                     f'LIMIT {max_rows}', 
+# MAGIC                     extracted_sql, 
+# MAGIC                     flags=re.IGNORECASE
+# MAGIC                 )
+# MAGIC                 print(f"⚠️  Reduced LIMIT from {existing_limit} to {max_rows} (max_rows enforcement)")
+# MAGIC         else:
+# MAGIC             # Add LIMIT if not present
 # MAGIC             extracted_sql = f"{extracted_sql.rstrip(';')} LIMIT {max_rows}"
 # MAGIC         
 # MAGIC         try:
@@ -2106,11 +2120,44 @@ Prerequisites:
 # MAGIC                     row_count = exec_result.get('row_count', 0)
 # MAGIC                     columns = exec_result.get('columns', [])
 # MAGIC                     result = exec_result.get('result', [])
+# MAGIC                     
+# MAGIC                     # TOKEN PROTECTION: Sample results to prevent huge prompts
+# MAGIC                     # - Max 10 rows
+# MAGIC                     # - Max 10 columns per row
+# MAGIC                     # - Max 5000 characters for JSON
+# MAGIC                     MAX_PREVIEW_ROWS = 10
+# MAGIC                     MAX_PREVIEW_COLS = 10
+# MAGIC                     MAX_JSON_CHARS = 5000
+# MAGIC                     
+# MAGIC                     # Sample rows
+# MAGIC                     result_preview = result[:MAX_PREVIEW_ROWS] if len(result) > MAX_PREVIEW_ROWS else result
+# MAGIC                     
+# MAGIC                     # Sample columns (if result has too many columns)
+# MAGIC                     if result_preview and len(columns) > MAX_PREVIEW_COLS:
+# MAGIC                         # Keep only first MAX_PREVIEW_COLS columns
+# MAGIC                         sampled_cols = columns[:MAX_PREVIEW_COLS]
+# MAGIC                         result_preview = [
+# MAGIC                             {k: v for k, v in row.items() if k in sampled_cols}
+# MAGIC                             for row in result_preview
+# MAGIC                         ]
+# MAGIC                         col_display = ', '.join(sampled_cols) + f'... (+{len(columns) - MAX_PREVIEW_COLS} more columns)'
+# MAGIC                     else:
+# MAGIC                         col_display = ', '.join(columns[:10]) + ('...' if len(columns) > 10 else '')
+# MAGIC                     
+# MAGIC                     # Serialize to JSON
+# MAGIC                     result_json = self._safe_json_dumps(result_preview, indent=2)
+# MAGIC                     
+# MAGIC                     # Truncate JSON if too large
+# MAGIC                     if len(result_json) > MAX_JSON_CHARS:
+# MAGIC                         result_json = result_json[:MAX_JSON_CHARS] + f'\n... (truncated, {len(result_json) - MAX_JSON_CHARS} chars omitted)'
+# MAGIC                     
 # MAGIC                     prompt += f"""**Execution:** ✅ Successful
-# MAGIC **Rows:** {row_count} rows returned
-# MAGIC **Columns:** {', '.join(columns[:5])}{'...' if len(columns) > 5 else ''}
+# MAGIC **Rows:** {row_count} rows returned{f' (showing first {MAX_PREVIEW_ROWS})' if row_count > MAX_PREVIEW_ROWS else ''}
+# MAGIC **Columns:** {col_display}
 # MAGIC
-# MAGIC **Result:** {self._safe_json_dumps(result, indent=2)}
+# MAGIC **Result Preview:** 
+# MAGIC {result_json}
+# MAGIC {f'... and {row_count - MAX_PREVIEW_ROWS} more rows' if row_count > MAX_PREVIEW_ROWS else ''}
 # MAGIC """
 # MAGIC                 elif execution_error:
 # MAGIC                     prompt += f"""**Execution:** ❌ Failed
