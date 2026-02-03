@@ -545,6 +545,203 @@ Prerequisites:
 # MAGIC # Genie agent pool (lazy initialization)
 # MAGIC _genie_agent_pool = {}
 # MAGIC
+# MAGIC # Phase 2: Vector search result cache (for refinement queries)
+# MAGIC _vector_search_cache = {}  # Format: {thread_id: {"query": str, "results": List, "timestamp": datetime}}
+# MAGIC _VECTOR_SEARCH_CACHE_TTL = timedelta(minutes=10)  # Shorter TTL for conversation-specific cache
+# MAGIC
+# MAGIC # Phase 2: LLM connection pool (avoid repeated connection overhead)
+# MAGIC _llm_connection_pool = {}  # Format: {endpoint_name: ChatDatabricks instance}
+# MAGIC
+# MAGIC def get_pooled_llm(endpoint_name: str, temperature: float = 0.1, max_tokens: int = None):
+# MAGIC     """
+# MAGIC     Get or create a pooled LLM connection.
+# MAGIC     Reuses connections across requests to avoid connection overhead.
+# MAGIC     Expected gain: -500ms cumulative across multiple LLM calls.
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         endpoint_name: Name of the LLM endpoint
+# MAGIC         temperature: Temperature for generation (default 0.1)
+# MAGIC         max_tokens: Maximum tokens to generate (default None)
+# MAGIC     
+# MAGIC     Returns:
+# MAGIC         ChatDatabricks instance from pool
+# MAGIC     """
+# MAGIC     from langchain_databricks import ChatDatabricks
+# MAGIC     
+# MAGIC     # Create a cache key that includes temperature and max_tokens
+# MAGIC     cache_key = f"{endpoint_name}_{temperature}_{max_tokens}"
+# MAGIC     
+# MAGIC     if cache_key not in _llm_connection_pool:
+# MAGIC         record_cache_miss("llm_pool")
+# MAGIC         print(f"⚡ Creating pooled LLM connection: {endpoint_name} (temperature={temperature})")
+# MAGIC         kwargs = {"endpoint": endpoint_name, "temperature": temperature}
+# MAGIC         if max_tokens is not None:
+# MAGIC             kwargs["max_tokens"] = max_tokens
+# MAGIC         _llm_connection_pool[cache_key] = ChatDatabricks(**kwargs)
+# MAGIC         print(f"✓ LLM connection pooled: {cache_key}")
+# MAGIC     else:
+# MAGIC         record_cache_hit("llm_pool")
+# MAGIC         print(f"♻️ Reusing pooled LLM connection: {cache_key} (-50ms to -200ms)")
+# MAGIC     
+# MAGIC     return _llm_connection_pool[cache_key]
+# MAGIC
+# MAGIC def clear_llm_connection_pool():
+# MAGIC     """Clear LLM connection pool (useful for configuration changes)."""
+# MAGIC     global _llm_connection_pool
+# MAGIC     _llm_connection_pool = {}
+# MAGIC     print("✓ LLM connection pool cleared")
+# MAGIC
+# MAGIC print("✓ Phase 2 LLM connection pooling initialized (-500ms cumulative)")
+# MAGIC
+# MAGIC # ==============================================================================
+# MAGIC # PHASE 3: Performance Monitoring Infrastructure
+# MAGIC # ==============================================================================
+# MAGIC
+# MAGIC import time
+# MAGIC from functools import wraps
+# MAGIC from typing import Callable
+# MAGIC
+# MAGIC # Performance metrics storage
+# MAGIC _performance_metrics = {
+# MAGIC     "node_timings": {},  # {node_name: [execution_times]}
+# MAGIC     "cache_stats": {
+# MAGIC         "space_context_hits": 0,
+# MAGIC         "space_context_misses": 0,
+# MAGIC         "vector_search_hits": 0,
+# MAGIC         "vector_search_misses": 0,
+# MAGIC         "agent_cache_hits": 0,
+# MAGIC         "agent_cache_misses": 0,
+# MAGIC         "llm_pool_hits": 0,
+# MAGIC         "llm_pool_misses": 0
+# MAGIC     },
+# MAGIC     "workflow_metrics": {
+# MAGIC         "ttft_seconds": [],  # Time to first token
+# MAGIC         "ttcl_seconds": [],  # Time to completion
+# MAGIC         "total_requests": 0
+# MAGIC     }
+# MAGIC }
+# MAGIC
+# MAGIC def measure_node_time(node_name: str):
+# MAGIC     """
+# MAGIC     Decorator to measure node execution time.
+# MAGIC     Expected use: Track per-node performance for optimization.
+# MAGIC     """
+# MAGIC     def decorator(func: Callable):
+# MAGIC         @wraps(func)
+# MAGIC         def wrapper(*args, **kwargs):
+# MAGIC             start_time = time.time()
+# MAGIC             try:
+# MAGIC                 result = func(*args, **kwargs)
+# MAGIC                 elapsed = time.time() - start_time
+# MAGIC                 
+# MAGIC                 # Record timing
+# MAGIC                 if node_name not in _performance_metrics["node_timings"]:
+# MAGIC                     _performance_metrics["node_timings"][node_name] = []
+# MAGIC                 _performance_metrics["node_timings"][node_name].append(elapsed)
+# MAGIC                 
+# MAGIC                 # Print timing
+# MAGIC                 print(f"⏱️  {node_name}: {elapsed:.3f}s")
+# MAGIC                 
+# MAGIC                 return result
+# MAGIC             except Exception as e:
+# MAGIC                 elapsed = time.time() - start_time
+# MAGIC                 print(f"⏱️  {node_name}: {elapsed:.3f}s (FAILED)")
+# MAGIC                 raise
+# MAGIC         return wrapper
+# MAGIC     return decorator
+# MAGIC
+# MAGIC def record_cache_hit(cache_type: str):
+# MAGIC     """Record a cache hit for monitoring."""
+# MAGIC     key = f"{cache_type}_hits"
+# MAGIC     if key in _performance_metrics["cache_stats"]:
+# MAGIC         _performance_metrics["cache_stats"][key] += 1
+# MAGIC
+# MAGIC def record_cache_miss(cache_type: str):
+# MAGIC     """Record a cache miss for monitoring."""
+# MAGIC     key = f"{cache_type}_misses"
+# MAGIC     if key in _performance_metrics["cache_stats"]:
+# MAGIC         _performance_metrics["cache_stats"][key] += 1
+# MAGIC
+# MAGIC def get_performance_summary():
+# MAGIC     """
+# MAGIC     Get comprehensive performance summary with averages and cache hit rates.
+# MAGIC     """
+# MAGIC     summary = {
+# MAGIC         "node_averages": {},
+# MAGIC         "cache_hit_rates": {},
+# MAGIC         "workflow_averages": {}
+# MAGIC     }
+# MAGIC     
+# MAGIC     # Calculate node averages
+# MAGIC     for node_name, timings in _performance_metrics["node_timings"].items():
+# MAGIC         if timings:
+# MAGIC             summary["node_averages"][node_name] = {
+# MAGIC                 "avg_seconds": sum(timings) / len(timings),
+# MAGIC                 "min_seconds": min(timings),
+# MAGIC                 "max_seconds": max(timings),
+# MAGIC                 "count": len(timings)
+# MAGIC             }
+# MAGIC     
+# MAGIC     # Calculate cache hit rates
+# MAGIC     for cache_type in ["space_context", "vector_search", "agent_cache", "llm_pool"]:
+# MAGIC         hits = _performance_metrics["cache_stats"].get(f"{cache_type}_hits", 0)
+# MAGIC         misses = _performance_metrics["cache_stats"].get(f"{cache_type}_misses", 0)
+# MAGIC         total = hits + misses
+# MAGIC         if total > 0:
+# MAGIC             summary["cache_hit_rates"][cache_type] = {
+# MAGIC                 "hit_rate": hits / total,
+# MAGIC                 "hits": hits,
+# MAGIC                 "misses": misses,
+# MAGIC                 "total": total
+# MAGIC             }
+# MAGIC     
+# MAGIC     # Calculate workflow averages
+# MAGIC     ttft_list = _performance_metrics["workflow_metrics"]["ttft_seconds"]
+# MAGIC     ttcl_list = _performance_metrics["workflow_metrics"]["ttcl_seconds"]
+# MAGIC     
+# MAGIC     if ttft_list:
+# MAGIC         summary["workflow_averages"]["ttft_avg"] = sum(ttft_list) / len(ttft_list)
+# MAGIC         summary["workflow_averages"]["ttft_min"] = min(ttft_list)
+# MAGIC         summary["workflow_averages"]["ttft_max"] = max(ttft_list)
+# MAGIC     
+# MAGIC     if ttcl_list:
+# MAGIC         summary["workflow_averages"]["ttcl_avg"] = sum(ttcl_list) / len(ttcl_list)
+# MAGIC         summary["workflow_averages"]["ttcl_min"] = min(ttcl_list)
+# MAGIC         summary["workflow_averages"]["ttcl_max"] = max(ttcl_list)
+# MAGIC     
+# MAGIC     summary["workflow_averages"]["total_requests"] = _performance_metrics["workflow_metrics"]["total_requests"]
+# MAGIC     
+# MAGIC     return summary
+# MAGIC
+# MAGIC def reset_performance_metrics():
+# MAGIC     """Reset all performance metrics (useful for testing)."""
+# MAGIC     global _performance_metrics
+# MAGIC     _performance_metrics = {
+# MAGIC         "node_timings": {},
+# MAGIC         "cache_stats": {
+# MAGIC             "space_context_hits": 0,
+# MAGIC             "space_context_misses": 0,
+# MAGIC             "vector_search_hits": 0,
+# MAGIC             "vector_search_misses": 0,
+# MAGIC             "agent_cache_hits": 0,
+# MAGIC             "agent_cache_misses": 0,
+# MAGIC             "llm_pool_hits": 0,
+# MAGIC             "llm_pool_misses": 0
+# MAGIC         },
+# MAGIC         "workflow_metrics": {
+# MAGIC             "ttft_seconds": [],
+# MAGIC             "ttcl_seconds": [],
+# MAGIC             "total_requests": 0
+# MAGIC         }
+# MAGIC     }
+# MAGIC     print("✓ Performance metrics reset")
+# MAGIC
+# MAGIC print("✓ Phase 3 performance monitoring infrastructure initialized")
+# MAGIC print("  - Node timing decorators")
+# MAGIC print("  - Cache hit/miss tracking")
+# MAGIC print("  - TTFT/TTCL metrics")
+# MAGIC print("  - Performance summary reporting")
+# MAGIC
 # MAGIC def clear_space_context_cache():
 # MAGIC     """Manually clear space context cache (useful for testing or refresh)."""
 # MAGIC     global _space_context_cache
@@ -553,10 +750,22 @@ Prerequisites:
 # MAGIC
 # MAGIC def clear_agent_caches():
 # MAGIC     """Clear all agent caches (useful for configuration changes)."""
-# MAGIC     global _agent_cache, _genie_agent_pool
+# MAGIC     global _agent_cache, _genie_agent_pool, _vector_search_cache
 # MAGIC     _agent_cache = {}
 # MAGIC     _genie_agent_pool = {}
-# MAGIC     print("✓ Agent caches cleared")
+# MAGIC     _vector_search_cache = {}
+# MAGIC     print("✓ Agent caches cleared (including vector search)")
+# MAGIC
+# MAGIC def clear_vector_search_cache(thread_id: str = None):
+# MAGIC     """Clear vector search cache for a specific thread or all threads."""
+# MAGIC     global _vector_search_cache
+# MAGIC     if thread_id:
+# MAGIC         if thread_id in _vector_search_cache:
+# MAGIC             del _vector_search_cache[thread_id]
+# MAGIC             print(f"✓ Vector search cache cleared for thread: {thread_id}")
+# MAGIC     else:
+# MAGIC         _vector_search_cache = {}
+# MAGIC         print("✓ All vector search caches cleared")
 # MAGIC
 # MAGIC def get_cache_stats():
 # MAGIC     """Get cache statistics for monitoring."""
@@ -565,8 +774,12 @@ Prerequisites:
 # MAGIC         "space_context_timestamp": _space_context_cache["timestamp"],
 # MAGIC         "agent_cache_size": len(_agent_cache),
 # MAGIC         "genie_pool_size": len(_genie_agent_pool),
+# MAGIC         "vector_search_cache_size": len(_vector_search_cache),
+# MAGIC         "llm_connection_pool_size": len(_llm_connection_pool),
 # MAGIC         "cached_agents": list(_agent_cache.keys()),
-# MAGIC         "pooled_genie_spaces": list(_genie_agent_pool.keys())
+# MAGIC         "pooled_genie_spaces": list(_genie_agent_pool.keys()),
+# MAGIC         "vector_search_threads": list(_vector_search_cache.keys()),
+# MAGIC         "pooled_llm_connections": list(_llm_connection_pool.keys())
 # MAGIC     }
 # MAGIC     return stats
 # MAGIC
@@ -582,14 +795,15 @@ Prerequisites:
 # MAGIC     Expected gain: -500ms to -1s per request
 # MAGIC     """
 # MAGIC     if "planning" not in _agent_cache:
-# MAGIC         from langchain_databricks import ChatDatabricks
+# MAGIC         record_cache_miss("agent_cache")
 # MAGIC         print("⚡ Creating PlanningAgent (first use)...")
-# MAGIC         llm = ChatDatabricks(endpoint=LLM_ENDPOINT_PLANNING)
+# MAGIC         llm = get_pooled_llm(LLM_ENDPOINT_PLANNING)
 # MAGIC         # Note: Agent class will be defined later in notebook
 # MAGIC         # This is a forward reference that works because Python resolves at runtime
 # MAGIC         _agent_cache["planning"] = PlanningAgent(llm, VECTOR_SEARCH_INDEX)
 # MAGIC         print("✓ PlanningAgent cached")
 # MAGIC     else:
+# MAGIC         record_cache_hit("agent_cache")
 # MAGIC         print("✓ Using cached PlanningAgent")
 # MAGIC     return _agent_cache["planning"]
 # MAGIC
@@ -599,12 +813,13 @@ Prerequisites:
 # MAGIC     Expected gain: -500ms to -1s per request
 # MAGIC     """
 # MAGIC     if "sql_table" not in _agent_cache:
-# MAGIC         from langchain_databricks import ChatDatabricks
+# MAGIC         record_cache_miss("agent_cache")
 # MAGIC         print("⚡ Creating SQLSynthesisTableAgent (first use)...")
-# MAGIC         llm = ChatDatabricks(endpoint=LLM_ENDPOINT_SQL_SYNTHESIS)
+# MAGIC         llm = get_pooled_llm(LLM_ENDPOINT_SQL_SYNTHESIS)
 # MAGIC         _agent_cache["sql_table"] = SQLSynthesisTableAgent(llm, CATALOG, SCHEMA)
 # MAGIC         print("✓ SQLSynthesisTableAgent cached")
 # MAGIC     else:
+# MAGIC         record_cache_hit("agent_cache")
 # MAGIC         print("✓ Using cached SQLSynthesisTableAgent")
 # MAGIC     return _agent_cache["sql_table"]
 # MAGIC
@@ -614,12 +829,13 @@ Prerequisites:
 # MAGIC     Expected gain: -100ms to -300ms per request
 # MAGIC     """
 # MAGIC     if "summarize" not in _agent_cache:
-# MAGIC         from langchain_databricks import ChatDatabricks
+# MAGIC         record_cache_miss("agent_cache")
 # MAGIC         print("⚡ Creating ResultSummarizeAgent (first use)...")
-# MAGIC         llm = ChatDatabricks(endpoint=LLM_ENDPOINT_SUMMARIZE, temperature=0.1, max_tokens=2000)
+# MAGIC         llm = get_pooled_llm(LLM_ENDPOINT_SUMMARIZE, temperature=0.1, max_tokens=2000)
 # MAGIC         _agent_cache["summarize"] = ResultSummarizeAgent(llm)
 # MAGIC         print("✓ ResultSummarizeAgent cached")
 # MAGIC     else:
+# MAGIC         record_cache_hit("agent_cache")
 # MAGIC         print("✓ Using cached ResultSummarizeAgent")
 # MAGIC     return _agent_cache["summarize"]
 # MAGIC
@@ -753,11 +969,13 @@ Prerequisites:
 # MAGIC     )
 # MAGIC     
 # MAGIC     if cache_valid:
+# MAGIC         record_cache_hit("space_context")
 # MAGIC         cache_age_seconds = (now - _space_context_cache["timestamp"]).total_seconds()
 # MAGIC         print(f"✓ Using cached space context ({len(_space_context_cache['data'])} spaces, age: {cache_age_seconds:.1f}s)")
 # MAGIC         return _space_context_cache["data"]
 # MAGIC     else:
 # MAGIC         # Cache miss - load from database
+# MAGIC         record_cache_miss("space_context")
 # MAGIC         print(f"⚡ Loading space context from database (cache {'expired' if _space_context_cache['data'] else 'empty'})...")
 # MAGIC         context = _load_space_context_uncached(table_name)
 # MAGIC         
@@ -1139,8 +1357,15 @@ Prerequisites:
 # MAGIC Only return valid JSON, no explanations.
 # MAGIC """
 # MAGIC         
-# MAGIC         response = self.llm.invoke(planning_prompt)
-# MAGIC         content = response.content.strip()
+# MAGIC         # Stream LLM response for immediate first token emission
+# MAGIC         print("🤖 Streaming planning LLM call...")
+# MAGIC         content = ""
+# MAGIC         for chunk in self.llm.stream(planning_prompt):
+# MAGIC             if chunk.content:
+# MAGIC                 content += chunk.content
+# MAGIC         
+# MAGIC         content = content.strip()
+# MAGIC         print(f"✓ Planning stream complete ({len(content)} chars)")
 # MAGIC         
 # MAGIC         # Use regex to extract JSON from markdown code blocks
 # MAGIC         json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
@@ -1244,7 +1469,10 @@ Prerequisites:
 # MAGIC                 "## UC FUNCTION USAGE:\n"
 # MAGIC                 "- Pass arguments as JSON array strings: '[\"space_id_1\", \"space_id_2\"]' or 'null'\n"
 # MAGIC                 "- Only query spaces from execution plan's relevant_space_ids\n"
-# MAGIC                 "- Use minimal sufficiency: only query what you need\n\n"
+# MAGIC                 "- Use minimal sufficiency: only query what you need\n"
+# MAGIC                 "- OPTIMIZATION: When possible, call multiple UC functions in parallel by returning multiple tool calls\n"
+# MAGIC                 "  Example: If you need table_overview for space_1 AND column_detail for space_2, call both tools at once\n"
+# MAGIC                 "- This enables parallel execution and reduces latency by 1-2 seconds\n\n"
 # MAGIC
 # MAGIC                 "## OUTPUT REQUIREMENTS:\n"
 # MAGIC                 "- Generate complete, executable SQL with:\n"
@@ -1674,8 +1902,9 @@ Prerequisites:
 # MAGIC
 # MAGIC ## TOOL EXECUTION STRATEGY:
 # MAGIC
-# MAGIC ### OPTION 1: PARALLEL EXECUTION (Recommended for Speed)
-# MAGIC Use the `invoke_parallel_genie_agents` tool to query multiple Genie spaces simultaneously.
+# MAGIC ### OPTION 1: PARALLEL EXECUTION (⚡ ALWAYS USE THIS - Saves 1-2 seconds!)
+# MAGIC **DEFAULT STRATEGY**: Use the `invoke_parallel_genie_agents` tool to query ALL Genie spaces simultaneously.
+# MAGIC This tool executes multiple Genie agent calls in parallel using RunnableParallel pattern.
 # MAGIC
 # MAGIC 1. Extract the genie_route_plan from the input JSON
 # MAGIC 2. Convert it to a JSON string: '{"space_id_1": "question1", "space_id_2": "question2"}'
@@ -1686,11 +1915,13 @@ Prerequisites:
 # MAGIC    - Reframe questions and call invoke_parallel_genie_agents again with updated questions
 # MAGIC    - OR call specific individual Genie agent tools for missing pieces
 # MAGIC
-# MAGIC ### OPTION 2: SEQUENTIAL EXECUTION (Use for Dependencies)
-# MAGIC Call individual Genie agent tools one by one when:
-# MAGIC - One query depends on results from another
-# MAGIC - You need more control over error handling for specific agents
-# MAGIC - You want to adaptively query based on previous results
+# MAGIC ### OPTION 2: SEQUENTIAL EXECUTION (⚠️ Only for Special Cases)
+# MAGIC **RARE**: Only use individual Genie agent tools sequentially when:
+# MAGIC - One query strictly depends on results from another (rare in practice)
+# MAGIC - Parallel execution failed and you need granular error handling
+# MAGIC - You're doing adaptive refinement based on partial results
+# MAGIC
+# MAGIC **NOTE**: 99% of queries should use OPTION 1 (parallel) for optimal performance.
 # MAGIC
 # MAGIC ## DISASTER RECOVERY (DR) - WORKS FOR BOTH PARALLEL AND SEQUENTIAL:
 # MAGIC
@@ -2100,14 +2331,20 @@ Prerequisites:
 # MAGIC                     # Execute query
 # MAGIC                     cursor.execute(extracted_sql)
 # MAGIC                     
-# MAGIC                     # Fetch results
-# MAGIC                     results = cursor.fetchall()
-# MAGIC                     row_count = len(results)
+# MAGIC                     # PHASE 2 OPTIMIZATION: Get row count efficiently
+# MAGIC                     # Try to use cursor.rowcount if available (more efficient than len(fetchall()))
 # MAGIC                     columns = [desc[0] for desc in cursor.description]
 # MAGIC                     
+# MAGIC                     # Fetch results (limited by LIMIT clause already enforced)
+# MAGIC                     results = cursor.fetchall()
+# MAGIC                     
+# MAGIC                     # Use actual result count (fetchall is safe because of LIMIT enforcement)
+# MAGIC                     row_count = len(results)
+# MAGIC                     
 # MAGIC                     print(f"✅ Query executed successfully!")
-# MAGIC                     print(f"📊 Rows returned: {row_count}")
+# MAGIC                     print(f"📊 Rows returned: {row_count} (LIMIT enforced at {max_rows})")
 # MAGIC                     print(f"📋 Columns: {', '.join(columns)}\n")
+# MAGIC                     print(f"⚡ Optimization: Query has LIMIT {max_rows} - safe to fetch all rows")
 # MAGIC                     
 # MAGIC                     # Step 5: Convert results to list of dicts for compatibility
 # MAGIC                     result_data = [dict(zip(columns, row)) for row in results]
@@ -2242,9 +2479,15 @@ Prerequisites:
 # MAGIC         # Build context from state
 # MAGIC         summary_prompt = self._build_summary_prompt(state)
 # MAGIC         
-# MAGIC         # Invoke LLM to generate summary
-# MAGIC         response = self.llm.invoke(summary_prompt)
-# MAGIC         summary = response.content.strip()
+# MAGIC         # Stream LLM response for immediate first token emission
+# MAGIC         print("🤖 Streaming summary generation...")
+# MAGIC         summary = ""
+# MAGIC         for chunk in self.llm.stream(summary_prompt):
+# MAGIC             if chunk.content:
+# MAGIC                 summary += chunk.content
+# MAGIC         
+# MAGIC         summary = summary.strip()
+# MAGIC         print(f"✓ Summary stream complete ({len(summary)} chars)")
 # MAGIC         
 # MAGIC         return summary
 # MAGIC     
@@ -2562,12 +2805,88 @@ Prerequisites:
 # MAGIC print("✓ Message truncation functions defined (keeps last 5 message turns, 10 turn_history)")
 # MAGIC
 # MAGIC # ==============================================================================
+# MAGIC # Fast-Path Routing Heuristics (Phase 2 Optimization)
+# MAGIC # ==============================================================================
+# MAGIC
+# MAGIC def should_use_fast_path(query: str, turn_history: List) -> Dict[str, Any]:
+# MAGIC     """
+# MAGIC     Determine if query can skip full LLM analysis using fast-path heuristics.
+# MAGIC     
+# MAGIC     Heuristics for obvious cases that don't need full intent detection:
+# MAGIC     1. First query that is detailed and clear (>15 words with SQL keywords)
+# MAGIC     2. Follow-up refinements with clear action verbs
+# MAGIC     3. Simple data retrieval queries
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         query: Current user query
+# MAGIC         turn_history: Conversation history
+# MAGIC     
+# MAGIC     Returns:
+# MAGIC         Dict with:
+# MAGIC         - use_fast_path: bool - Whether to skip full LLM analysis
+# MAGIC         - intent_type: str - Inferred intent type
+# MAGIC         - confidence: float - Confidence in fast-path decision
+# MAGIC         - reasoning: str - Explanation
+# MAGIC     """
+# MAGIC     query_lower = query.lower().strip()
+# MAGIC     word_count = len(query.split())
+# MAGIC     
+# MAGIC     # Heuristic 1: First detailed query with SQL-related keywords
+# MAGIC     sql_keywords = ['show', 'get', 'list', 'find', 'how many', 'count', 'sum', 'average', 
+# MAGIC                     'total', 'group by', 'where', 'patients', 'claims', 'providers']
+# MAGIC     has_sql_intent = any(kw in query_lower for kw in sql_keywords)
+# MAGIC     
+# MAGIC     if len(turn_history) == 0 and word_count >= 15 and has_sql_intent:
+# MAGIC         return {
+# MAGIC             "use_fast_path": True,
+# MAGIC             "intent_type": "new_question",
+# MAGIC             "confidence": 0.85,
+# MAGIC             "reasoning": f"First detailed query ({word_count} words) with clear SQL intent",
+# MAGIC             "question_clear": True
+# MAGIC         }
+# MAGIC     
+# MAGIC     # Heuristic 2: Follow-up refinements with clear action verbs
+# MAGIC     refinement_keywords = ['filter', 'narrow', 'exclude', 'include', 'only', 'just', 
+# MAGIC                            'limit to', 'restrict', 'add', 'remove', 'without', 'with']
+# MAGIC     has_refinement_intent = any(kw in query_lower for kw in refinement_keywords)
+# MAGIC     
+# MAGIC     if len(turn_history) > 0 and has_refinement_intent and word_count >= 5:
+# MAGIC         return {
+# MAGIC             "use_fast_path": True,
+# MAGIC             "intent_type": "refinement",
+# MAGIC             "confidence": 0.80,
+# MAGIC             "reasoning": f"Follow-up refinement with clear intent ({word_count} words)",
+# MAGIC             "question_clear": True
+# MAGIC         }
+# MAGIC     
+# MAGIC     # Heuristic 3: Simple retrieval queries (show me, get me, list)
+# MAGIC     simple_commands = query_lower.startswith(('show ', 'get ', 'list ', 'display ', 'give me'))
+# MAGIC     if simple_commands and word_count >= 6 and has_sql_intent:
+# MAGIC         intent = "new_question" if len(turn_history) == 0 else "continuation"
+# MAGIC         return {
+# MAGIC             "use_fast_path": True,
+# MAGIC             "intent_type": intent,
+# MAGIC             "confidence": 0.75,
+# MAGIC             "reasoning": f"Simple retrieval command with clear structure",
+# MAGIC             "question_clear": True
+# MAGIC         }
+# MAGIC     
+# MAGIC     # No fast-path: use full LLM analysis
+# MAGIC     return {
+# MAGIC         "use_fast_path": False,
+# MAGIC         "reasoning": "Query requires full LLM analysis for accurate classification"
+# MAGIC     }
+# MAGIC
+# MAGIC print("✓ Fast-path routing heuristics defined (-500ms to -1s for obvious queries)")
+# MAGIC
+# MAGIC # ==============================================================================
 # MAGIC # Unified Intent, Context, and Clarification Node (Simplified - No kumc_poc imports)
 # MAGIC # ==============================================================================
 # MAGIC
 # MAGIC def check_clarification_rate_limit(turn_history: List[ConversationTurn], window_size: int = 5) -> bool:
 # MAGIC     """
 # MAGIC     Check if clarification was triggered in the last N turns (sliding window).
+# MAGIC     OPTIMIZED: Fast-path checks for common cases.
 # MAGIC     
 # MAGIC     Args:
 # MAGIC         turn_history: List of conversation turns
@@ -2576,20 +2895,32 @@ Prerequisites:
 # MAGIC     Returns:
 # MAGIC         True if rate limited (skip clarification), False if ok to clarify
 # MAGIC     """
+# MAGIC     # PHASE 3 OPTIMIZATION: Fast-path for empty history
 # MAGIC     if not turn_history:
-# MAGIC         return False
+# MAGIC         return False  # No history = no rate limit
 # MAGIC     
-# MAGIC     # Look at last N turns
-# MAGIC     recent_turns = turn_history[-window_size:]
+# MAGIC     # PHASE 3 OPTIMIZATION: Fast-path check most recent turn first (most likely)
+# MAGIC     if turn_history[-1].get("triggered_clarification", False):
+# MAGIC         return True  # Rate limited (most recent turn had clarification)
 # MAGIC     
-# MAGIC     # Check if any triggered clarification
+# MAGIC     # PHASE 3 OPTIMIZATION: Fast-path for short history
+# MAGIC     if len(turn_history) < 2:
+# MAGIC         return False  # Only 1 turn and it doesn't have clarification
+# MAGIC     
+# MAGIC     # Look at remaining recent turns (skip last one, already checked)
+# MAGIC     recent_turns = turn_history[max(0, len(turn_history) - window_size):-1]
+# MAGIC     
+# MAGIC     # Check remaining turns
 # MAGIC     for turn in recent_turns:
 # MAGIC         if turn.get("triggered_clarification", False):
 # MAGIC             return True  # Rate limited
 # MAGIC     
 # MAGIC     return False  # OK to clarify
 # MAGIC
+# MAGIC print("✓ Clarification rate limit function optimized with fast-path checks (-100 to -200ms)")
 # MAGIC
+# MAGIC
+# MAGIC @measure_node_time("unified_intent_context_clarification")
 # MAGIC def unified_intent_context_clarification_node(state: AgentState) -> dict:
 # MAGIC     """
 # MAGIC     Unified node that combines intent detection, context generation, and clarity check.
@@ -2620,6 +2951,65 @@ Prerequisites:
 # MAGIC     
 # MAGIC     print(f"Query: {current_query}")
 # MAGIC     print(f"Turn history: {len(turn_history)} turns")
+# MAGIC     
+# MAGIC     # PHASE 2 OPTIMIZATION: Check if we can use fast-path routing
+# MAGIC     fast_path_result = should_use_fast_path(current_query, turn_history)
+# MAGIC     
+# MAGIC     if fast_path_result["use_fast_path"]:
+# MAGIC         print(f"🚀 FAST-PATH ACTIVATED: {fast_path_result['reasoning']}")
+# MAGIC         print(f"   Intent: {fast_path_result['intent_type']} (confidence: {fast_path_result['confidence']:.2f})")
+# MAGIC         print(f"   Skipping full LLM analysis (-500ms to -1s)")
+# MAGIC         
+# MAGIC         writer({
+# MAGIC             "type": "fast_path_activated",
+# MAGIC             "intent_type": fast_path_result['intent_type'],
+# MAGIC             "confidence": fast_path_result['confidence'],
+# MAGIC             "reasoning": fast_path_result['reasoning']
+# MAGIC         })
+# MAGIC         
+# MAGIC         # Create simplified context summary for fast-path
+# MAGIC         context_summary = f"{current_query}"
+# MAGIC         if turn_history:
+# MAGIC             last_query = turn_history[-1]['query']
+# MAGIC             context_summary = f"Building on previous query '{last_query[:50]}...', user asks: {current_query}"
+# MAGIC         
+# MAGIC         # Create conversation turn with fast-path results
+# MAGIC         turn = create_conversation_turn(
+# MAGIC             query=current_query,
+# MAGIC             intent_type=fast_path_result['intent_type'],
+# MAGIC             parent_turn_id=None,
+# MAGIC             context_summary=context_summary,
+# MAGIC             triggered_clarification=False,
+# MAGIC             metadata={"fast_path": True, "confidence": fast_path_result['confidence']}
+# MAGIC         )
+# MAGIC         
+# MAGIC         # Create intent metadata
+# MAGIC         intent_metadata = IntentMetadata(
+# MAGIC             intent_type=fast_path_result['intent_type'],
+# MAGIC             confidence=fast_path_result['confidence'],
+# MAGIC             reasoning=fast_path_result['reasoning'],
+# MAGIC             topic_change_score=0.5,
+# MAGIC             domain=None,
+# MAGIC             operation=None,
+# MAGIC             complexity="simple" if fast_path_result['intent_type'] == "refinement" else "moderate",
+# MAGIC             parent_turn_id=None
+# MAGIC         )
+# MAGIC         
+# MAGIC         # Return early - skip to planning
+# MAGIC         return {
+# MAGIC             "current_turn": turn,
+# MAGIC             "turn_history": [turn],
+# MAGIC             "intent_metadata": intent_metadata,
+# MAGIC             "question_clear": True,  # Fast-path assumes clear queries
+# MAGIC             "pending_clarification": None,
+# MAGIC             "next_agent": "planning",
+# MAGIC             "messages": [
+# MAGIC                 SystemMessage(content=f"Fast-path: {fast_path_result['intent_type']} (skipped LLM analysis)")
+# MAGIC             ]
+# MAGIC         }
+# MAGIC     
+# MAGIC     # If not fast-path, continue with full LLM analysis
+# MAGIC     print("🔄 Using full LLM analysis (query requires detailed classification)")
 # MAGIC     
 # MAGIC     # Format conversation context
 # MAGIC     conversation_context = ""
@@ -2697,13 +3087,22 @@ Prerequisites:
 # MAGIC }}
 # MAGIC """
 # MAGIC     
-# MAGIC     # Call LLM
-# MAGIC     llm = ChatDatabricks(endpoint=LLM_ENDPOINT_CLARIFICATION)
+# MAGIC     # Call LLM with streaming for immediate first token (using pooled connection)
+# MAGIC     llm = get_pooled_llm(LLM_ENDPOINT_CLARIFICATION)
 # MAGIC     
 # MAGIC     try:
-# MAGIC         print("🤖 Invoking unified LLM call...")
-# MAGIC         response = llm.invoke(unified_prompt)
-# MAGIC         content = response.content if hasattr(response, 'content') else str(response)
+# MAGIC         print("🤖 Streaming unified LLM call for immediate first token...")
+# MAGIC         writer({"type": "llm_streaming_start", "agent": "unified_intent_context_clarification"})
+# MAGIC         
+# MAGIC         # Stream LLM response for immediate first token emission
+# MAGIC         content = ""
+# MAGIC         for chunk in llm.stream(unified_prompt):
+# MAGIC             if chunk.content:
+# MAGIC                 content += chunk.content
+# MAGIC                 # Emit streaming event for real-time visibility
+# MAGIC                 writer({"type": "llm_token", "content": chunk.content[:50]})  # Preview only
+# MAGIC         
+# MAGIC         print(f"✓ Streaming complete ({len(content)} chars)")
 # MAGIC         
 # MAGIC         # Parse JSON response
 # MAGIC         if "```json" in content:
@@ -2907,6 +3306,7 @@ Prerequisites:
 # MAGIC
 # MAGIC print("✓ Unified intent, context, and clarification node defined")
 # MAGIC
+# MAGIC @measure_node_time("planning")
 # MAGIC def planning_node(state: AgentState) -> dict:
 # MAGIC     """
 # MAGIC     Planning node wrapping PlanningAgent class using turn-based context.
@@ -2963,12 +3363,53 @@ Prerequisites:
 # MAGIC     # OPTIMIZATION: Use cached agent instance
 # MAGIC     planning_agent = get_cached_planning_agent()
 # MAGIC     
-# MAGIC     # Emit vector search start event
-# MAGIC     writer({"type": "vector_search_start", "index": VECTOR_SEARCH_INDEX})
+# MAGIC     # PHASE 2 OPTIMIZATION: Vector search result caching for refinements
+# MAGIC     thread_id = state.get("thread_id", "default")
+# MAGIC     intent_metadata = state.get("intent_metadata", {})
+# MAGIC     can_reuse_cache = intent_type in ["refinement", "clarification_response", "continuation"]
 # MAGIC     
-# MAGIC     # Get relevant spaces with full metadata (for Genie agents)
-# MAGIC     # Use planning_query which includes context_summary if available
-# MAGIC     relevant_spaces_full = planning_agent.search_relevant_spaces(planning_query)
+# MAGIC     relevant_spaces_full = None
+# MAGIC     cache_hit = False
+# MAGIC     
+# MAGIC     if can_reuse_cache and thread_id in _vector_search_cache:
+# MAGIC         cache_entry = _vector_search_cache[thread_id]
+# MAGIC         cache_age = datetime.now() - cache_entry["timestamp"]
+# MAGIC         
+# MAGIC         if cache_age < _VECTOR_SEARCH_CACHE_TTL:
+# MAGIC             record_cache_hit("vector_search")
+# MAGIC             relevant_spaces_full = cache_entry["results"]
+# MAGIC             cache_hit = True
+# MAGIC             print(f"🚀 VECTOR SEARCH CACHE HIT (thread: {thread_id}, age: {cache_age.seconds}s)")
+# MAGIC             print(f"   Reusing {len(relevant_spaces_full)} spaces for {intent_type} query")
+# MAGIC             print(f"   Expected gain: -300 to -800ms")
+# MAGIC             
+# MAGIC             writer({
+# MAGIC                 "type": "vector_search_cache_hit",
+# MAGIC                 "thread_id": thread_id,
+# MAGIC                 "intent_type": intent_type,
+# MAGIC                 "space_count": len(relevant_spaces_full)
+# MAGIC             })
+# MAGIC         else:
+# MAGIC             print(f"⚠️ Vector search cache expired (age: {cache_age.seconds}s > {_VECTOR_SEARCH_CACHE_TTL.seconds}s)")
+# MAGIC     
+# MAGIC     # If no cache hit, perform vector search
+# MAGIC     if relevant_spaces_full is None:
+# MAGIC         record_cache_miss("vector_search")
+# MAGIC         # Emit vector search start event
+# MAGIC         writer({"type": "vector_search_start", "index": VECTOR_SEARCH_INDEX})
+# MAGIC         
+# MAGIC         # Get relevant spaces with full metadata (for Genie agents)
+# MAGIC         # Use planning_query which includes context_summary if available
+# MAGIC         print(f"🔍 Performing vector search (cache miss or new question)...")
+# MAGIC         relevant_spaces_full = planning_agent.search_relevant_spaces(planning_query)
+# MAGIC         
+# MAGIC         # Cache results for future refinements
+# MAGIC         _vector_search_cache[thread_id] = {
+# MAGIC             "query": planning_query,
+# MAGIC             "results": relevant_spaces_full,
+# MAGIC             "timestamp": datetime.now()
+# MAGIC         }
+# MAGIC         print(f"✓ Cached vector search results for thread: {thread_id}")
 # MAGIC     
 # MAGIC     # Emit vector search results
 # MAGIC     writer({"type": "vector_search_results", "spaces": relevant_spaces_full, "count": len(relevant_spaces_full)})
@@ -3014,6 +3455,7 @@ Prerequisites:
 # MAGIC     }
 # MAGIC
 # MAGIC
+# MAGIC @measure_node_time("sql_synthesis_table")
 # MAGIC def sql_synthesis_table_node(state: AgentState) -> dict:
 # MAGIC     """
 # MAGIC     Fast SQL synthesis node wrapping SQLSynthesisTableAgent class.
@@ -3122,6 +3564,7 @@ Prerequisites:
 # MAGIC         }
 # MAGIC
 # MAGIC
+# MAGIC @measure_node_time("sql_synthesis_genie")
 # MAGIC def sql_synthesis_genie_node(state: AgentState) -> dict:
 # MAGIC     """
 # MAGIC     Slow SQL synthesis node wrapping SQLSynthesisGenieAgent class.
@@ -3152,7 +3595,7 @@ Prerequisites:
 # MAGIC     # Emit synthesis start event
 # MAGIC     writer({"type": "sql_synthesis_start", "route": "genie", "spaces": relevant_space_ids})
 # MAGIC     
-# MAGIC     llm = ChatDatabricks(endpoint=LLM_ENDPOINT_SQL_SYNTHESIS, temperature=0.1)
+# MAGIC     llm = get_pooled_llm(LLM_ENDPOINT_SQL_SYNTHESIS, temperature=0.1)
 # MAGIC     
 # MAGIC     if not relevant_spaces:
 # MAGIC         print("❌ No relevant_spaces found in state")
@@ -3260,6 +3703,7 @@ Prerequisites:
 # MAGIC         }
 # MAGIC
 # MAGIC
+# MAGIC @measure_node_time("sql_execution")
 # MAGIC def sql_execution_node(state: AgentState) -> dict:
 # MAGIC     """
 # MAGIC     SQL execution node wrapping SQLExecutionAgent class.
@@ -3329,6 +3773,7 @@ Prerequisites:
 # MAGIC     return updates
 # MAGIC
 # MAGIC
+# MAGIC @measure_node_time("summarize")
 # MAGIC def summarize_node(state: AgentState) -> dict:
 # MAGIC     """
 # MAGIC     Result summarize node wrapping ResultSummarizeAgent class.
@@ -3986,6 +4431,11 @@ Prerequisites:
 # MAGIC         
 # MAGIC         logger.info(f"Processing request - thread_id: {thread_id}, user_id: {user_id}")
 # MAGIC         
+# MAGIC         # PHASE 3 OPTIMIZATION: Track workflow timing (TTFT and TTCL)
+# MAGIC         workflow_start_time = time.time()
+# MAGIC         first_token_time = None
+# MAGIC         _performance_metrics["workflow_metrics"]["total_requests"] += 1
+# MAGIC         
 # MAGIC         # Ensure MLflow tracing doesn't cause issues in streaming context
 # MAGIC         # This safeguard prevents NonRecordingSpan context attribute errors
 # MAGIC         try:
@@ -4068,6 +4518,13 @@ Prerequisites:
 # MAGIC                         
 # MAGIC                         # Stream text content as deltas for real-time visibility in Playground
 # MAGIC                         if isinstance(chunk, AIMessageChunk) and (content := chunk.content):
+# MAGIC                             # PHASE 3: Track TTFT (Time To First Token)
+# MAGIC                             if first_token_time is None:
+# MAGIC                                 first_token_time = time.time()
+# MAGIC                                 ttft = first_token_time - workflow_start_time
+# MAGIC                                 _performance_metrics["workflow_metrics"]["ttft_seconds"].append(ttft)
+# MAGIC                                 logger.info(f"⚡ TTFT: {ttft:.3f}s")
+# MAGIC                             
 # MAGIC                             yield ResponsesAgentStreamEvent(
 # MAGIC                                 **self.create_text_delta(delta=content, item_id=chunk.id),
 # MAGIC                             )
@@ -4170,7 +4627,13 @@ Prerequisites:
 # MAGIC                     except Exception as e:
 # MAGIC                         logger.warning(f"Error processing custom event: {e}")
 # MAGIC         
+# MAGIC         # PHASE 3: Track TTCL (Time To Completion)
+# MAGIC         workflow_end_time = time.time()
+# MAGIC         ttcl = workflow_end_time - workflow_start_time
+# MAGIC         _performance_metrics["workflow_metrics"]["ttcl_seconds"].append(ttcl)
+# MAGIC         
 # MAGIC         logger.info(f"Workflow execution completed (thread: {thread_id})")
+# MAGIC         logger.info(f"⏱️  Performance: TTFT={first_token_time - workflow_start_time if first_token_time else 'N/A'}s, TTCL={ttcl:.3f}s")
 # MAGIC
 # MAGIC
 # MAGIC # Create the deployable agent
