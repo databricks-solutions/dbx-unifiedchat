@@ -56,14 +56,27 @@ class UnityCatalogConfig:
 
 @dataclass
 class LLMConfig:
-    """LLM endpoint configuration."""
-    endpoint_name: str
+    """LLM endpoint configuration with agent-specific endpoints."""
+    endpoint_name: str  # Default/fallback endpoint
+    clarification_endpoint: str
+    planning_endpoint: str
+    sql_synthesis_table_endpoint: str
+    sql_synthesis_genie_endpoint: str
+    execution_endpoint: str
+    summarize_endpoint: str
     
     @classmethod
     def from_env(cls) -> 'LLMConfig':
         """Load configuration from environment variables."""
+        default_endpoint = os.getenv("LLM_ENDPOINT", "databricks-claude-sonnet-4-5")
         return cls(
-            endpoint_name=os.getenv("LLM_ENDPOINT", "databricks-claude-sonnet-4-5")
+            endpoint_name=default_endpoint,
+            clarification_endpoint=os.getenv("LLM_ENDPOINT_CLARIFICATION", default_endpoint),
+            planning_endpoint=os.getenv("LLM_ENDPOINT_PLANNING", default_endpoint),
+            sql_synthesis_table_endpoint=os.getenv("LLM_ENDPOINT_SQL_SYNTHESIS_TABLE", default_endpoint),
+            sql_synthesis_genie_endpoint=os.getenv("LLM_ENDPOINT_SQL_SYNTHESIS_GENIE", default_endpoint),
+            execution_endpoint=os.getenv("LLM_ENDPOINT_EXECUTION", default_endpoint),
+            summarize_endpoint=os.getenv("LLM_ENDPOINT_SUMMARIZE", default_endpoint),
         )
 
 
@@ -266,8 +279,14 @@ class AgentConfig:
         print(f"  Catalog: {self.unity_catalog.catalog_name}")
         print(f"  Schema: {self.unity_catalog.schema_name}")
         print(f"  Full Schema: {self.unity_catalog.full_schema_name}")
-        print(f"\nLLM:")
-        print(f"  Endpoint: {self.llm.endpoint_name}")
+        print(f"\nLLM Endpoints (Diversified by Agent):")
+        print(f"  Default/Fallback: {self.llm.endpoint_name}")
+        print(f"  Clarification Agent: {self.llm.clarification_endpoint}")
+        print(f"  Planning Agent: {self.llm.planning_endpoint}")
+        print(f"  SQL Synthesis (Table) Agent: {self.llm.sql_synthesis_table_endpoint}")
+        print(f"  SQL Synthesis (Genie) Agent: {self.llm.sql_synthesis_genie_endpoint}")
+        print(f"  SQL Execution Agent: {self.llm.execution_endpoint}")
+        print(f"  Summarize Agent: {self.llm.summarize_endpoint}")
         print(f"\nVector Search:")
         print(f"  Function: {self.vector_search.function_name}")
         print(f"  Endpoint: {self.vector_search.endpoint_name}")

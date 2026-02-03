@@ -64,11 +64,14 @@ SCHEMA = config.unity_catalog.schema_name
 TABLE_NAME = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks"
 VECTOR_SEARCH_INDEX = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks_vs_index"
 
-# LLM Endpoints - using same endpoint for now, can be customized in .env later
-LLM_ENDPOINT_CLARIFICATION = config.llm.endpoint_name
-LLM_ENDPOINT_PLANNING = config.llm.endpoint_name
-LLM_ENDPOINT_SQL_SYNTHESIS = config.llm.endpoint_name
-LLM_ENDPOINT_SUMMARIZE = config.llm.endpoint_name
+# LLM Endpoints - Diversified by Agent Role for Optimal Speed/Accuracy Balance
+# Each agent uses a model optimized for its specific task
+LLM_ENDPOINT_CLARIFICATION = config.llm.clarification_endpoint
+LLM_ENDPOINT_PLANNING = config.llm.planning_endpoint
+LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = config.llm.sql_synthesis_table_endpoint
+LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = config.llm.sql_synthesis_genie_endpoint
+LLM_ENDPOINT_EXECUTION = config.llm.execution_endpoint
+LLM_ENDPOINT_SUMMARIZE = config.llm.summarize_endpoint
 
 # Lakebase configuration for state management (from .env)
 LAKEBASE_INSTANCE_NAME = config.lakebase.instance_name
@@ -438,8 +441,14 @@ Prerequisites:
 # MAGIC     "catalog_name": "yyang",
 # MAGIC     "schema_name": "multi_agent_genie",
 # MAGIC     
-# MAGIC     # LLM Endpoint Configuration
-# MAGIC     "llm_endpoint": "databricks-claude-sonnet-4-5",
+# MAGIC     # LLM Endpoint Configuration - Diversified by Agent Role
+# MAGIC     "llm_endpoint": "databricks-claude-sonnet-4-5",  # Default/fallback
+# MAGIC     "llm_endpoint_clarification": "databricks-gpt-5-mini",
+# MAGIC     "llm_endpoint_planning": "databricks-claude-sonnet-4-5",
+# MAGIC     "llm_endpoint_sql_synthesis_table": "databricks-gpt-5-1-codex-mini",
+# MAGIC     "llm_endpoint_sql_synthesis_genie": "databricks-gpt-5",
+# MAGIC     "llm_endpoint_execution": "databricks-gpt-5-nano",
+# MAGIC     "llm_endpoint_summarize": "databricks-gemini-2-5-flash",
 # MAGIC     
 # MAGIC     # Vector Search Configuration
 # MAGIC     "vs_endpoint_name": "genie_multi_agent_vs",
@@ -480,11 +489,14 @@ Prerequisites:
 # MAGIC TABLE_NAME = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks"
 # MAGIC VECTOR_SEARCH_INDEX = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks_vs_index"
 # MAGIC
-# MAGIC # LLM Endpoints
-# MAGIC LLM_ENDPOINT_CLARIFICATION = model_config.get("llm_endpoint")
-# MAGIC LLM_ENDPOINT_PLANNING = model_config.get("llm_endpoint")
-# MAGIC LLM_ENDPOINT_SQL_SYNTHESIS = model_config.get("llm_endpoint")
-# MAGIC LLM_ENDPOINT_SUMMARIZE = model_config.get("llm_endpoint")
+# MAGIC # LLM Endpoints - Diversified by Agent Role
+# MAGIC default_endpoint = model_config.get("llm_endpoint")
+# MAGIC LLM_ENDPOINT_CLARIFICATION = model_config.get("llm_endpoint_clarification", default_endpoint)
+# MAGIC LLM_ENDPOINT_PLANNING = model_config.get("llm_endpoint_planning", default_endpoint)
+# MAGIC LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = model_config.get("llm_endpoint_sql_synthesis_table", default_endpoint)
+# MAGIC LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = model_config.get("llm_endpoint_sql_synthesis_genie", default_endpoint)
+# MAGIC LLM_ENDPOINT_EXECUTION = model_config.get("llm_endpoint_execution", default_endpoint)
+# MAGIC LLM_ENDPOINT_SUMMARIZE = model_config.get("llm_endpoint_summarize", default_endpoint)
 # MAGIC
 # MAGIC # Lakebase configuration for state management
 # MAGIC LAKEBASE_INSTANCE_NAME = model_config.get("lakebase_instance_name")
@@ -650,6 +662,26 @@ Prerequisites:
 # MAGIC         return wrapper
 # MAGIC     return decorator
 # MAGIC
+# MAGIC def track_agent_model_usage(agent_name: str, model_endpoint: str):
+# MAGIC     """
+# MAGIC     Track which LLM model is used by each agent for monitoring and cost analysis.
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         agent_name: Name of the agent (e.g., "clarification", "planning")
+# MAGIC         model_endpoint: LLM endpoint being used (e.g., "databricks-gpt-5-mini")
+# MAGIC     """
+# MAGIC     if "agent_model_usage" not in _performance_metrics:
+# MAGIC         _performance_metrics["agent_model_usage"] = {}
+# MAGIC     
+# MAGIC     if agent_name not in _performance_metrics["agent_model_usage"]:
+# MAGIC         _performance_metrics["agent_model_usage"][agent_name] = {
+# MAGIC             "model": model_endpoint,
+# MAGIC             "invocations": 0
+# MAGIC         }
+# MAGIC     
+# MAGIC     _performance_metrics["agent_model_usage"][agent_name]["invocations"] += 1
+# MAGIC     print(f"📊 Agent '{agent_name}' using model: {model_endpoint}")
+# MAGIC
 # MAGIC def record_cache_hit(cache_type: str):
 # MAGIC     """Record a cache hit for monitoring."""
 # MAGIC     key = f"{cache_type}_hits"
@@ -711,6 +743,10 @@ Prerequisites:
 # MAGIC     
 # MAGIC     summary["workflow_averages"]["total_requests"] = _performance_metrics["workflow_metrics"]["total_requests"]
 # MAGIC     
+# MAGIC     # Add agent model usage tracking
+# MAGIC     if "agent_model_usage" in _performance_metrics:
+# MAGIC         summary["agent_model_usage"] = _performance_metrics["agent_model_usage"]
+# MAGIC     
 # MAGIC     return summary
 # MAGIC
 # MAGIC def reset_performance_metrics():
@@ -736,11 +772,31 @@ Prerequisites:
 # MAGIC     }
 # MAGIC     print("✓ Performance metrics reset")
 # MAGIC
+# MAGIC def print_agent_model_usage():
+# MAGIC     """Print a summary of which LLM models each agent is using."""
+# MAGIC     print("\n" + "="*80)
+# MAGIC     print("🤖 AGENT LLM MODEL USAGE SUMMARY")
+# MAGIC     print("="*80)
+# MAGIC     
+# MAGIC     if "agent_model_usage" not in _performance_metrics or not _performance_metrics["agent_model_usage"]:
+# MAGIC         print("No agent model usage tracked yet.")
+# MAGIC         return
+# MAGIC     
+# MAGIC     for agent_name, usage_info in sorted(_performance_metrics["agent_model_usage"].items()):
+# MAGIC         model = usage_info.get("model", "unknown")
+# MAGIC         invocations = usage_info.get("invocations", 0)
+# MAGIC         print(f"\n{agent_name.upper()}:")
+# MAGIC         print(f"  Model: {model}")
+# MAGIC         print(f"  Invocations: {invocations}")
+# MAGIC     
+# MAGIC     print("="*80)
+# MAGIC
 # MAGIC print("✓ Phase 3 performance monitoring infrastructure initialized")
 # MAGIC print("  - Node timing decorators")
 # MAGIC print("  - Cache hit/miss tracking")
 # MAGIC print("  - TTFT/TTCL metrics")
 # MAGIC print("  - Performance summary reporting")
+# MAGIC print("  - Agent LLM model usage tracking (NEW)")
 # MAGIC
 # MAGIC def clear_space_context_cache():
 # MAGIC     """Manually clear space context cache (useful for testing or refresh)."""
@@ -815,7 +871,7 @@ Prerequisites:
 # MAGIC     if "sql_table" not in _agent_cache:
 # MAGIC         record_cache_miss("agent_cache")
 # MAGIC         print("⚡ Creating SQLSynthesisTableAgent (first use)...")
-# MAGIC         llm = get_pooled_llm(LLM_ENDPOINT_SQL_SYNTHESIS)
+# MAGIC         llm = get_pooled_llm(LLM_ENDPOINT_SQL_SYNTHESIS_TABLE)
 # MAGIC         _agent_cache["sql_table"] = SQLSynthesisTableAgent(llm, CATALOG, SCHEMA)
 # MAGIC         print("✓ SQLSynthesisTableAgent cached")
 # MAGIC     else:
@@ -3089,6 +3145,7 @@ Prerequisites:
 # MAGIC     
 # MAGIC     # Call LLM with streaming for immediate first token (using pooled connection)
 # MAGIC     llm = get_pooled_llm(LLM_ENDPOINT_CLARIFICATION)
+# MAGIC     track_agent_model_usage("clarification", LLM_ENDPOINT_CLARIFICATION)
 # MAGIC     
 # MAGIC     try:
 # MAGIC         print("🤖 Streaming unified LLM call for immediate first token...")
@@ -3362,6 +3419,7 @@ Prerequisites:
 # MAGIC     
 # MAGIC     # OPTIMIZATION: Use cached agent instance
 # MAGIC     planning_agent = get_cached_planning_agent()
+# MAGIC     track_agent_model_usage("planning", LLM_ENDPOINT_PLANNING)
 # MAGIC     
 # MAGIC     # PHASE 2 OPTIMIZATION: Vector search result caching for refinements
 # MAGIC     thread_id = state.get("thread_id", "default")
@@ -3485,6 +3543,7 @@ Prerequisites:
 # MAGIC     
 # MAGIC     # OPTIMIZATION: Use cached agent instance
 # MAGIC     sql_agent = get_cached_sql_table_agent()
+# MAGIC     track_agent_model_usage("sql_synthesis_table", LLM_ENDPOINT_SQL_SYNTHESIS_TABLE)
 # MAGIC     
 # MAGIC     print("plan loaded from state is:", plan)
 # MAGIC     print(json.dumps(plan, indent=2))
@@ -3595,7 +3654,9 @@ Prerequisites:
 # MAGIC     # Emit synthesis start event
 # MAGIC     writer({"type": "sql_synthesis_start", "route": "genie", "spaces": relevant_space_ids})
 # MAGIC     
-# MAGIC     llm = get_pooled_llm(LLM_ENDPOINT_SQL_SYNTHESIS, temperature=0.1)
+# MAGIC     # Use dedicated SQL_SYNTHESIS_GENIE endpoint for orchestrating multiple Genie agents
+# MAGIC     # This agent requires stronger reasoning for complex coordination
+# MAGIC     llm = get_pooled_llm(LLM_ENDPOINT_SQL_SYNTHESIS_GENIE, temperature=0.1)
 # MAGIC     
 # MAGIC     if not relevant_spaces:
 # MAGIC         print("❌ No relevant_spaces found in state")
@@ -3606,6 +3667,7 @@ Prerequisites:
 # MAGIC     
 # MAGIC     # Use OOP agent - only creates Genie agents for relevant spaces
 # MAGIC     sql_agent = SQLSynthesisGenieAgent(llm, relevant_spaces)
+# MAGIC     track_agent_model_usage("sql_synthesis_genie", LLM_ENDPOINT_SQL_SYNTHESIS_GENIE)
 # MAGIC     
 # MAGIC     # Use minimal context (already extracted)
 # MAGIC     plan = context.get("plan", {})
@@ -3802,6 +3864,7 @@ Prerequisites:
 # MAGIC     
 # MAGIC     # OPTIMIZATION: Use cached agent instance
 # MAGIC     summarize_agent = get_cached_summarize_agent()
+# MAGIC     track_agent_model_usage("summarize", LLM_ENDPOINT_SUMMARIZE)
 # MAGIC     summary = summarize_agent(context)
 # MAGIC     
 # MAGIC     # Display what's being returned
@@ -5063,10 +5126,12 @@ print("""
 
 
 resources = [
-    # LLM endpoints
+    # LLM endpoints - Diversified by Agent Role
     DatabricksServingEndpoint(LLM_ENDPOINT_CLARIFICATION),
     DatabricksServingEndpoint(LLM_ENDPOINT_PLANNING),
-    DatabricksServingEndpoint(LLM_ENDPOINT_SQL_SYNTHESIS),
+    DatabricksServingEndpoint(LLM_ENDPOINT_SQL_SYNTHESIS_TABLE),
+    DatabricksServingEndpoint(LLM_ENDPOINT_SQL_SYNTHESIS_GENIE),
+    DatabricksServingEndpoint(LLM_ENDPOINT_EXECUTION),
     DatabricksServingEndpoint(LLM_ENDPOINT_SUMMARIZE),
     DatabricksServingEndpoint(EMBEDDING_ENDPOINT),
     
@@ -5125,10 +5190,12 @@ from pkg_resources import get_distribution
 
 # # Declare all resources the agent needs
 # resources = [
-#     # LLM endpoints
+#     # LLM endpoints - Diversified by Agent Role
 #     DatabricksServingEndpoint(LLM_ENDPOINT_CLARIFICATION),
 #     DatabricksServingEndpoint(LLM_ENDPOINT_PLANNING),
-#     DatabricksServingEndpoint(LLM_ENDPOINT_SQL_SYNTHESIS),
+#     DatabricksServingEndpoint(LLM_ENDPOINT_SQL_SYNTHESIS_TABLE),
+#     DatabricksServingEndpoint(LLM_ENDPOINT_SQL_SYNTHESIS_GENIE),
+#     DatabricksServingEndpoint(LLM_ENDPOINT_EXECUTION),
 #     DatabricksServingEndpoint(LLM_ENDPOINT_SUMMARIZE),
 #     DatabricksServingEndpoint(EMBEDDING_ENDPOINT),
 #     
@@ -5159,10 +5226,12 @@ from pkg_resources import get_distribution
 # ]
 
 resources = [
-    # LLM endpoints
+    # LLM endpoints - Diversified by Agent Role
     DatabricksServingEndpoint(LLM_ENDPOINT_CLARIFICATION),
     DatabricksServingEndpoint(LLM_ENDPOINT_PLANNING),
-    DatabricksServingEndpoint(LLM_ENDPOINT_SQL_SYNTHESIS),
+    DatabricksServingEndpoint(LLM_ENDPOINT_SQL_SYNTHESIS_TABLE),
+    DatabricksServingEndpoint(LLM_ENDPOINT_SQL_SYNTHESIS_GENIE),
+    DatabricksServingEndpoint(LLM_ENDPOINT_EXECUTION),
     DatabricksServingEndpoint(LLM_ENDPOINT_SUMMARIZE),
     DatabricksServingEndpoint(EMBEDDING_ENDPOINT),
     
@@ -5197,6 +5266,19 @@ input_example = {
 }
 
 with mlflow.start_run():
+    # Log LLM model choices for each agent (for monitoring and cost analysis)
+    mlflow.log_param("llm_endpoint_clarification", LLM_ENDPOINT_CLARIFICATION)
+    mlflow.log_param("llm_endpoint_planning", LLM_ENDPOINT_PLANNING)
+    mlflow.log_param("llm_endpoint_sql_synthesis_table", LLM_ENDPOINT_SQL_SYNTHESIS_TABLE)
+    mlflow.log_param("llm_endpoint_sql_synthesis_genie", LLM_ENDPOINT_SQL_SYNTHESIS_GENIE)
+    mlflow.log_param("llm_endpoint_execution", LLM_ENDPOINT_EXECUTION)
+    mlflow.log_param("llm_endpoint_summarize", LLM_ENDPOINT_SUMMARIZE)
+    mlflow.log_param("embedding_endpoint", EMBEDDING_ENDPOINT)
+    
+    # Log agent configuration strategy
+    mlflow.set_tag("llm_diversification", "enabled")
+    mlflow.set_tag("agent_config_version", "v2.0_diversified")
+    
     logged_agent_info = mlflow.pyfunc.log_model(
         name="super_agent_hybrid_with_memory",
         # ⚠️ IMPORTANT: Reference agent.py for clean MLflow deployment
