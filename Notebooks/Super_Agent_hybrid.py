@@ -491,12 +491,12 @@ Prerequisites:
 # MAGIC
 # MAGIC # LLM Endpoints - Diversified by Agent Role
 # MAGIC default_endpoint = model_config.get("llm_endpoint")
-# MAGIC LLM_ENDPOINT_CLARIFICATION = model_config.get("llm_endpoint_clarification", default_endpoint)
-# MAGIC LLM_ENDPOINT_PLANNING = model_config.get("llm_endpoint_planning", default_endpoint)
-# MAGIC LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = model_config.get("llm_endpoint_sql_synthesis_table", default_endpoint)
-# MAGIC LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = model_config.get("llm_endpoint_sql_synthesis_genie", default_endpoint)
-# MAGIC LLM_ENDPOINT_EXECUTION = model_config.get("llm_endpoint_execution", default_endpoint)
-# MAGIC LLM_ENDPOINT_SUMMARIZE = model_config.get("llm_endpoint_summarize", default_endpoint)
+# MAGIC LLM_ENDPOINT_CLARIFICATION = model_config.get("llm_endpoint_clarification") or default_endpoint
+# MAGIC LLM_ENDPOINT_PLANNING = model_config.get("llm_endpoint_planning") or default_endpoint
+# MAGIC LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = model_config.get("llm_endpoint_sql_synthesis_table") or default_endpoint
+# MAGIC LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = model_config.get("llm_endpoint_sql_synthesis_genie") or default_endpoint
+# MAGIC LLM_ENDPOINT_EXECUTION = model_config.get("llm_endpoint_execution") or default_endpoint
+# MAGIC LLM_ENDPOINT_SUMMARIZE = model_config.get("llm_endpoint_summarize") or default_endpoint
 # MAGIC
 # MAGIC # Lakebase configuration for state management
 # MAGIC LAKEBASE_INSTANCE_NAME = model_config.get("lakebase_instance_name")
@@ -3098,7 +3098,7 @@ Prerequisites:
 # MAGIC - Questions about available tables, data sources, spaces, schemas
 # MAGIC - Questions about system capabilities, what data is available
 # MAGIC - Questions about the structure or organization of data
-# MAGIC 
+# MAGIC
 # MAGIC If it's a meta-question, you MUST:
 # MAGIC 1. Set "is_meta_question": true
 # MAGIC 2. Generate a direct answer using the Available Data Sources above
