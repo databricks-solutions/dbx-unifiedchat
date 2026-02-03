@@ -3153,14 +3153,11 @@ Prerequisites:
 # MAGIC     # Emit summary completion event
 # MAGIC     writer({"type": "summary_complete", "content": f"✅ Summary generated ({len(summary)} chars)"})
 # MAGIC     
-# MAGIC     # Build a concise final message (details already streamed during execution)
-# MAGIC     # Only include the natural language summary and key results
+# MAGIC     # Build a concise final message for AIMessage (avoid duplication with final_summary)
+# MAGIC     # Only include execution results and errors (summary goes to final_summary field)
 # MAGIC     final_message_parts = []
 # MAGIC     
-# MAGIC     # 1. Main Summary (already includes context from the LLM)
-# MAGIC     final_message_parts.append(summary)
-# MAGIC     
-# MAGIC     # 2. Execution Results (if available)
+# MAGIC     # 1. Execution Results (if available)
 # MAGIC     exec_result = state.get("execution_result")
 # MAGIC     if exec_result and exec_result.get("success"):
 # MAGIC         results = exec_result.get("result", [])
@@ -3187,19 +3184,21 @@ Prerequisites:
 # MAGIC                 final_message_parts.append(f"\n⚠️ Could not format results: {e}")
 # MAGIC                 final_message_parts.append(f"Raw results (first 3): {results[:3]}")
 # MAGIC     
-# MAGIC     # 3. Error messages (if any) 
+# MAGIC     # 2. Error messages (if any) 
 # MAGIC     if state.get("synthesis_error"):
 # MAGIC         final_message_parts.append(f"\n❌ **SQL Synthesis Error:** {state['synthesis_error']}")
 # MAGIC     if state.get("execution_error"):
 # MAGIC         final_message_parts.append(f"\n❌ **Execution Error:** {state['execution_error']}")
 # MAGIC     
-# MAGIC     # Combine into final message (much more concise than before)
-# MAGIC     final_message = "\n".join(final_message_parts)
+# MAGIC     # Combine into final message (results/errors only - summary in final_summary field)
+# MAGIC     # If no results or errors, use a simple completion message
+# MAGIC     final_message = "\n".join(final_message_parts) if final_message_parts else "✅ Execution complete"
 # MAGIC     
-# MAGIC     print(f"\n✅ Final message created ({len(final_message)} chars)")
+# MAGIC     print(f"\n✅ AIMessage created with results/errors ({len(final_message)} chars)")
+# MAGIC     print(f"✅ Summary stored in final_summary field ({len(summary)} chars)")
 # MAGIC     
 # MAGIC     # Route to END via fixed edge (summarize → END)
-# MAGIC     # Return only updates (final_summary and the concise message)
+# MAGIC     # Return: final_summary (displayed once) + AIMessage (results/errors only)
 # MAGIC     return {
 # MAGIC         "final_summary": summary,
 # MAGIC         "messages": [
