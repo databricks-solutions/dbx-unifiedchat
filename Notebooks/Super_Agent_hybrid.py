@@ -859,29 +859,74 @@ Prerequisites:
 # MAGIC         Returns:
 # MAGIC             List of relevant space dictionaries
 # MAGIC         """
-# MAGIC         vs_tool = VectorSearchRetrieverTool(
-# MAGIC             index_name=self.vector_search_index,
-# MAGIC             num_results=num_results,
-# MAGIC             columns=["space_id", "space_title", "searchable_content"],
-# MAGIC             filters={"chunk_type": "space_summary"},
-# MAGIC             query_type="ANN",
-# MAGIC             include_metadata=True,
-# MAGIC             include_score=True
-# MAGIC         )
-# MAGIC         
-# MAGIC         docs = vs_tool.invoke({"query": query})
-# MAGIC         
-# MAGIC         relevant_spaces = []
-# MAGIC         for doc in docs:
-# MAGIC             print(doc)
-# MAGIC             relevant_spaces.append({
-# MAGIC                 "space_id": doc.metadata.get("space_id", ""),
-# MAGIC                 "space_title": doc.metadata.get("space_title", ""),
-# MAGIC                 "searchable_content": doc.page_content,
-# MAGIC                 "score": doc.metadata.get("score", 0.0)
-# MAGIC             })
-# MAGIC         
-# MAGIC         return relevant_spaces
+# MAGIC         # Add MLflow tracing span for retriever operations
+# MAGIC         # This enables automatic source document display in Playground
+# MAGIC         try:
+# MAGIC             import mlflow
+# MAGIC             # Create a retriever span for tracing
+# MAGIC             with mlflow.start_span(name="vector_search_retriever", span_type="RETRIEVER") as span:
+# MAGIC                 vs_tool = VectorSearchRetrieverTool(
+# MAGIC                     index_name=self.vector_search_index,
+# MAGIC                     num_results=num_results,
+# MAGIC                     columns=["space_id", "space_title", "searchable_content"],
+# MAGIC                     filters={"chunk_type": "space_summary"},
+# MAGIC                     query_type="ANN",
+# MAGIC                     include_metadata=True,
+# MAGIC                     include_score=True
+# MAGIC                 )
+# MAGIC                 
+# MAGIC                 # Set span attributes for better tracing
+# MAGIC                 span.set_attributes({
+# MAGIC                     "retriever.query": query,
+# MAGIC                     "retriever.index": self.vector_search_index,
+# MAGIC                     "retriever.num_results": num_results
+# MAGIC                 })
+# MAGIC                 
+# MAGIC                 docs = vs_tool.invoke({"query": query})
+# MAGIC                 
+# MAGIC                 relevant_spaces = []
+# MAGIC                 for doc in docs:
+# MAGIC                     print(doc)
+# MAGIC                     relevant_spaces.append({
+# MAGIC                         "space_id": doc.metadata.get("space_id", ""),
+# MAGIC                         "space_title": doc.metadata.get("space_title", ""),
+# MAGIC                         "searchable_content": doc.page_content,
+# MAGIC                         "score": doc.metadata.get("score", 0.0)
+# MAGIC                     })
+# MAGIC                 
+# MAGIC                 # Set retriever output for tracing
+# MAGIC                 span.set_attributes({
+# MAGIC                     "retriever.documents": relevant_spaces,
+# MAGIC                     "retriever.num_found": len(relevant_spaces)
+# MAGIC                 })
+# MAGIC                 
+# MAGIC                 return relevant_spaces
+# MAGIC         except Exception as e:
+# MAGIC             logger.warning(f"MLflow retriever span failed, falling back to untraced search: {e}")
+# MAGIC             # Fallback to original implementation without tracing
+# MAGIC             vs_tool = VectorSearchRetrieverTool(
+# MAGIC                 index_name=self.vector_search_index,
+# MAGIC                 num_results=num_results,
+# MAGIC                 columns=["space_id", "space_title", "searchable_content"],
+# MAGIC                 filters={"chunk_type": "space_summary"},
+# MAGIC                 query_type="ANN",
+# MAGIC                 include_metadata=True,
+# MAGIC                 include_score=True
+# MAGIC             )
+# MAGIC             
+# MAGIC             docs = vs_tool.invoke({"query": query})
+# MAGIC             
+# MAGIC             relevant_spaces = []
+# MAGIC             for doc in docs:
+# MAGIC                 print(doc)
+# MAGIC                 relevant_spaces.append({
+# MAGIC                     "space_id": doc.metadata.get("space_id", ""),
+# MAGIC                     "space_title": doc.metadata.get("space_title", ""),
+# MAGIC                     "searchable_content": doc.page_content,
+# MAGIC                     "score": doc.metadata.get("score", 0.0)
+# MAGIC                 })
+# MAGIC             
+# MAGIC             return relevant_spaces
 # MAGIC     
 # MAGIC     def create_execution_plan(
 # MAGIC         self, 
@@ -3610,6 +3655,41 @@ Prerequisites:
 # MAGIC         except Exception:
 # MAGIC             return f"<{type(obj).__name__}>"
 # MAGIC     
+# MAGIC     def _format_vector_search_results(self, data: dict) -> str:
+# MAGIC         """
+# MAGIC         Format vector search results with source document links for Playground display.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             data: Dictionary containing 'spaces' and 'count'
+# MAGIC             
+# MAGIC         Returns:
+# MAGIC             Formatted string with source documents
+# MAGIC         """
+# MAGIC         spaces = data.get('spaces', [])
+# MAGIC         count = data.get('count', 0)
+# MAGIC         
+# MAGIC         if not spaces:
+# MAGIC             return f"📊 Found 0 relevant spaces"
+# MAGIC         
+# MAGIC         # Create summary header
+# MAGIC         result = f"📊 Found {count} relevant spaces:\n"
+# MAGIC         
+# MAGIC         # Add each source document with metadata
+# MAGIC         for i, space in enumerate(spaces[:5], 1):  # Limit to top 5 for readability
+# MAGIC             space_id = space.get('space_id', 'unknown')
+# MAGIC             space_title = space.get('space_title', 'No title')
+# MAGIC             score = space.get('score', 0.0)
+# MAGIC             content_preview = space.get('searchable_content', '')[:100]
+# MAGIC             
+# MAGIC             result += f"\n  {i}. 📄 {space_title}"
+# MAGIC             result += f"\n     ID: {space_id} | Score: {score:.3f}"
+# MAGIC             result += f"\n     Preview: {content_preview}..."
+# MAGIC         
+# MAGIC         if count > 5:
+# MAGIC             result += f"\n  ... and {count - 5} more"
+# MAGIC         
+# MAGIC         return result
+# MAGIC     
 # MAGIC     def format_custom_event(self, custom_data: dict) -> str:
 # MAGIC         """
 # MAGIC         Format custom streaming events for user-friendly display.
@@ -3628,7 +3708,7 @@ Prerequisites:
 # MAGIC             "intent_detection": lambda d: f"🎯 Intent: {d['result']} - {d.get('reasoning', '')}",
 # MAGIC             "clarity_analysis": lambda d: f"✓ Query {'clear' if d['clear'] else 'unclear'}: {d.get('reasoning', '')}",
 # MAGIC             "vector_search_start": lambda d: f"🔍 Searching vector index: {d['index']}",
-# MAGIC             "vector_search_results": lambda d: f"📊 Found {d['count']} relevant spaces: {[s.get('space_id', 'unknown') for s in d.get('spaces', [])]}",
+# MAGIC             "vector_search_results": lambda d: self._format_vector_search_results(d),
 # MAGIC             "plan_formulation": lambda d: f"📋 Execution plan: {d.get('strategy', 'unknown')} strategy",
 # MAGIC             "uc_function_call": lambda d: f"🔧 Calling UC function: {d['function']}",
 # MAGIC             "sql_generated": lambda d: f"📝 SQL generated: {d.get('query_preview', '')}...",
@@ -3837,6 +3917,43 @@ Prerequisites:
 # MAGIC                             yield ResponsesAgentStreamEvent(
 # MAGIC                                 **self.create_text_delta(delta=content, item_id=chunk.id),
 # MAGIC                             )
+# MAGIC                         
+# MAGIC                         # Stream tool call arguments incrementally as they arrive
+# MAGIC                         # This shows tool invocations in real-time in the Playground
+# MAGIC                         if isinstance(chunk, AIMessageChunk) and hasattr(chunk, 'tool_call_chunks') and chunk.tool_call_chunks:
+# MAGIC                             for tc_chunk in chunk.tool_call_chunks:
+# MAGIC                                 # Get tool call attributes
+# MAGIC                                 tc_id = tc_chunk.get("id") if isinstance(tc_chunk, dict) else getattr(tc_chunk, "id", None)
+# MAGIC                                 tc_name = tc_chunk.get("name") if isinstance(tc_chunk, dict) else getattr(tc_chunk, "name", None)
+# MAGIC                                 tc_args = tc_chunk.get("args") if isinstance(tc_chunk, dict) else getattr(tc_chunk, "args", None)
+# MAGIC                                 
+# MAGIC                                 # Only stream if we have valid tool call data
+# MAGIC                                 if tc_id or tc_name or tc_args:
+# MAGIC                                     # Create a function call item for the tool invocation
+# MAGIC                                     # This makes tool calls visible immediately in Playground
+# MAGIC                                     try:
+# MAGIC                                         if tc_name and tc_args:
+# MAGIC                                             # Complete tool call chunk with name and args
+# MAGIC                                             yield ResponsesAgentStreamEvent(
+# MAGIC                                                 type="response.output_item.done",
+# MAGIC                                                 item=self.create_function_call_item(
+# MAGIC                                                     id=str(uuid4()),
+# MAGIC                                                     call_id=tc_id or str(uuid4()),
+# MAGIC                                                     name=tc_name,
+# MAGIC                                                     arguments=json.dumps(tc_args) if isinstance(tc_args, dict) else str(tc_args),
+# MAGIC                                                 ),
+# MAGIC                                             )
+# MAGIC                                         elif tc_name:
+# MAGIC                                             # Tool call started (name only, args pending)
+# MAGIC                                             yield ResponsesAgentStreamEvent(
+# MAGIC                                                 type="response.output_item.done",
+# MAGIC                                                 item=self.create_text_output_item(
+# MAGIC                                                     text=f"🛠️ Invoking tool: {tc_name}",
+# MAGIC                                                     id=str(uuid4())
+# MAGIC                                                 ),
+# MAGIC                                             )
+# MAGIC                                     except Exception as e:
+# MAGIC                                         logger.debug(f"Error streaming tool call chunk: {e}")
 # MAGIC                     except Exception as e:
 # MAGIC                         logger.warning(f"Error processing message chunk: {e}")
 # MAGIC                 
@@ -3925,6 +4042,9 @@ Prerequisites:
 # MAGIC                 elif event_type == "custom":
 # MAGIC                     try:
 # MAGIC                         custom_data = event_data
+# MAGIC                         event_subtype = custom_data.get("type", "unknown")
+# MAGIC                         
+# MAGIC                         # Format and emit the main event text
 # MAGIC                         formatted_text = self.format_custom_event(custom_data)
 # MAGIC                         yield ResponsesAgentStreamEvent(
 # MAGIC                             type="response.output_item.done",
@@ -3933,6 +4053,28 @@ Prerequisites:
 # MAGIC                                 id=str(uuid4())
 # MAGIC                             ),
 # MAGIC                         )
+# MAGIC                         
+# MAGIC                         # For vector search results, emit source documents as separate items
+# MAGIC                         # This enables Playground to display them with proper formatting and links
+# MAGIC                         if event_subtype == "vector_search_results":
+# MAGIC                             spaces = custom_data.get('spaces', [])
+# MAGIC                             for space in spaces[:5]:  # Limit to top 5 for performance
+# MAGIC                                 try:
+# MAGIC                                     # Emit each source document as a structured text item
+# MAGIC                                     doc_text = f"📄 Source: {space.get('space_title', 'No title')}\n"
+# MAGIC                                     doc_text += f"   Space ID: {space.get('space_id', 'unknown')}\n"
+# MAGIC                                     doc_text += f"   Similarity: {space.get('score', 0.0):.3f}\n"
+# MAGIC                                     doc_text += f"   Content: {space.get('searchable_content', '')[:150]}..."
+# MAGIC                                     
+# MAGIC                                     yield ResponsesAgentStreamEvent(
+# MAGIC                                         type="response.output_item.done",
+# MAGIC                                         item=self.create_text_output_item(
+# MAGIC                                             text=doc_text,
+# MAGIC                                             id=str(uuid4())
+# MAGIC                                         ),
+# MAGIC                                     )
+# MAGIC                                 except Exception as e:
+# MAGIC                                     logger.debug(f"Error emitting source document: {e}")
 # MAGIC                     except Exception as e:
 # MAGIC                         logger.warning(f"Error processing custom event: {e}")
 # MAGIC         
@@ -3982,6 +4124,21 @@ Prerequisites:
 # MAGIC except Exception as e:
 # MAGIC     logger.warning(f"⚠️ MLflow autolog initialization failed: {e}")
 # MAGIC     logger.warning("Continuing without MLflow tracing...")
+# MAGIC
+# MAGIC # Configure retriever schema for source document display in Playground
+# MAGIC # This enables automatic display of source documents with links for vector search results
+# MAGIC try:
+# MAGIC     mlflow.models.set_retriever_schema(
+# MAGIC         primary_key="space_id",
+# MAGIC         text_column="searchable_content",
+# MAGIC         doc_uri="space_title",  # Use space title as document reference
+# MAGIC         other_columns=["score"],  # Include similarity score
+# MAGIC         name="vector_search_retriever"
+# MAGIC     )
+# MAGIC     logger.info("✓ Retriever schema configured for source document display")
+# MAGIC except Exception as e:
+# MAGIC     logger.warning(f"⚠️ Retriever schema configuration failed: {e}")
+# MAGIC     logger.warning("Continuing without retriever schema...")
 # MAGIC
 # MAGIC mlflow.models.set_model(AGENT)
 
