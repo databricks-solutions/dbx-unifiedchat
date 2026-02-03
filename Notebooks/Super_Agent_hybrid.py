@@ -578,7 +578,6 @@ Prerequisites:
 # MAGIC     Returns:
 # MAGIC         ChatDatabricks instance from pool
 # MAGIC     """
-# MAGIC     from langchain_databricks import ChatDatabricks
 # MAGIC     
 # MAGIC     # Create a cache key that includes temperature and max_tokens
 # MAGIC     cache_key = f"{endpoint_name}_{temperature}_{max_tokens}"
@@ -887,7 +886,7 @@ Prerequisites:
 # MAGIC     if "summarize" not in _agent_cache:
 # MAGIC         record_cache_miss("agent_cache")
 # MAGIC         print("⚡ Creating ResultSummarizeAgent (first use)...")
-# MAGIC         llm = get_pooled_llm(LLM_ENDPOINT_SUMMARIZE, temperature=0.1, max_tokens=2000)
+# MAGIC         llm = get_pooled_llm(LLM_ENDPOINT_SUMMARIZE, temperature=0.1, max_tokens=5000)
 # MAGIC         _agent_cache["summarize"] = ResultSummarizeAgent(llm)
 # MAGIC         print("✓ ResultSummarizeAgent cached")
 # MAGIC     else:
