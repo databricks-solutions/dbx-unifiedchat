@@ -2768,9 +2768,23 @@ def sql_synthesis_table_node(state: AgentState) -> dict:
     
     try:
         print("🤖 Invoking SQL synthesis agent...")
-        writer({"type": "agent_thinking", "agent": "sql_synthesis_table", "content": "Generating SQL query using table schemas..."})
-        writer({"type": "uc_function_call", "function": "get_table_schemas", "params": {"space_ids": relevant_space_ids}})
+        
+        # Emit detailed start event
+        writer({"type": "agent_thinking", "agent": "sql_synthesis_table", "content": "🧠 Starting SQL synthesis using UC function tools..."})
+        writer({"type": "agent_step", "agent": "sql_synthesis_table", "step": "analyzing_plan", "content": f"📋 Analyzing execution plan for {len(relevant_space_ids)} relevant spaces"})
+        
+        # Emit tool preparation event
+        uc_functions = ["get_space_summary", "get_table_overview", "get_column_detail", "get_space_details"]
+        writer({"type": "tools_available", "agent": "sql_synthesis_table", "tools": uc_functions, "content": f"🔧 Available UC functions: {', '.join(uc_functions)}"})
+        
+        # Emit query strategy
+        writer({"type": "agent_thinking", "agent": "sql_synthesis_table", "content": f"🎯 Strategy: Query metadata for spaces {relevant_space_ids} then synthesize SQL"})
+        
+        # Call the agent
         result = sql_agent(plan)
+        
+        # Emit tool completion event
+        writer({"type": "agent_step", "agent": "sql_synthesis_table", "step": "metadata_gathered", "content": "✅ Metadata collection complete, synthesizing SQL query..."})
         
         # Extract SQL and explanation
         sql_query = result.get("sql")
@@ -2783,8 +2797,9 @@ def sql_synthesis_table_node(state: AgentState) -> dict:
             if explanation:
                 print(f"Agent Explanation: {explanation[:200]}...")
             
-            # Emit SQL generated event
-            writer({"type": "sql_generated", "query_preview": sql_query[:200]})
+            # Emit detailed success events
+            writer({"type": "sql_generated", "agent": "sql_synthesis_table", "query_preview": sql_query[:200], "content": f"💻 SQL Query Generated ({len(sql_query)} chars)"})
+            writer({"type": "agent_result", "agent": "sql_synthesis_table", "result": "success", "content": f"✅ SQL synthesis complete: {explanation[:150]}..."})
             
             # Return updates for successful synthesis
             return {
@@ -2799,6 +2814,9 @@ def sql_synthesis_table_node(state: AgentState) -> dict:
         else:
             print("⚠ No SQL generated - agent explanation:")
             print(f"  {explanation}")
+            
+            # Emit failure event
+            writer({"type": "agent_result", "agent": "sql_synthesis_table", "result": "no_sql", "content": f"⚠️ Could not generate SQL: {explanation[:150]}..."})
             
             # Return updates for failed synthesis
             return {
@@ -2878,13 +2896,31 @@ def sql_synthesis_genie_node(state: AgentState) -> dict:
     
     try:
         print(f"🤖 Querying {len(genie_route_plan)} Genie agents...")
-        writer({"type": "agent_thinking", "agent": "sql_synthesis_genie", "content": f"Calling {len(genie_route_plan)} Genie agents for SQL generation..."})
         
-        # Emit events for each Genie agent call
-        for space_id in genie_route_plan.keys():
-            writer({"type": "genie_agent_call", "space_id": space_id, "query": genie_route_plan[space_id][:100]})
+        # Emit detailed start event
+        writer({"type": "agent_thinking", "agent": "sql_synthesis_genie", "content": f"🧠 Starting SQL synthesis using {len(genie_route_plan)} Genie agents..."})
+        writer({"type": "agent_step", "agent": "sql_synthesis_genie", "step": "preparing_genie_calls", "content": f"📋 Preparing to query {len(genie_route_plan)} Genie spaces"})
         
+        # Emit detailed events for each Genie agent call with full context
+        for idx, (space_id, query) in enumerate(genie_route_plan.items(), 1):
+            space_title = next((s.get("space_title", space_id) for s in relevant_spaces if s.get("space_id") == space_id), space_id)
+            writer({
+                "type": "genie_agent_call", 
+                "agent": "sql_synthesis_genie",
+                "space_id": space_id, 
+                "space_title": space_title,
+                "query": query,
+                "content": f"🤖 [{idx}/{len(genie_route_plan)}] Calling Genie agent '{space_title}' with query: {query[:100]}{'...' if len(query) > 100 else ''}"
+            })
+        
+        # Emit execution strategy
+        writer({"type": "agent_thinking", "agent": "sql_synthesis_genie", "content": "⚡ Executing Genie agents in parallel for optimal performance..."})
+        
+        # Call the agent
         result = sql_agent(plan)
+        
+        # Emit completion event
+        writer({"type": "agent_step", "agent": "sql_synthesis_genie", "step": "combining_results", "content": "🔄 All Genie agents responded, combining SQL fragments..."})
         
         # Extract SQL and explanation
         sql_query = result.get("sql")
@@ -2898,8 +2934,10 @@ def sql_synthesis_genie_node(state: AgentState) -> dict:
             if explanation:
                 print(f"Agent Explanation: {explanation[:200]}...")
             
-            # Emit SQL generated event
-            writer({"type": "sql_generated", "query_preview": sql_query[:200]})
+            # Emit detailed success events
+            writer({"type": "sql_generated", "agent": "sql_synthesis_genie", "query_preview": sql_query[:200], "content": f"💻 Combined SQL Query Generated ({len(sql_query)} chars)"})
+            writer({"type": "agent_result", "agent": "sql_synthesis_genie", "result": "success", "content": f"✅ SQL synthesis complete: {explanation[:150]}..."})
+            writer({"type": "agent_thinking", "agent": "sql_synthesis_genie", "content": f"🎯 Successfully combined SQL from {len(genie_route_plan)} Genie agents"})
             
             # Return updates for successful synthesis
             return {
@@ -2914,6 +2952,9 @@ def sql_synthesis_genie_node(state: AgentState) -> dict:
         else:
             print("⚠ No SQL generated - agent explanation:")
             print(f"  {explanation}")
+            
+            # Emit detailed failure event
+            writer({"type": "agent_result", "agent": "sql_synthesis_genie", "result": "no_sql", "content": f"⚠️ Could not generate SQL from Genie agents: {explanation[:150]}..."})
             
             # Return updates for failed synthesis
             return {
@@ -3065,92 +3106,60 @@ def summarize_node(state: AgentState) -> dict:
     
     print("="*80)
     
-    # Build comprehensive final message with ALL workflow information
+    # Emit summary completion event
+    writer({"type": "summary_complete", "content": f"✅ Summary generated ({len(summary)} chars)"})
+    
+    # Build a concise final message (details already streamed during execution)
+    # Only include the natural language summary and key results
     final_message_parts = []
     
-    # 1. Summary
-    final_message_parts.append(f"📝 **Summary:**\n{summary}\n")
+    # 1. Main Summary (already includes context from the LLM)
+    final_message_parts.append(summary)
     
-    # 2. Original Query
-    if state.get("original_query"):
-        final_message_parts.append(f"🔍 **Original Query:**\n{state['original_query']}\n")
-    
-    # 3. Execution Plan
-    if state.get("execution_plan"):
-        final_message_parts.append(f"📋 **Execution Plan:**\n{state['execution_plan']}")
-        if state.get("join_strategy"):
-            final_message_parts.append(f"Strategy: {state['join_strategy']}\n")
-    
-    # 4. SQL Synthesis Explanation
-    if state.get("sql_synthesis_explanation"):
-        final_message_parts.append(f"💭 **SQL Synthesis Explanation:**\n{state['sql_synthesis_explanation']}\n")
-    
-    # 5. Generated SQL
-    if state.get("sql_query"):
-        final_message_parts.append(f"💻 **Generated SQL:**\n```sql\n{state['sql_query']}\n```\n")
-    
-    # 6. Execution Results
+    # 2. Execution Results (if available)
     exec_result = state.get("execution_result")
-    if exec_result:
-        if exec_result.get("success"):
-            final_message_parts.append(f"✅ **Execution Successful:**\n")
-            final_message_parts.append(f"- Rows: {exec_result.get('row_count', 0)}\n")
-            final_message_parts.append(f"- Columns: {', '.join(exec_result.get('columns', []))}\n")
-            
-            # Convert results to pandas DataFrame and display
-            results = exec_result.get("result", [])
-            if results:
+    if exec_result and exec_result.get("success"):
+        results = exec_result.get("result", [])
+        if results:
+            try:
+                import pandas as pd
+                df = pd.DataFrame(results)
+                
+                # Display DataFrame in notebook
+                print("\n" + "="*80)
+                print("📊 QUERY RESULTS (Pandas DataFrame)")
+                print("="*80)
                 try:
-                    import pandas as pd
-                    df = pd.DataFrame(results)
-                    
-                    final_message_parts.append(f"\n📊 **Query Results:**\n")
-                    
-                    # Display DataFrame
-                    print("\n" + "="*80)
-                    print("📊 QUERY RESULTS (Pandas DataFrame)")
-                    print("="*80)
-                    try:
-                        display(df)  # Use Databricks display() for interactive view
-                    except:
-                        print(df.to_string())  # Fallback to string representation
-                    print("="*80 + "\n")
-                    
-                    # Add DataFrame info to message
-                    final_message_parts.append(f"DataFrame shape: {df.shape}\n")
-                    final_message_parts.append(f"Preview (first 5 rows):\n```\n{df.head().to_string()}\n```\n")
-                    
-                    # Note: DataFrame not stored in state (not msgpack serializable)
-                    # Users can recreate it from state['execution_result']['result']
-                    
-                except Exception as e:
-                    final_message_parts.append(f"⚠️ Could not convert to DataFrame: {e}\n")
-                    final_message_parts.append(f"Raw results (first 3): {results[:3]}\n")
-        else:
-            final_message_parts.append(f"❌ **Execution Failed:**\n")
-            final_message_parts.append(f"Error: {exec_result.get('error', 'Unknown error')}\n")
+                    display(df)  # Use Databricks display() for interactive view
+                except:
+                    print(df.to_string())  # Fallback to string representation
+                print("="*80 + "\n")
+                
+                # Add compact results info to message
+                final_message_parts.append(f"\n📊 **Query Results:** {df.shape[0]} rows × {df.shape[1]} columns")
+                final_message_parts.append(f"\nPreview (first 5 rows):\n```\n{df.head().to_string()}\n```")
+                
+            except Exception as e:
+                final_message_parts.append(f"\n⚠️ Could not format results: {e}")
+                final_message_parts.append(f"Raw results (first 3): {results[:3]}")
     
-    # 7. Errors (if any)
+    # 3. Error messages (if any) 
     if state.get("synthesis_error"):
-        final_message_parts.append(f"❌ **Synthesis Error:**\n{state['synthesis_error']}\n")
+        final_message_parts.append(f"\n❌ **SQL Synthesis Error:** {state['synthesis_error']}")
     if state.get("execution_error"):
-        final_message_parts.append(f"❌ **Execution Error:**\n{state['execution_error']}\n")
+        final_message_parts.append(f"\n❌ **Execution Error:** {state['execution_error']}")
     
-    # 8. Relevant Spaces (if any)
-    if state.get("relevant_space_ids"):
-        final_message_parts.append(f"\n🎯 **Relevant Genie Spaces:** {len(state['relevant_space_ids'])} spaces analyzed\n")
+    # Combine into final message (much more concise than before)
+    final_message = "\n".join(final_message_parts)
     
-    # Combine all parts into final comprehensive message
-    comprehensive_message = "\n".join(final_message_parts)
-    
-    print(f"\n✅ Comprehensive final message created ({len(comprehensive_message)} chars)")
+    print(f"\n✅ Final message created ({len(final_message)} chars)")
     
     # Route to END via fixed edge (summarize → END)
-    # Return only updates (final_summary and the comprehensive message)
+    # Return only updates (final_summary and the concise message)
     return {
         "final_summary": summary,
         "messages": [
-            AIMessage(content=comprehensive_message)
+            AIMessage(content=final_message)
         ]
     }
 
@@ -3766,8 +3775,7 @@ Guidelines:
             # - updates: State changes after each node
             # - messages: LLM token-by-token streaming
             # - custom: Agent-specific events (thinking, decisions, progress)
-            # - debug: Maximum execution detail
-            for event in app.stream(initial_state, run_config, stream_mode=["updates", "messages", "custom", "debug"]):
+            for event in app.stream(initial_state, run_config, stream_mode=["updates", "messages", "custom"]):
                 event_type = event[0]
                 event_data = event[1]
                 
@@ -3880,35 +3888,6 @@ Guidelines:
                         )
                     except Exception as e:
                         logger.warning(f"Error processing custom event: {e}")
-                
-                # Handle debug mode (maximum detail)
-                elif event_type == "debug":
-                    try:
-                        debug_data = event_data
-                        # Convert to JSON-serializable format (handles LangChain messages)
-                        serializable_data = self.make_json_serializable(debug_data)
-                        
-                        # Bulletproof JSON serialization with fallback for ANY remaining non-serializable objects
-                        def json_fallback(obj):
-                            """Final fallback for json.dumps() - converts anything to string."""
-                            try:
-                                return str(obj)
-                            except:
-                                return f"<{type(obj).__name__}>"
-                        
-                        # Emit detailed debug information (truncated for readability)
-                        debug_str = json.dumps(serializable_data, indent=2, default=json_fallback)
-                        if len(debug_str) > 500:
-                            debug_str = debug_str[:500] + "..."
-                        yield ResponsesAgentStreamEvent(
-                            type="response.output_item.done",
-                            item=self.create_text_output_item(
-                                text=f"🔍 Debug: {debug_str}",
-                                id=str(uuid4())
-                            ),
-                        )
-                    except Exception as e:
-                        logger.warning(f"Error processing debug event: {e}")
         
         logger.info(f"Workflow execution completed (thread: {thread_id})")
 
@@ -3945,7 +3924,7 @@ print("  ✓ SQL validation and execution progress")
 print("  ✓ Tool calls and tool results")
 print("  ✓ Routing decisions between agents")
 print("  ✓ Summary generation progress")
-print("  ✓ Debug mode for maximum detail")
+print("  ✓ Custom events for detailed execution tracking")
 print("="*80)
 
 # Set the agent for MLflow tracking
@@ -3976,9 +3955,10 @@ from agent import AGENT
 Test the enhanced granular streaming to verify all execution steps are visible.
 This will show agent thinking, tool calls, intermediate results, and routing decisions.
 
-NOTE: Debug mode JSON serialization issue has been fixed!
-The make_json_serializable() method now properly handles LangChain message objects
-(AIMessage, SystemMessage, etc.) so debug events stream without errors.
+Stream modes enabled:
+- updates: State changes after each node
+- messages: LLM token-by-token streaming  
+- custom: Agent-specific events (thinking, decisions, progress)
 """
 
 from mlflow.types.responses import ResponsesAgentRequest
@@ -4000,7 +3980,7 @@ request = ResponsesAgentRequest(
 )
 
 # Stream all events and count them by type
-event_counts = {"custom": 0, "updates": 0, "messages": 0, "debug": 0, "tool_calls": 0, "tool_results": 0, "routing": 0}
+event_counts = {"custom": 0, "updates": 0, "messages": 0, "tool_calls": 0, "tool_results": 0, "routing": 0}
 
 print("Streaming events:")
 print("-" * 80)
@@ -4020,8 +4000,6 @@ for event in AGENT.predict_stream(request):
                 event_counts["routing"] += 1
             elif text.startswith("🔨 Tool result"):
                 event_counts["tool_results"] += 1
-            elif text.startswith("🔍 Debug:"):
-                event_counts["debug"] += 1
             
             # Print event (truncate long events)
             display_text = text if len(text) <= 150 else text[:150] + "..."
@@ -4037,7 +4015,6 @@ print(f"  Node updates (state changes): {event_counts['updates']}")
 print(f"  Routing decisions: {event_counts['routing']}")
 print(f"  Tool calls: {event_counts['tool_calls']}")
 print(f"  Tool results: {event_counts['tool_results']}")
-print(f"  Debug events: {event_counts['debug']}")
 print(f"  Total events: {sum(event_counts.values())}")
 print(f"\n{'='*80}")
 print("✅ Enhanced streaming test complete!")
