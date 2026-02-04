@@ -1,48 +1,54 @@
 graph LR
     %% Main Flow - Simplified
-    User[👤 User] --> SuperAgent[🤖 Super Agent]
-    SuperAgent --> ThinkingAgent[🧠 Thinking Agent]
-    ThinkingAgent --> VSIndex[(📚 Vector Search Index)]
+    User[👤 User] --> SuperAgent[🤖 Super Agent<br/>with Memory]
+    SuperAgent --> Intent[🎯 Intent Detection]
+    Intent --> Planning[🧠 Planning Agent]
+    Planning --> VSIndex[(📚 Vector Search Index)]
     
     %% Decision Points
-    VSIndex --> Decision{How many<br/>agents?}
+    VSIndex --> Decision{Execution<br/>Path?}
     
-    %% Paths
-    Decision -->|Single| GenieAgent1[🤖 Genie Agent]
-    Decision -->|Multiple + Join| FastPath[⚡ Fast: SQL Synthesis]
-    Decision -->|Multiple + Join| SlowPath[🔄 Slow: Async Agents]
-    Decision -->|Multiple - No Join| VerbalPath[💬 Verbal Merge]
+    %% Execution Paths
+    Decision -->|Single Space| GenieAgent[🤖 Genie Agent]
+    Decision -->|Multi + Join<br/>Table Route| SQLTable[⚡ SQL Synthesis<br/>Table Agent]
+    Decision -->|Multi + Join<br/>Genie Route| SQLGenie[🔄 SQL Synthesis<br/>Genie Agent]
+    Decision -->|Multi - No Join| VerbalMerge[💬 Verbal Merge]
     
-    %% Results
-    GenieAgent1 --> Result1[📊 Result]
-    FastPath --> DeltaTables[(💾 Delta Tables)]
-    SlowPath --> DeltaTables
-    DeltaTables --> Result2[📊 Result]
-    VerbalPath --> Result3[📊 Result]
+    %% SQL Execution
+    SQLTable --> SQLExec[⚙️ SQL Execution]
+    SQLGenie --> SQLExec
+    GenieAgent --> SQLExec
+    VerbalMerge --> Summarize[📝 Summarize Agent]
+    SQLExec --> Summarize
     
-    %% Back to user
-    Result1 --> SuperAgent
-    Result2 --> SuperAgent
-    Result3 --> SuperAgent
+    %% Results back to user
+    Summarize --> SuperAgent
     SuperAgent --> User
     
-    %% Supporting Pipelines
-    Genie[📤 Genie Export] --> Metadata[🏷️ Table Metadata]
-    Metadata --> VSIndex
+    %% Supporting ETL Pipeline (Build Order: 1→2→3→4)
+    GenieExport[1️⃣ Export Genie<br/>Spaces] --> TableEnrich[2️⃣ Enrich Table<br/>Metadata]
+    TableEnrich --> EnrichedDocs[(📄 Enriched Docs<br/>Delta Table)]
+    EnrichedDocs --> VSBuild[3️⃣ Build VS Index]
+    VSBuild --> VSIndex
     
-    %% MLflow
-    MLflow[📈 MLflow] -.logs.-> SuperAgent
-    MLflow -.logs.-> ThinkingAgent
-    MLflow -.logs.-> GenieAgent1
+    %% Data Sources
+    DeltaTables[(💾 Delta Tables)] -.-> SQLExec
+    Lakebase[(🗄️ Lakebase<br/>Memory)] -.-> SuperAgent
+    
+    %% MLflow Integration
+    MLflow[📈 MLflow<br/>Logging] -.logs.-> SuperAgent
+    MLflow -.logs.-> Planning
     
     %% Styling
     classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff
     classDef dataClass fill:#50C878,stroke:#2E7D4E,stroke-width:2px,color:#fff
     classDef processClass fill:#F5A623,stroke:#C17D11,stroke-width:2px,color:#000
     classDef decisionClass fill:#E94B3C,stroke:#A33428,stroke-width:2px,color:#fff
+    classDef etlClass fill:#9B59B6,stroke:#6C3483,stroke-width:2px,color:#fff
     
-    class SuperAgent,ThinkingAgent,GenieAgent1 agentClass
-    class VSIndex,DeltaTables dataClass
-    class FastPath,SlowPath,VerbalPath,Genie,Metadata processClass
+    class SuperAgent,Planning,GenieAgent,SQLTable,SQLGenie,Summarize agentClass
+    class VSIndex,DeltaTables,EnrichedDocs,Lakebase dataClass
+    class Intent,SQLExec,VerbalMerge processClass
     class Decision decisionClass
+    class GenieExport,TableEnrich,VSBuild etlClass
 

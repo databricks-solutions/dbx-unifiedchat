@@ -1,111 +1,123 @@
 graph TB
     %% Main Entry Point
-    User[User Query] --> SuperAgent[Super Agent<br/>Main Orchestrator]
+    User[User Query] --> SuperAgent[Super Agent<br/>ResponsesAgent Wrapper<br/>with Memory Support]
     
-    %% Super Agent connections
-    SuperAgent --> ThinkingAgent[Thinking & Planning Agent<br/>Query Analysis & Breakdown]
-    SuperAgent --> ClarificationLoop{Question<br/>Clear?}
+    %% Memory Integration
+    Lakebase[(Lakebase Database<br/>Short-term & Long-term Memory)] -.-> SuperAgent
+    SuperAgent -.checkpoints.-> Lakebase
+    SuperAgent -.user memories.-> Lakebase
     
-    %% Clarification flow
-    ClarificationLoop -->|Vague| Clarify[Request Clarification<br/>Provide Choices]
-    Clarify --> User
-    ClarificationLoop -->|Clear| ThinkingAgent
+    %% Intent Detection & Clarification
+    SuperAgent --> IntentNode[Intent Detection Node<br/>Analyze Intent Type]
+    IntentNode --> IntentType{Intent<br/>Type?}
     
-    %% Thinking Agent Process
-    ThinkingAgent --> BreakDown[Break Down Query<br/>into Sub-tasks]
-    BreakDown --> VSSearch[Vector Search Index Tool<br/>Find Relevant Genie Agents]
+    IntentType -->|Meta Question| MetaAnswer[Answer Meta Question<br/>System Capabilities/Help]
+    MetaAnswer --> SuperAgent
     
-    %% Vector Search Index
-    VSIndex[(Vector Search Index<br/>Enriched Genie Space Metadata)] --> VSSearch
+    IntentType -->|Unclear| ClarifyNode[Clarification Node<br/>Request Clarification]
+    ClarifyNode --> User
     
-    %% Decision Points
-    VSSearch --> DecisionSingle{Single<br/>Genie Agent?}
+    IntentType -->|Clear Query| PlanningAgent[Planning Agent<br/>Query Analysis & Breakdown]
     
-    %% Single Agent Path
-    DecisionSingle -->|Yes| SingleGenie[Call Single Genie Agent]
-    SingleGenie --> GenieAgent1[Genie Agent<br/>Patients/Medications/Diagnoses/etc.]
-    GenieAgent1 --> ReturnSingle[Return:<br/>thinking_result<br/>sql_result<br/>answer_result]
-    ReturnSingle --> SuperAgent
+    %% Planning Agent Process
+    PlanningAgent --> VSSearch[Vector Search Tool<br/>Search Relevant Spaces]
+    VSIndex[(Vector Search Index<br/>Enriched Genie Space Metadata<br/>chunk_type: space_summary)] --> VSSearch
     
-    %% Multiple Agents Path
-    DecisionSingle -->|No| DecisionJoin{Row-wise<br/>Join Needed?}
+    VSSearch --> CreatePlan[Create Execution Plan<br/>Analyze Sub-questions]
+    CreatePlan --> DecisionRoute{Execution<br/>Route?}
     
-    %% Join Required - Table Route
-    DecisionJoin -->|Yes - Table Route| SQLSynthesisFast[SQL Synthesis Agent<br/>Assembly SQL from Metadata]
-    SQLSynthesisFast --> SQLExecFast[SQL Execution Agent<br/>Execute on Delta Tables]
-    SQLExecFast --> DeltaTables[(Delta Tables<br/>Behind Genie Agents)]
-    SQLExecFast --> ReturnFast[Return Fast Result]
-    ReturnFast --> SuperAgent
+    %% Path 1: Single Genie Agent
+    DecisionRoute -->|Single Space| SingleGenieCall[Call Single Genie Agent<br/>Databricks ResponsesAgent]
+    SingleGenieCall --> GenieAgent1[Genie Agent<br/>space_id specific]
+    GenieAgent1 --> SQLExec1[SQL Execution Agent<br/>Execute Query]
+    SQLExec1 --> DeltaTables1[(Delta Tables)]
+    SQLExec1 --> SummarizeAgent1[Result Summarize Agent<br/>Format Results]
+    SummarizeAgent1 --> SuperAgent
     
-    %% Join Required - Genie Route
-    DecisionJoin -->|Yes - Genie Route| ParallelCall[Parallel Async Calls<br/>to Multiple Genie Agents]
-    ParallelCall --> GenieAgent2A[Genie Agent A<br/>Sub-question 1]
-    ParallelCall --> GenieAgent2B[Genie Agent B<br/>Sub-question 2]
-    GenieAgent2A --> CollectSQL[Collect sql_results]
-    GenieAgent2B --> CollectSQL
-    CollectSQL --> SQLSynthesisSlow[SQL Synthesis Agent<br/>Assembly SQL from Results]
-    SQLSynthesisSlow --> SQLExecSlow[SQL Execution Agent<br/>Execute on Delta Tables]
-    SQLExecSlow --> DeltaTables
-    SQLExecSlow --> ReturnSlow[Return Slow Result]
-    ReturnSlow --> SuperAgent
+    %% Path 2: Multiple Spaces + Join - Table Route (Fast)
+    DecisionRoute -->|Multi + Join<br/>Table Route| SQLTableAgent[SQL Synthesis Table Agent<br/>Use UC Function Tools]
+    SQLTableAgent --> UCFunctions[UC Function Toolkit<br/>get_space_summary<br/>get_table_overview<br/>get_column_detail<br/>get_space_details]
+    UCFunctions --> EnrichedTable[(Enriched Genie Docs<br/>Delta Table)]
+    UCFunctions --> SQLTableAgent
+    SQLTableAgent --> SQLExec2[SQL Execution Agent<br/>Execute Joined Query]
+    SQLExec2 --> DeltaTables2[(Delta Tables)]
+    SQLExec2 --> SummarizeAgent2[Result Summarize Agent<br/>Format Results]
+    SummarizeAgent2 --> SuperAgent
     
-    %% No Join Required - Verbal Merge
-    DecisionJoin -->|No - Verbal Merge| MultiCall[Call Multiple Genie Agents<br/>in Parallel]
-    MultiCall --> GenieAgent3A[Genie Agent A<br/>Sub-question 1]
-    MultiCall --> GenieAgent3B[Genie Agent B<br/>Sub-question 2]
+    %% Path 3: Multiple Spaces + Join - Genie Route (Accurate)
+    DecisionRoute -->|Multi + Join<br/>Genie Route| ParallelGenie[Parallel Async Calls<br/>to Multiple Genie Agents]
+    ParallelGenie --> GenieAgent2A[Genie Agent A<br/>Sub-question 1]
+    ParallelGenie --> GenieAgent2B[Genie Agent B<br/>Sub-question 2]
+    GenieAgent2A --> SQLGenieAgent[SQL Synthesis Genie Agent<br/>Combine SQL Results]
+    GenieAgent2B --> SQLGenieAgent
+    SQLGenieAgent --> SQLExec3[SQL Execution Agent<br/>Execute Combined Query]
+    SQLExec3 --> DeltaTables3[(Delta Tables)]
+    SQLExec3 --> SummarizeAgent3[Result Summarize Agent<br/>Format Results]
+    SummarizeAgent3 --> SuperAgent
+    
+    %% Path 4: Multiple Spaces - No Join (Verbal Merge)
+    DecisionRoute -->|Multi - No Join<br/>Verbal Merge| MultiGenie[Call Multiple Genie Agents<br/>in Parallel]
+    MultiGenie --> GenieAgent3A[Genie Agent A<br/>Independent Question 1]
+    MultiGenie --> GenieAgent3B[Genie Agent B<br/>Independent Question 2]
     GenieAgent3A --> VerbalMerge[Verbal Merge<br/>Integrate Answers]
     GenieAgent3B --> VerbalMerge
-    VerbalMerge --> ReturnMerged[Return:<br/>integrated answer<br/>separate sql_results]
-    ReturnMerged --> SuperAgent
+    VerbalMerge --> SummarizeAgent4[Result Summarize Agent<br/>Format Merged Results]
+    SummarizeAgent4 --> SuperAgent
     
     %% Final Output
-    SuperAgent --> FinalAnswer[Final Answer to User]
+    SuperAgent --> FinalAnswer[Final Answer with<br/>thinking_result<br/>sql_result<br/>answer_result]
     FinalAnswer --> User
     
-    %% Supporting Pipelines Section
-    subgraph Pipeline1["Pipeline 1: Table Metadata Update"]
-        TMU1[Sample Column Values]
-        TMU2[Build Value Dictionary]
-        TMU3[Enrich Metadata]
-        TMU4[Save to Delta Table]
-        TMU1 --> TMU2
-        TMU2 --> TMU3
-        TMU3 --> TMU4
+    %% ETL Pipeline Section (Build Order)
+    subgraph ETLPipeline["ETL Pipeline - Build Order: 1 → 2 → 3 → 4"]
+        direction TB
+        
+        subgraph Pipeline1["Notebook 1: Export Genie Spaces"]
+            GSE1[Export Genie Spaces<br/>via API]
+            GSE2[Save space.json to<br/>UC Volume]
+            GSE1 --> GSE2
+        end
+        
+        subgraph Pipeline2["Notebook 2: Enrich Table Metadata"]
+            TMU1[Get Table Metadata<br/>DESCRIBE EXTENDED]
+            TMU2[Sample Column Values<br/>Distinct Values]
+            TMU3[Build Value Dictionary<br/>Frequency Counts]
+            TMU4[Parse Genie space.json<br/>Create Baseline Docs]
+            TMU5[Enrich Docs with<br/>Table Metadata]
+            TMU6[Save to Delta Table<br/>enriched_genie_docs_chunks]
+            TMU1 --> TMU2
+            TMU2 --> TMU3
+            TMU3 --> TMU5
+            TMU4 --> TMU5
+            TMU5 --> TMU6
+        end
+        
+        subgraph Pipeline3["Notebook 3: Build Vector Search Index"]
+            VS1[Create VS Endpoint<br/>if not exists]
+            VS2[Enable CDC on<br/>enriched_genie_docs_chunks]
+            VS3[Create Delta Sync Index<br/>embedding_source: searchable_content]
+            VS4[Wait for Index ONLINE<br/>Test Search]
+            VS1 --> VS2
+            VS2 --> VS3
+            VS3 --> VS4
+        end
+        
+        Pipeline1 --> Pipeline2
+        Pipeline2 --> Pipeline3
+        Pipeline3 --> VSIndex
     end
     
-    subgraph Pipeline2["Pipeline 2: Vector Search Index Generation"]
-        VS1[Parse Genie Space JSON]
-        VS2[Get Baseline Docs]
-        VS3[Enrich with Table Metadata]
-        VS4[Build VS Index]
-        VS1 --> VS2
-        VS2 --> VS3
-        VS3 --> VS4
-        VS4 --> VSIndex
-    end
-    
-    subgraph Pipeline3["Pipeline 3: Genie Space Export"]
-        GSE1[Export Genie Spaces]
-        GSE2[Generate space.json]
-        GSE1 --> GSE2
-    end
-    
-    %% Pipeline dependencies
-    GSE2 --> VS1
-    TMU4 --> VS3
-    
-    %% Future Components (Caching)
-    subgraph FutureCaching["Future: Caching System"]
-        Cache1[Full-text Cache]
-        Cache2[Parameterized SQL Cache]
-        Cache3[Semantic Cache]
-    end
+    %% Supporting Data Tables
+    EnrichedTable -.chunks.-> VSIndex
     
     %% MLflow Integration
-    MLflow[MLflow<br/>Logging & Deployment]
-    SuperAgent -.logs.-> MLflow
-    ThinkingAgent -.logs.-> MLflow
-    GenieAgent1 -.logs.-> MLflow
+    MLflow[MLflow<br/>Logging & Model Serving]
+    SuperAgent -.logs & deploys.-> MLflow
+    PlanningAgent -.logs.-> MLflow
+    SQLTableAgent -.logs.-> MLflow
+    SQLGenieAgent -.logs.-> MLflow
+    SQLExec1 -.logs.-> MLflow
+    SummarizeAgent1 -.logs.-> MLflow
     
     %% Styling
     classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff
@@ -113,10 +125,12 @@ graph TB
     classDef processClass fill:#F5A623,stroke:#C17D11,stroke-width:2px,color:#fff
     classDef decisionClass fill:#E94B3C,stroke:#A33428,stroke-width:2px,color:#fff
     classDef pipelineClass fill:#9B59B6,stroke:#6C3483,stroke-width:2px,color:#fff
+    classDef memoryClass fill:#16A085,stroke:#117A65,stroke-width:2px,color:#fff
     
-    class SuperAgent,ThinkingAgent,GenieAgent1,GenieAgent2A,GenieAgent2B,GenieAgent3A,GenieAgent3B agentClass
-    class VSIndex,DeltaTables dataClass
-    class SQLSynthesisFast,SQLExecFast,SQLSynthesisSlow,SQLExecSlow,BreakDown,VSSearch processClass
-    class DecisionSingle,DecisionJoin,ClarificationLoop decisionClass
-    class TMU1,TMU2,TMU3,TMU4,VS1,VS2,VS3,VS4,GSE1,GSE2 pipelineClass
+    class SuperAgent,PlanningAgent,GenieAgent1,GenieAgent2A,GenieAgent2B,GenieAgent3A,GenieAgent3B,SQLTableAgent,SQLGenieAgent,SummarizeAgent1,SummarizeAgent2,SummarizeAgent3,SummarizeAgent4 agentClass
+    class VSIndex,DeltaTables1,DeltaTables2,DeltaTables3,EnrichedTable dataClass
+    class IntentNode,VSSearch,CreatePlan,SingleGenieCall,ParallelGenie,MultiGenie,VerbalMerge,SQLExec1,SQLExec2,SQLExec3,UCFunctions,MetaAnswer,ClarifyNode processClass
+    class IntentType,DecisionRoute decisionClass
+    class GSE1,GSE2,TMU1,TMU2,TMU3,TMU4,TMU5,TMU6,VS1,VS2,VS3,VS4 pipelineClass
+    class Lakebase memoryClass
 

@@ -4,116 +4,205 @@ This document contains the architecture diagrams for the KUMC POC Multi-Agent Sy
 
 ## Overview
 
-The system consists of three main components:
-1. **Multi-Agent System** - Main query processing and response system
-2. **Vector Search Index Pipeline** - Builds searchable index of Genie space metadata
-3. **Table Metadata Update Pipeline** - Enriches table metadata for better search
+The system consists of four main components:
+1. **Multi-Agent System** - Main query processing and response system with memory support
+2. **ETL Pipeline** - Four-stage pipeline to prepare metadata for vector search
+3. **Vector Search Index** - Semantic search over enriched Genie space metadata
+4. **Memory System** - Short-term (checkpoints) and long-term (user memories) via Lakebase
 
 ## Architecture Components
 
-### Main Agents
+### Main Agents (from Super_Agent_hybrid.py)
 
-1. **Super Agent** - Main orchestrator that coordinates all other agents
-2. **Thinking & Planning Agent** - Breaks down queries and plans execution strategy
-3. **Genie Agents** - Domain-specific agents (Patients, Medications, Diagnoses, etc.)
-4. **SQL Synthesis Agent** - Assembles SQL queries from metadata or sub-results
-5. **SQL Execution Agent** - Executes SQL queries on Delta tables
+1. **SuperAgentHybridResponsesAgent** - Main orchestrator (ResponsesAgent wrapper) with memory support
+   - Short-term memory: Lakebase CheckpointSaver (conversation checkpoints)
+   - Long-term memory: Lakebase DatabricksStore (user preferences with semantic search)
+2. **Planning Agent** - Breaks down queries, performs vector search, creates execution plans
+3. **Intent Detection Node** - Analyzes intent type (new_question, refinement, meta_question, clarification_response)
+4. **SQL Synthesis Table Agent** - Fast path using UC function tools to query metadata directly
+5. **SQL Synthesis Genie Agent** - Accurate path combining results from multiple Genie agents
+6. **SQL Execution Agent** - Executes SQL queries on Delta tables via SQL Warehouse
+7. **Result Summarize Agent** - Formats and summarizes results for user display
+8. **Genie Agents** - Domain-specific Databricks ResponsesAgent instances (space-specific)
 
 ### Decision Points
 
-1. **Question Clarity Check** - Determines if user query needs clarification
-2. **Single vs Multiple Agent Decision** - Routes to appropriate execution path
-3. **Join Requirement Decision** - Determines if row-wise join or verbal merge is needed
+1. **Intent Type Classification** - Determines query intent (meta_question, new_question, refinement, unclear)
+2. **Clarification Required** - Checks if user query needs clarification before processing
+3. **Execution Route Decision** - Determines which path to take:
+   - Single Genie Space
+   - Multiple Spaces + Join (Table Route - Fast)
+   - Multiple Spaces + Join (Genie Route - Accurate)
+   - Multiple Spaces - No Join (Verbal Merge)
 
 ### Execution Paths
 
-#### Path 1: Single Genie Agent
-- Used when one Genie Agent can completely answer the question
-- Direct call to Genie Agent → Return result
+#### Path 1: Single Genie Space
+- Used when one Genie Space can completely answer the question
+- Direct call to single Genie Agent (Databricks ResponsesAgent)
+- SQL Execution Agent runs the query
+- Result Summarize Agent formats the output
 
-#### Path 2: Multiple Agents with Join (Table Route)
-- SQL Synthesis Agent uses metadata directly
-- Generates and executes joined SQL query
-- Returns result first (fast response)
+#### Path 2: Multiple Spaces + Join (Table Route - Fast)
+- SQL Synthesis Table Agent queries enriched metadata via UC function tools
+  - `get_space_summary` - High-level space information
+  - `get_table_overview` - Table-level metadata
+  - `get_column_detail` - Column-level metadata
+  - `get_space_details` - Complete metadata (last resort)
+- Generates joined SQL query directly from metadata
+- SQL Execution Agent executes the query
+- Returns result quickly (optimized for speed)
 
-#### Path 3: Multiple Agents with Join (Genie Route)
-- Parallel async calls to multiple Genie Agents
+#### Path 3: Multiple Spaces + Join (Genie Route - Accurate)
+- Parallel async calls to multiple Genie Agents with sub-questions
 - Collects sql_results from each agent
-- SQL Synthesis Agent combines the results
-- Returns comprehensive result (more accurate)
+- SQL Synthesis Genie Agent combines SQL queries with proper joins
+- SQL Execution Agent executes combined query
+- Returns comprehensive result (optimized for accuracy)
 
-#### Path 4: Multiple Agents - Verbal Merge
-- No common column needed for join
-- Calls multiple agents in parallel
-- Verbally integrates answers
+#### Path 4: Multiple Spaces - No Join (Verbal Merge)
+- Used when sub-questions are independent (no join needed)
+- Calls multiple Genie Agents in parallel
+- Verbal Merge integrates natural language answers
 - Returns integrated response with separate SQL results
 
-### Supporting Pipelines
+### ETL Pipeline (Build Order: 1 → 2 → 3)
 
-#### Pipeline 1: Table Metadata Update (Build First)
-```
-Sample Column Values → Build Value Dictionary → Enrich Metadata → Save to Delta Table
-```
+The ETL pipeline consists of three notebooks that must be run in sequence:
 
-Purpose: Enriches table metadata with column samples and value dictionaries
-
-#### Pipeline 2: Vector Search Index Generation (Build Second)
+#### Notebook 1: 00_Export_Genie_Spaces.py (Export Genie Spaces)
 ```
-Parse Genie Space JSON → Get Baseline Docs → Enrich with Table Metadata → Build VS Index
+Export Genie Spaces via API → Save space.json to UC Volume
 ```
 
-Purpose: Creates searchable vector index of enriched Genie space metadata
+**Purpose:** Exports Genie space metadata (space.json) to Unity Catalog Volume
 
-#### Pipeline 3: Genie Space Export (Prerequisite)
+**Configuration:**
+- `GENIE_SPACE_IDS` - Comma-separated list of Genie space IDs
+- Output: `/Volumes/{catalog}/{schema}/{volume}/genie_exports/`
+
+#### Notebook 2: 02_Table_MetaInfo_Enrichment.py (Enrich Table Metadata)
 ```
-Export Genie Spaces → Generate space.json
+Get Table Metadata → Sample Column Values → Build Value Dictionary 
+    ↓
+Parse Genie space.json → Create Baseline Docs → Enrich Docs with Table Metadata
+    ↓
+Save to enriched_genie_docs_chunks Delta Table
 ```
 
-Purpose: Exports Genie space configurations for processing
+**Purpose:** Enriches Genie space metadata with detailed table information
+
+**Features:**
+- Samples distinct column values (configurable sample_size)
+- Builds value frequency dictionaries (configurable max_unique_values)
+- Creates multi-level chunks:
+  - `space_summary` - High-level space information
+  - `table_overview` - Table schemas and metadata
+  - `column_detail` - Column-level metadata with samples
+- Stores enriched docs in Unity Catalog Delta table
+
+**Configuration:**
+- `catalog_name`, `schema_name` - Unity Catalog location
+- `genie_exports_volume` - Volume with exported Genie spaces
+- `enriched_docs_table` - Output table name
+- `sample_size` - Number of column value samples (default: 20)
+- `max_unique_values` - Max unique values in dictionary (default: 20)
+
+#### Notebook 3: 04_VS_Enriched_Genie_Spaces.py (Build Vector Search Index)
+```
+Create VS Endpoint → Enable CDC → Create Delta Sync Index → Wait for ONLINE
+```
+
+**Purpose:** Creates vector search index on enriched Genie space metadata
+
+**Features:**
+- Delta Sync index (automatic updates when source table changes)
+- Embedding source: `searchable_content` column
+- Primary key: `chunk_id`
+- Filterable metadata: `chunk_type`, `table_name`, `column_name`, etc.
+
+**Configuration:**
+- `vs_endpoint_name` - Vector search endpoint name
+- `embedding_model` - Embedding model endpoint (default: databricks-gte-large-en)
+- `pipeline_type` - TRIGGERED or CONTINUOUS (default: TRIGGERED)
 
 ### Data Stores
 
-1. **Vector Search Index** - Databricks managed vector search index containing enriched metadata
+1. **Vector Search Index** - Databricks managed vector search index
+   - Source: `enriched_genie_docs_chunks` Delta table
+   - Embedding column: `searchable_content`
+   - Filterable by: `chunk_type`, `table_name`, `column_name`, categorical flags
 2. **Delta Tables** - Underlying data tables behind Genie Agents
-3. **Enriched Metadata Table** - Unity Catalog table with enriched parsed docs
+   - Accessed via SQL Execution Agent using SQL Warehouse
+3. **Enriched Genie Docs Delta Table** - Unity Catalog table with enriched metadata
+   - Table: `{catalog}.{schema}.enriched_genie_docs_chunks`
+   - Contains: space_summary, table_overview, column_detail chunks
+4. **Lakebase Database** - Memory system for agent state
+   - Short-term: Checkpoints table (conversation state per thread_id)
+   - Long-term: Store table (user preferences per user_id with embeddings)
 
 ### Integration
 
-- **MLflow** - Logging and deployment for all agents
-- **LangGraph** - Supervisor-style agent orchestration
-- **Databricks ResponsesAgent** - Integration with Databricks Genie
+- **MLflow** - Logging and Model Serving deployment for all agents
+- **LangGraph** - StateGraph for agent orchestration with message passing
+- **Databricks ResponsesAgent** - Wrapper class for Genie agents and Model Serving
+- **Lakebase** - Distributed memory system for checkpoints and long-term storage
+- **Unity Catalog Functions** - UC function toolkit for metadata querying
+- **SQL Warehouse** - Query execution via Databricks SQL connector
 
-### Future Components (TODO)
+### Current Features
 
-1. **Full-text Cache** - Cache complete query-response pairs
-2. **Parameterized SQL Cache** - Cache SQL queries with parameters
-3. **Semantic Cache** - Cache semantically similar queries
+1. **Memory System** - ✅ Implemented via Lakebase
+   - Short-term: Conversation checkpoints (per thread_id)
+   - Long-term: User preferences with semantic search (per user_id)
+2. **Intent Detection** - ✅ Analyzes query intent and context
+3. **Clarification Flow** - ✅ Requests clarification for vague queries
+4. **Streaming Support** - ✅ Custom events and token streaming
+5. **Agent Caching** - ✅ In-memory agent pool with TTL
+6. **Vector Search Caching** - ✅ Conversation-specific result caching
+
+### Optional Component (01_Table_MetaInfo_Update.py)
+
+**AI-Enhanced Column Comments** - Uses LLM to improve table column descriptions
+- Input: Table with basic column metadata
+- Process: LLM generates enhanced column descriptions
+- Output: Table with `updated_comment` field
+- Note: This is optional and separate from the main ETL pipeline
 
 ## Query Flow Example
 
 ### Example Query: "How many patients older than 50 years are on Voltaren?"
 
-1. **User** → Super Agent
-2. **Super Agent** → Thinking & Planning Agent
-3. **Thinking & Planning Agent** breaks down:
-   - Sub-task 1: Count patients older than 50 years
-   - Sub-task 2: Count patients taking Voltaren
-   - Requirement: Need to join on patient_id
-4. **Vector Search Tool** identifies:
-   - Patients Genie Agent (has age information)
-   - Medications Genie Agent (has medication information)
-5. **Decision**: Multiple agents + Join required
-6. **Table Route** (parallel execution):
-   - SQL Synthesis Agent creates joined query using metadata
-   - SQL Execution Agent runs on Delta tables
-   - Returns count immediately
-7. **Genie Route** (parallel execution):
-   - Patients Agent: Gets patients > 50 years
-   - Medications Agent: Gets patients on Voltaren
-   - SQL Synthesis Agent: Joins results on patient_id
-   - SQL Execution Agent: Executes final query
-   - Returns comprehensive result
-8. **Super Agent** → Returns to User
+1. **User** → SuperAgentHybridResponsesAgent
+2. **Intent Detection Node** analyzes:
+   - Intent type: new_question (clear, actionable query)
+   - Confidence: 0.95
+   - Complexity: moderate
+3. **Planning Agent** processes:
+   - Vector search finds relevant spaces:
+     - Patients Genie Space (has age information)
+     - Medications Genie Space (has medication information)
+   - Creates execution plan:
+     - Sub-questions: ["patients > 50 years", "patients on Voltaren"]
+     - Requires join: true (on patient_id)
+     - Strategy: table_route (for speed)
+4. **Table Route Execution** (Fast Path):
+   - SQL Synthesis Table Agent calls UC functions:
+     - `get_table_overview` for both spaces
+     - `get_column_detail` for age and medication columns
+   - Generates joined SQL query:
+     ```sql
+     SELECT COUNT(DISTINCT p.patient_id)
+     FROM patients_table p
+     JOIN medications_table m ON p.patient_id = m.patient_id
+     WHERE p.age > 50 AND m.medication_name = 'Voltaren'
+     ```
+   - SQL Execution Agent executes query
+   - Result Summarize Agent formats output
+5. **SuperAgent** → Returns final answer to User with:
+   - `thinking_result`: Execution plan and reasoning
+   - `sql_result`: SQL query and execution details
+   - `answer_result`: Natural language answer with results
 
 ## File Formats
 
@@ -200,144 +289,82 @@ All formats are text-based and can be edited in any text editor:
 
 ## Color Legend
 
-- **Blue (#4A90E2)** - Agents (Super Agent, Thinking Agent, Genie Agents, SQL Agents)
-- **Green (#50C878)** - Data Stores (Vector Search Index, Delta Tables)
-- **Orange (#F5A623)** - Processes (Search, Synthesis, Merge operations)
-- **Red (#E94B3C)** - Decision Points (Clarity check, routing decisions)
-- **Purple (#9B59B6)** - Pipeline Components (Table metadata, VS index, exports)
-- **Gray (#BDC3C7)** - Future Components (Caching system)
-- **Orange (#FFA500)** - Integration (MLflow)
+- **Blue (#4A90E2)** - Agents (SuperAgent, Planning, SQL Synthesis, SQL Execution, Summarize, Genie Agents)
+- **Green (#50C878)** - Data Stores (Vector Search Index, Delta Tables, Enriched Docs, Lakebase)
+- **Orange (#F5A623)** - Processes (Intent Detection, Vector Search, SQL Execution, Verbal Merge, UC Functions)
+- **Red (#E94B3C)** - Decision Points (Intent Type, Execution Route)
+- **Purple (#9B59B6)** - ETL Pipeline Components (Export, Enrich, Build Index)
+- **Teal (#16A085)** - Memory System (Lakebase with short-term and long-term memory)
 
-## Mermaid Diagram
+## Architecture Diagrams
 
-```mermaid
-graph TB
-    %% Main Entry Point
-    User[User Query] --> SuperAgent[Super Agent<br/>Main Orchestrator]
-    
-    %% Super Agent connections
-    SuperAgent --> ThinkingAgent[Thinking & Planning Agent<br/>Query Analysis & Breakdown]
-    SuperAgent --> ClarificationLoop{Question<br/>Clear?}
-    
-    %% Clarification flow
-    ClarificationLoop -->|Vague| Clarify[Request Clarification<br/>Provide Choices]
-    Clarify --> User
-    ClarificationLoop -->|Clear| ThinkingAgent
-    
-    %% Thinking Agent Process
-    ThinkingAgent --> BreakDown[Break Down Query<br/>into Sub-tasks]
-    BreakDown --> VSSearch[Vector Search Index Tool<br/>Find Relevant Genie Agents]
-    
-    %% Vector Search Index
-    VSIndex[(Vector Search Index<br/>Enriched Genie Space Metadata)] --> VSSearch
-    
-    %% Decision Points
-    VSSearch --> DecisionSingle{Single<br/>Genie Agent?}
-    
-    %% Single Agent Path
-    DecisionSingle -->|Yes| SingleGenie[Call Single Genie Agent]
-    SingleGenie --> GenieAgent1[Genie Agent<br/>Patients/Medications/Diagnoses/etc.]
-    GenieAgent1 --> ReturnSingle[Return:<br/>thinking_result<br/>sql_result<br/>answer_result]
-    ReturnSingle --> SuperAgent
-    
-    %% Multiple Agents Path
-    DecisionSingle -->|No| DecisionJoin{Row-wise<br/>Join Needed?}
-    
-    %% Join Required - Table Route
-    DecisionJoin -->|Yes - Table Route| SQLSynthesisFast[SQL Synthesis Agent<br/>Assembly SQL from Metadata]
-    SQLSynthesisFast --> SQLExecFast[SQL Execution Agent<br/>Execute on Delta Tables]
-    SQLExecFast --> DeltaTables[(Delta Tables<br/>Behind Genie Agents)]
-    SQLExecFast --> ReturnFast[Return Fast Result]
-    ReturnFast --> SuperAgent
-    
-    %% Join Required - Genie Route
-    DecisionJoin -->|Yes - Genie Route| ParallelCall[Parallel Async Calls<br/>to Multiple Genie Agents]
-    ParallelCall --> GenieAgent2A[Genie Agent A<br/>Sub-question 1]
-    ParallelCall --> GenieAgent2B[Genie Agent B<br/>Sub-question 2]
-    GenieAgent2A --> CollectSQL[Collect sql_results]
-    GenieAgent2B --> CollectSQL
-    CollectSQL --> SQLSynthesisSlow[SQL Synthesis Agent<br/>Assembly SQL from Results]
-    SQLSynthesisSlow --> SQLExecSlow[SQL Execution Agent<br/>Execute on Delta Tables]
-    SQLExecSlow --> DeltaTables
-    SQLExecSlow --> ReturnSlow[Return Slow Result]
-    ReturnSlow --> SuperAgent
-    
-    %% No Join Required - Verbal Merge
-    DecisionJoin -->|No - Verbal Merge| MultiCall[Call Multiple Genie Agents<br/>in Parallel]
-    MultiCall --> GenieAgent3A[Genie Agent A<br/>Sub-question 1]
-    MultiCall --> GenieAgent3B[Genie Agent B<br/>Sub-question 2]
-    GenieAgent3A --> VerbalMerge[Verbal Merge<br/>Integrate Answers]
-    GenieAgent3B --> VerbalMerge
-    VerbalMerge --> ReturnMerged[Return:<br/>integrated answer<br/>separate sql_results]
-    ReturnMerged --> SuperAgent
-    
-    %% Final Output
-    SuperAgent --> FinalAnswer[Final Answer to User]
-    FinalAnswer --> User
-    
-    %% Supporting Pipelines Section
-    subgraph Pipeline1["Pipeline 1: Table Metadata Update"]
-        TMU1[Sample Column Values]
-        TMU2[Build Value Dictionary]
-        TMU3[Enrich Metadata]
-        TMU4[Save to Delta Table]
-        TMU1 --> TMU2
-        TMU2 --> TMU3
-        TMU3 --> TMU4
-    end
-    
-    subgraph Pipeline2["Pipeline 2: Vector Search Index Generation"]
-        VS1[Parse Genie Space JSON]
-        VS2[Get Baseline Docs]
-        VS3[Enrich with Table Metadata]
-        VS4[Build VS Index]
-        VS1 --> VS2
-        VS2 --> VS3
-        VS3 --> VS4
-        VS4 --> VSIndex
-    end
-    
-    subgraph Pipeline3["Pipeline 3: Genie Space Export"]
-        GSE1[Export Genie Spaces]
-        GSE2[Generate space.json]
-        GSE1 --> GSE2
-    end
-    
-    %% Pipeline dependencies
-    GSE2 --> VS1
-    TMU4 --> VS3
-    
-    %% Future Components (Caching)
-    subgraph FutureCaching["Future: Caching System"]
-        Cache1[Full-text Cache]
-        Cache2[Parameterized SQL Cache]
-        Cache3[Semantic Cache]
-    end
-    
-    %% MLflow Integration
-    MLflow[MLflow<br/>Logging & Deployment]
-    SuperAgent -.logs.-> MLflow
-    ThinkingAgent -.logs.-> MLflow
-    GenieAgent1 -.logs.-> MLflow
-    
-    %% Styling
-    classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff
-    classDef dataClass fill:#50C878,stroke:#2E7D4E,stroke-width:2px,color:#fff
-    classDef processClass fill:#F5A623,stroke:#C17D11,stroke-width:2px,color:#fff
-    classDef decisionClass fill:#E94B3C,stroke:#A33428,stroke-width:2px,color:#fff
-    classDef pipelineClass fill:#9B59B6,stroke:#6C3483,stroke-width:2px,color:#fff
-    
-    class SuperAgent,ThinkingAgent,GenieAgent1,GenieAgent2A,GenieAgent2B,GenieAgent3A,GenieAgent3B agentClass
-    class VSIndex,DeltaTables dataClass
-    class SQLSynthesisFast,SQLExecFast,SQLSynthesisSlow,SQLExecSlow,BreakDown,VSSearch processClass
-    class DecisionSingle,DecisionJoin,ClarificationLoop decisionClass
-    class TMU1,TMU2,TMU3,TMU4,VS1,VS2,VS3,VS4,GSE1,GSE2 pipelineClass
-```
+### Simple Diagram
+
+The simple diagram shows the high-level flow and ETL pipeline:
+
+![Simple Architecture Diagram](architecture_diagram_simple.svg)
+
+### Full Diagram
+
+The full diagram shows all agents, execution paths, and data flows:
+
+![Full Architecture Diagram](architecture_diagram.svg)
+
+## Mermaid Source Code
+
+Both diagrams are available as Mermaid source files:
+- `architecture_diagram_simple.mmd` - Simple version
+- `architecture_diagram.mmd` - Full version
+
+You can view and edit these files in:
+- [Mermaid Live Editor](https://mermaid.live)
+- GitHub (renders Mermaid automatically)
+- Any Markdown viewer with Mermaid support
+
+## Build and Deployment Order
+
+### ETL Pipeline (Run Once or When Metadata Changes)
+1. Run `00_Export_Genie_Spaces.py` - Export Genie space metadata
+2. Run `02_Table_MetaInfo_Enrichment.py` - Enrich metadata with table details
+3. Run `04_VS_Enriched_Genie_Spaces.py` - Build vector search index
+4. Wait for vector search index to be ONLINE
+
+### Multi-Agent System Deployment
+1. Configure `.env` file with all required settings
+2. Run `Notebooks/Super_Agent_hybrid.py` to test locally
+3. Deploy to MLflow Model Serving for production:
+   - Model: `SuperAgentHybridResponsesAgent`
+   - Memory: Automatic via Lakebase (no configuration needed)
+   - Endpoint: Serves via ResponsesAgent API
+
+## Key Design Decisions
+
+1. **Hybrid Execution Strategy**
+   - Table Route: Fast responses using metadata directly
+   - Genie Route: Accurate responses using actual Genie agents
+   - System defaults to table_route unless user specifies otherwise
+
+2. **Memory Architecture**
+   - Short-term: Lakebase checkpoints (per conversation thread)
+   - Long-term: Lakebase store with vector embeddings (per user)
+   - Distributed: Works across multiple Model Serving instances
+
+3. **Agent Specialization**
+   - Each agent has dedicated LLM endpoint optimized for its role
+   - Planning: Fast model for quick decisions
+   - SQL Synthesis: Accurate model for correct queries
+   - Summarize: Balanced model for natural language
+
+4. **UC Function Toolkit**
+   - Metadata queries as SQL functions in Unity Catalog
+   - Hierarchical retrieval: summary → table → column → full details
+   - Token-efficient: Only fetch what's needed
 
 ## Notes
 
 - All agents are logged via MLflow for tracking and deployment
-- The system follows the LangGraph ResponsesAgent pattern from Super_Agent.ipynb
-- Build order: Pipeline 3 → Pipeline 1 → Pipeline 2 → Multi-Agent System
-- Table Route provides quick responses while genie route ensures accuracy
+- System uses LangGraph StateGraph for agent orchestration
+- Streaming support for real-time user feedback
+- Intent detection prevents unnecessary clarification loops
+- Agent pool caching reduces initialization overhead
 
