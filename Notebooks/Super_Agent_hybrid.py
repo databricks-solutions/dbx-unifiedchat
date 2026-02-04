@@ -4766,7 +4766,8 @@ Prerequisites:
 # MAGIC             # - updates: State changes after each node
 # MAGIC             # - messages: LLM token-by-token streaming
 # MAGIC             # - custom: Agent-specific events (thinking, decisions, progress)
-# MAGIC             for event in app.stream(initial_state, run_config, stream_mode=["updates", "messages", "custom"]):
+# MAGIC             # - tasks: Task lifecycle events (start, finish, errors) for node execution tracking
+# MAGIC             for event in app.stream(initial_state, run_config, stream_mode=["updates", "messages", "custom", "tasks"]):
 # MAGIC                 event_type = event[0]
 # MAGIC                 event_data = event[1]
 # MAGIC                 
@@ -4886,6 +4887,54 @@ Prerequisites:
 # MAGIC                         )
 # MAGIC                     except Exception as e:
 # MAGIC                         logger.warning(f"Error processing custom event: {e}")
+# MAGIC                 
+# MAGIC                 # Handle tasks mode (node lifecycle events)
+# MAGIC                 elif event_type == "tasks":
+# MAGIC                     try:
+# MAGIC                         task_event = event_data
+# MAGIC                         # Task events include: 'event' (start/finish/error), 'name', 'node', 'timestamp', etc.
+# MAGIC                         event_name = task_event.get("event", "unknown")
+# MAGIC                         node_name = task_event.get("name", "unknown")
+# MAGIC                         
+# MAGIC                         if event_name == "start":
+# MAGIC                             # Task started
+# MAGIC                             logger.debug(f"⏳ Task started: {node_name}")
+# MAGIC                             # Optionally emit to UI:
+# MAGIC                             # yield ResponsesAgentStreamEvent(
+# MAGIC                             #     type="response.output_item.done",
+# MAGIC                             #     item=self.create_text_output_item(
+# MAGIC                             #         text=f"⏳ Starting: {node_name}",
+# MAGIC                             #         id=str(uuid4())
+# MAGIC                             #     ),
+# MAGIC                             # )
+# MAGIC                         
+# MAGIC                         elif event_name == "end":
+# MAGIC                             # Task completed successfully
+# MAGIC                             duration = task_event.get("duration")
+# MAGIC                             if duration:
+# MAGIC                                 logger.info(f"✅ Task completed: {node_name} ({duration:.3f}s)")
+# MAGIC                                 # Track node execution times for performance metrics
+# MAGIC                                 if "node_timings" not in _performance_metrics["workflow_metrics"]:
+# MAGIC                                     _performance_metrics["workflow_metrics"]["node_timings"] = {}
+# MAGIC                                 _performance_metrics["workflow_metrics"]["node_timings"][node_name] = duration
+# MAGIC                             else:
+# MAGIC                                 logger.info(f"✅ Task completed: {node_name}")
+# MAGIC                         
+# MAGIC                         elif event_name == "error":
+# MAGIC                             # Task failed with error
+# MAGIC                             error = task_event.get("error", "Unknown error")
+# MAGIC                             logger.error(f"❌ Task failed: {node_name} - {error}")
+# MAGIC                             # Emit error to UI
+# MAGIC                             yield ResponsesAgentStreamEvent(
+# MAGIC                                 type="response.output_item.done",
+# MAGIC                                 item=self.create_text_output_item(
+# MAGIC                                     text=f"❌ Error in {node_name}: {error}",
+# MAGIC                                     id=str(uuid4())
+# MAGIC                                 ),
+# MAGIC                             )
+# MAGIC                     
+# MAGIC                     except Exception as e:
+# MAGIC                         logger.warning(f"Error processing task event: {e}")
 # MAGIC         
 # MAGIC         # PHASE 3: Track TTCL (Time To Completion)
 # MAGIC         workflow_end_time = time.time()
@@ -4929,6 +4978,8 @@ Prerequisites:
 # MAGIC print("  ✓ Routing decisions between agents")
 # MAGIC print("  ✓ Summary generation progress")
 # MAGIC print("  ✓ Custom events for detailed execution tracking")
+# MAGIC print("  ✓ Task lifecycle monitoring (start/finish/errors)")
+# MAGIC print("  ✓ Per-node execution timing for performance analysis")
 # MAGIC print("="*80)
 # MAGIC
 # MAGIC # Set the agent for MLflow tracking
