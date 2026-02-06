@@ -1,9 +1,76 @@
-
-.databricks
+# Environment and Secrets
 .env
+.databricks
+
+# Python
 .venv
+venv/
+env/
+ENV/
 **/__pycache__/**
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# Databricks
+.databricks/
+
+# Data and workspace files
+Workspace/
+data/
+*.csv
+*.json.local
+test_results.json
 
 # Agent files (auto-generated from notebook)
-agent.py
-Notebooks/agent.py
+agent.py.bak
+Notebooks/agent.py.bak
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
+
+# MLflow
+mlruns/
+mlartifacts/
+
+# Logs
+*.log
+logs/

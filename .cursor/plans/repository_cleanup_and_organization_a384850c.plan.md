@@ -16,10 +16,10 @@ todos:
     status: completed
   - id: phase5-notebooks
     content: "Clean up Notebooks/: rename to deploy_agent.py, create test_agent_databricks.py, archive old versions"
-    status: in_progress
+    status: completed
   - id: phase6-infrastructure
     content: Create pyproject.toml (rename to multi-agent-genie), organize configs (keep YAML at root for deployment, .env for local)
-    status: pending
+    status: in_progress
   - id: phase7-cleanup
     content: Remove old test/verify scripts, consolidate job configs to config/jobs/
     status: pending
