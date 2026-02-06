@@ -22,10 +22,10 @@ todos:
     status: completed
   - id: phase7-cleanup
     content: Remove old test/verify scripts, consolidate job configs to config/jobs/
-    status: in_progress
+    status: completed
   - id: phase8-polish
     content: Create LICENSE, CONTRIBUTING.md, docs/CONFIGURATION.md, docs/LOCAL_DEVELOPMENT.md (peer onboarding guide)
-    status: pending
+    status: in_progress
 isProject: false
 ---
 
