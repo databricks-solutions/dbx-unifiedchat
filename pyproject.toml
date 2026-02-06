@@ -1,0 +1,135 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multi-agent-genie"
+version = "1.0.0"
+description = "Multi-Agent System for Cross-Domain Queries with Databricks Genie"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Multi-Agent Genie Team"}
+]
+keywords = ["databricks", "genie", "multi-agent", "langgraph", "rag"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    # Core Agent Framework
+    "langgraph-supervisor==0.0.30",
+    "langchain-core>=0.1.0",
+    "langchain>=0.1.0",
+    
+    # Databricks Integration
+    "mlflow[databricks]>=3.6.0",
+    "databricks-langchain[memory]>=0.12.1",
+    "databricks-agents>=0.1.0",
+    "databricks-vectorsearch>=0.63",
+    "databricks-sdk>=0.20.0",
+    "databricks-sql-connector>=3.0.0",
+    
+    # Data Processing
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "pyarrow>=14.0.0",
+    
+    # Configuration & Validation
+    "pydantic>=2.0.0",
+    "python-dotenv>=1.0.0",
+    "pyyaml>=6.0",
+    
+    # Utilities
+    "requests>=2.31.0",
+    "urllib3>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "flake8>=6.0.0",
+    "mypy>=1.4.0",
+]
+
+notebook = [
+    "ipykernel>=6.25.0",
+    "notebook>=7.0.0",
+    "jupyter>=1.0.0",
+    "ipython>=8.12.0",
+]
+
+all = [
+    "multi-agent-genie[dev,notebook]",
+]
+
+[project.scripts]
+multi-agent = "multi_agent.main:main"
+
+[project.urls]
+Homepage = "https://github.com/your-org/multi-agent-genie"
+Documentation = "https://github.com/your-org/multi-agent-genie/tree/main/docs"
+Repository = "https://github.com/your-org/multi-agent-genie"
+Issues = "https://github.com/your-org/multi-agent-genie/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311"]
+include = '\.pyi?$'
+
+[tool.isort]
+profile = "black"
+line_length = 100
+skip_gitignore = true
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-v",
+    "--strict-markers",
+    "--tb=short",
+]
+markers = [
+    "unit: Unit tests (fast, no external dependencies)",
+    "integration: Integration tests (require Databricks)",
+    "e2e: End-to-end tests (full system)",
+    "slow: Slow tests (may take >10 seconds)",
+]
+
+[tool.coverage.run]
+source = ["src/multi_agent"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise AssertionError",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
+]

@@ -1,379 +1,207 @@
-# Multi-Agent System for Cross-Domain Genie Queries
+# Multi-Agent System for Cross-Domain Queries
 
-A sophisticated multi-agent system built with LangGraph and Databricks that enables intelligent querying across multiple Genie spaces (data sources).
+> A production-ready multi-agent system built with LangGraph and Databricks Genie
 
-## 🎯 Overview
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 
-This system allows users to ask complex questions that span multiple data domains (patients, medications, diagnoses, treatments, etc.) and automatically:
-- Routes queries to the appropriate agents
-- Breaks down complex questions into sub-tasks
-- Synthesizes SQL across multiple data sources
-- Provides clear, comprehensive answers with reasoning
+## 🎯 Two-Phase System
+
+This repository contains a complete data-to-deployment pipeline:
+
+### Phase 1: ETL Pipeline (Data Preparation) - **Run First**
+Prepare enriched metadata and vector search index for agent queries
+- Export Genie space metadata
+- Enrich table metadata with samples and statistics
+- Build vector search index for semantic retrieval
+
+### Phase 2: Agent System (Query & Inference) - **After ETL**
+Multi-agent system for intelligent cross-domain queries
+- Semantic query routing across multiple data sources
+- SQL synthesis and execution
+- Context-aware responses with reasoning
+
+## 🚀 Quick Start Guides
+
+### Getting Started: Choose Your Workflow
+
+#### 📊 Phase 1: ETL Pipeline
+
+```bash
+# See etl/README.md for complete ETL guide
+cd etl/
+# Run locally with sample data
+python local_dev_etl.py --all --sample-size 10
+```
+
+**ETL Workflows**:
+1. **Local Testing**: Test transformations with sample data
+2. **Databricks Testing**: Test on real services with small dataset  
+3. **Production**: Full pipeline on complete dataset
+
+📖 **Complete Guide**: [etl/README.md](etl/README.md)
+
+---
+
+#### 🤖 Phase 2: Agent Development (After ETL Completes)
+
+**1️⃣ Local Development** (Fastest - Daily work)
+```bash
+# Clone and setup
+git clone <repo-url>
+cd KUMC_POC_hlsfieldtemp
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env  # Edit with your credentials
+
+# Run agent locally
+python -m src.multi_agent.main --query "Show me patient data"
+```
+⏱️ **Time**: ~5 minutes | 📖 **Guide**: [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md)
+
+**2️⃣ Test in Databricks** (Before deploying)
+```bash
+# Sync code to Databricks
+databricks workspace import-dir src /Workspace/src --overwrite
+
+# Open in Databricks: notebooks/test_agent_databricks.py
+# Test with real Genie spaces, Vector Search, etc.
+```
+⏱️ **Time**: ~10 minutes | 📖 **Guide**: [notebooks/README.md](notebooks/README.md)
+
+**3️⃣ Deploy to Production**
+```bash
+# Open in Databricks: notebooks/deploy_agent.py
+# Run deployment cells → Deploy to Model Serving
+```
+⏱️ **Time**: ~15 minutes | 📖 **Guide**: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
+
+## 📋 Complete Development Flow
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ STEP 1: ETL Pipeline (Data Preparation)                 │
+│ Run etl/ scripts to prepare data                        │
+└─────────────────────────────────────────────────────────┘
+              ↓
+┌─────────────────────────────────────────────────────────┐
+│ STEP 2: Agent Development (Query & Inference)           │
+│ Local Dev → Databricks Test → Deploy                   │
+│    ↓              ↓              ↓                       │
+│   Fast       Real Services  Production                  │
+└─────────────────────────────────────────────────────────┘
+```
 
 ## 🏗️ Architecture
 
-```
-User Query
-    ↓
-SupervisorAgent (orchestrates all agents)
-    ↓
-ThinkingPlanningAgent (analyzes & plans)
-    ↓
-    ├─ Single Space → GenieAgent
-    ├─ Multiple Spaces (No Join) → Multiple GenieAgents → Verbal Merge
-    └─ Multiple Spaces (Join) → Fast/Genie Route → SQLSynthesis → SQLExecution
-```
+The system uses a multi-agent architecture with specialized agents:
+- **SupervisorAgent**: Orchestrates workflow
+- **ThinkingPlanningAgent**: Query analysis and planning
+- **GenieAgents**: Query individual Genie spaces
+- **SQLSynthesisAgent**: Combines SQL across spaces
+- **SQLExecutionAgent**: Executes synthesized queries
 
-### Key Components
+[See Architecture Diagrams](docs/architecture/)
 
-1. **SupervisorAgent**: Central orchestrator that routes requests to appropriate sub-agents
-2. **ThinkingPlanningAgent**: Analyzes queries, uses vector search to find relevant Genie spaces, and plans execution strategy
-3. **GenieAgents**: Query individual Genie spaces for specific data domains
-4. **SQLSynthesisAgent**: Combines SQL queries across multiple tables/spaces
-5. **SQLExecutionAgent**: Executes synthesized SQL and returns results
-6. **Vector Search Index**: Semantic search over enriched Genie space metadata
-
-## 📁 Project Structure
+## 📂 Repository Structure
 
 ```
-KUMC_POC_hlsfieldtemp/
-├── Notebooks/
-│   ├── 00_Export_Genie_Spaces.py        # NEW: Export Genie spaces to volume
-│   ├── 01_Table_MetaInfo_Update.py      # Original table metadata notebook
-│   ├── 02_Table_MetaInfo_Enrichment.py  # NEW: Enhanced metadata enrichment pipeline
-│   ├── 03_VS_generation.py              # Original vector search example
-│   ├── 04_VS_Enriched_Genie_Spaces.py   # NEW: Vector search for enriched docs
-│   ├── 05_Multi_Agent_System.py         # NEW: Main multi-agent system notebook
-│   ├── Super_Agent.ipynb                # Reference implementation
-│   └── agent.py                         # NEW: Core agent code
-├── Instructions/
-│   └── 01_overall.md                    # Original requirements
-├── Workspace/
-│   └── *.json                           # Genie space exports
-├── README.md                            # This file
-└── databricks.yml                       # Databricks configuration
+.
+├── etl/                    # Phase 1: ETL Pipeline
+│   ├── README.md          # ETL 3 workflows guide
+│   ├── local_dev_etl.py   # Local ETL testing
+│   └── *.py               # ETL notebooks
+├── notebooks/             # Phase 2: Agent workflows
+│   ├── README.md          # Agent test & deploy guide
+│   ├── deploy_agent.py    # Deployment script
+│   └── test_agent_databricks.py  # Testing notebook
+├── src/multi_agent/       # Shared agent code
+│   ├── README.md          # Code structure guide
+│   ├── agents/            # Individual agents
+│   ├── core/              # Core infrastructure
+│   ├── tools/             # Agent tools
+│   └── utils/             # Utilities
+├── tests/                 # Test suite
+│   ├── README.md          # Testing guide
+│   ├── unit/              # Unit tests
+│   ├── integration/       # Integration tests
+│   └── e2e/               # End-to-end tests
+├── docs/                  # Documentation
+│   ├── architecture/      # Architecture diagrams
+│   ├── LOCAL_DEVELOPMENT.md
+│   ├── DEPLOYMENT.md
+│   └── CONFIGURATION.md
+├── config/                # Configuration files
+├── dev_config.yaml        # Databricks dev config
+├── prod_config.yaml       # Databricks prod config
+├── config.py              # Local dev config loader
+└── .env.example           # Local dev template
 ```
 
-## 🚀 Setup & Installation
+## 📚 Documentation
 
-### Prerequisites
+### Essential Guides
+- [**ETL Pipeline Guide**](etl/README.md) - Run ETL first (3 workflows)
+- [**Local Development**](docs/LOCAL_DEVELOPMENT.md) - Complete setup for peers
+- [**Databricks Testing**](notebooks/README.md) - Test before deploying
+- [**Deployment Guide**](docs/DEPLOYMENT.md) - Deploy to Model Serving
+- [**Configuration**](docs/CONFIGURATION.md) - Three config systems explained
 
-- Databricks workspace with:
-  - Unity Catalog enabled
-  - Genie spaces configured
-  - Vector Search endpoint capability
-  - Model Serving endpoint capability
-- Access to LLM endpoint (e.g., `databricks-claude-sonnet-4-5`)
-- Environment variables in `.env`:
-  ```bash
-  DATABRICKS_HOST=https://your-workspace.databricks.com
-  DATABRICKS_TOKEN=your-token
-  CATALOG_NAME=your_catalog
-  SCHEMA_NAME=your_schema
-  LLM_ENDPOINT=databricks-claude-sonnet-4-5
-  ```
-
-### Installation Steps
-
-1. **Export Genie Spaces**
-   ```python
-   # Execute: Notebooks/00_Export_Genie_Spaces.py
-   # This will:
-   # - Export specified Genie spaces to Unity Catalog volume
-   # - Create space.json and serialized.json files
-   # - Verify exports
-   ```
-
-2. **Run Table Metadata Enrichment Pipeline**
-   ```python
-   # Execute: Notebooks/02_Table_MetaInfo_Enrichment.py
-   # This will:
-   # - Sample column values from all Genie tables
-   # - Build value dictionaries
-   # - Enhance descriptions with LLM
-   # - Save enriched docs to Unity Catalog
-   ```
-
-3. **Build Vector Search Index**
-   ```python
-   # Execute: Notebooks/04_VS_Enriched_Genie_Spaces.py
-   # This will:
-   # - Create vector search endpoint
-   # - Build delta sync index on enriched docs
-   # - Register UC function for agent access
-   ```
-
-4. **Deploy Multi-Agent System**
-   ```python
-   # Execute: Notebooks/05_Multi_Agent_System.py
-   # This will:
-   # - Test all agent components
-   # - Log model to MLflow
-   # - Register to Model Registry
-   # - Deploy to Model Serving endpoint
-   ```
-
-## 💻 Usage
-
-### Basic Query Examples
-
-```python
-from agent import AGENT
-
-# Single-space query
-input_example = {
-    "input": [
-        {"role": "user", "content": "How many patients are older than 65?"}
-    ]
-}
-response = AGENT.predict(input_example)
-
-# Cross-domain query (with join)
-input_example = {
-    "input": [
-        {"role": "user", "content": "How many patients over 50 are on Voltaren?"}
-    ]
-}
-response = AGENT.predict(input_example)
-
-# Multi-domain query (no join)
-input_example = {
-    "input": [
-        {"role": "user", "content": "What are the most common diagnoses and medications?"}
-    ]
-}
-response = AGENT.predict(input_example)
-```
-
-### Query via Deployed Endpoint
-
-```python
-from databricks.sdk import WorkspaceClient
-from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
-
-w = WorkspaceClient()
-
-response = w.serving_endpoints.query(
-    name="multi-agent-genie-endpoint",
-    messages=[
-        ChatMessage(
-            role=ChatMessageRole.USER,
-            content="How many patients are over 60 years old?"
-        )
-    ],
-)
-```
-
-## 🎓 Query Types & Routing Logic
-
-### 1. Single-Space Queries
-**Example:** "How many patients live in Johnson County?"
-
-**Routing:**
-- ThinkingPlanningAgent identifies patient demographics domain
-- Routes to GENIE_PATIENT agent
-- Returns direct answer
-
-### 2. Multi-Space with JOIN (Table Route)
-**Example:** "How many patients over 50 are on Voltaren?"
-
-**Routing:**
-- Identifies need for both patient and medication data
-- Recognizes common key (patient_id) for JOIN
-- SQLSynthesisAgent creates unified SQL
-- SQLExecutionAgent executes across both tables
-- Returns combined result quickly
-
-### 3. Multi-Space with JOIN (Genie Route)
-**Example:** "Show patients diagnosed with lung cancer who are on chemotherapy"
-
-**Routing:**
-- Queries each Genie agent separately
-- Collects individual SQL queries
-- SQLSynthesisAgent combines them
-- SQLExecutionAgent runs final query
-- Returns comprehensive result with full context
-
-### 4. Multi-Space without JOIN (Verbal Merge)
-**Example:** "What are common diagnoses and what are common medications?"
-
-**Routing:**
-- Runs separate queries on different spaces
-- No JOIN needed - different question parts
-- Verbally merges answers into coherent response
-
-### 5. Unclear Queries (Clarification)
-**Example:** "Tell me about cancer patients"
-
-**Response:**
-- ThinkingPlanningAgent identifies ambiguity
-- Returns clarification options:
-  1. "Do you mean the total count of cancer patients?"
-  2. "Do you mean demographics of cancer patients?"
-  3. "Do you mean treatment information for cancer patients?"
-- User selects option, query re-executed
+### Reference
+- [**Architecture**](docs/ARCHITECTURE.md) - System design
+- [**API Reference**](docs/API.md) - Agent APIs
+- [**Contributing**](CONTRIBUTING.md) - How to contribute
 
 ## 🔧 Configuration
 
-### Genie Spaces
+This repository supports three configuration systems:
 
-Configure available Genie spaces in `agent.py`:
+| Config System | Used By | Purpose |
+|--------------|---------|---------|
+| `dev_config.yaml` | Databricks testing | Development environment config |
+| `prod_config.yaml` | Databricks deployment | Production environment config |
+| `config.py` + `.env` | Local development | Local dev configuration |
 
-```python
-GENIE_SPACES = [
-    Genie(
-        space_id="01f072dbd668159d99934dfd3b17f544",
-        name="GENIE_PATIENT",
-        description="Patient demographics, age, ECOG scores, appointments, insurance"
-    ),
-    Genie(
-        space_id="01f08f4d1f5f172ea825ec8c9a3c6064",
-        name="MEDICATIONS",
-        description="Patient medications, prescriptions, drug names, dosages"
-    ),
-    # ... more spaces
-]
-```
+All three use the **same agent code** from `src/multi_agent/`
 
-### Vector Search
-
-Update vector search function in environment or code:
-
-```python
-VECTOR_SEARCH_FUNCTION = "catalog.schema.search_genie_spaces"
-```
-
-### LLM Endpoint
-
-Configure LLM endpoint:
-
-```python
-LLM_ENDPOINT_NAME = "databricks-claude-sonnet-4-5"
-```
-
-## 📊 Monitoring & Observability
-
-### MLflow Traces
-
-All agent interactions are logged to MLflow with full traces:
-- Query planning decisions
-- Agent routing choices
-- SQL generation steps
-- Execution results
-
-View traces in MLflow UI:
-```
-/ml/experiments/{experiment_id}/runs/{run_id}
-```
-
-### Performance Metrics
-
-Monitor key metrics:
-- Query response time
-- Success rate by query type
-- Agent routing accuracy
-- SQL execution efficiency
-
-### Serving Endpoint Metrics
-
-View endpoint metrics in Databricks:
-- Request latency
-- Throughput
-- Error rates
-- Resource utilization
-
-## 🛡️ Privacy & Security
-
-### Data Protection
-
-- **No PII exposure**: Individual patient IDs never returned
-- **Count thresholds**: Results < 10 shown as "Count is less than 10"
-- **Aggregations only**: Only aggregate statistics provided
-- **Age bucketing**: Ages > 89 aggregated to "90 and over"
-
-### Access Control
-
-- Unity Catalog manages table-level permissions
-- Model Serving enforces authentication
-- Genie space permissions honored
-- Audit logs track all queries
+See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for details.
 
 ## 🧪 Testing
 
-### Run Test Suite
+```bash
+# Run all tests
+pytest
 
-```python
-# Execute test cells in 05_Multi_Agent_System.py
-# Tests include:
-# - Available agents check
-# - Single-space queries
-# - Multi-space queries with/without joins
-# - Clarification flow
-# - Complex multi-domain queries
+# Run specific test suites
+pytest tests/unit/              # Fast unit tests
+pytest tests/integration/        # Integration tests  
+pytest tests/e2e/               # End-to-end tests
+
+# Run with coverage
+pytest --cov=src.multi_agent tests/
 ```
 
-### Performance Benchmarks
-
-Average response times (on small workload):
-- Single-space queries: ~2-3 seconds
-- Multi-space table route: ~3-5 seconds
-- Multi-space genie route: ~5-10 seconds
-- Clarification requests: ~1-2 seconds
-
-## 🐛 Troubleshooting
-
-### Common Issues
-
-**Issue:** Vector search index not found
-```python
-# Solution: Run 04_VS_Enriched_Genie_Spaces.py first
-```
-
-**Issue:** Genie space access denied
-```python
-# Solution: Verify Unity Catalog permissions and Genie space access
-```
-
-**Issue:** LLM endpoint timeout
-```python
-# Solution: Check endpoint status, increase timeout, or switch endpoint
-```
-
-**Issue:** SQL execution fails
-```python
-# Solution: Check table permissions, verify SQL syntax in traces
-```
-
-## 📚 Additional Resources
-
-- [LangGraph Documentation](https://langchain-ai.github.io/langgraph/)
-- [Databricks Agents Guide](https://docs.databricks.com/generative-ai/agent-framework/)
-- [Databricks Genie Documentation](https://docs.databricks.com/genie/)
-- [Vector Search Guide](https://docs.databricks.com/vector-search/)
+See [tests/README.md](tests/README.md) for complete testing guide.
 
 ## 🤝 Contributing
 
-To extend the system:
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
+- Development workflow
+- Code style guidelines
+- Pull request process
+- Community guidelines
 
-1. **Add new Genie spaces**: Update `GENIE_SPACES` in `agent.py`
-2. **Add new agents**: Create agent class and register with supervisor
-3. **Enhance planning**: Modify `ThinkingPlanningAgent.analyze_query()`
-4. **Improve SQL synthesis**: Enhance `SQLSynthesisAgent` prompts
-5. **Add tools**: Register UC functions and add to `IN_CODE_AGENTS`
+## 📄 License
 
-## 📝 License
+This project is licensed under the Apache License 2.0 - see [LICENSE](LICENSE) file for details.
 
-Internal use only - KUMC POC project
+## 🙏 Acknowledgments
 
-## 👥 Authors
+Built with:
+- [LangGraph](https://github.com/langchain-ai/langgraph) - Agent orchestration
+- [Databricks](https://databricks.com/) - Platform and Genie
+- [MLflow](https://mlflow.org/) - Model deployment
 
-- Implementation based on requirements in `Instructions/01_overall.md`
-- Built with Databricks LangGraph Supervisor framework
-- Integrates Databricks Genie, Vector Search, and Model Serving
+---
 
-## 🎉 Acknowledgments
-
-- Reference implementation: `Super_Agent.ipynb`
-- Vector search example: `03_VS_generation.py`
-- Table metadata pattern: `01_Table_MetaInfo_Update.py`
-
+**Ready to get started?** Begin with the [ETL Pipeline Guide](etl/README.md) to prepare your data! 🚀
