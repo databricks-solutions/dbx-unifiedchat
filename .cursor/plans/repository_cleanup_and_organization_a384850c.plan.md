@@ -7,10 +7,10 @@ todos:
     status: completed
   - id: phase2-tests
     content: "Organize tests: create tests/ structure, move all test files"
-    status: in_progress
+    status: completed
   - id: phase3-modularize
     content: Extract ALL agent logic from Super_Agent_hybrid.py to src/multi_agent/, update deployment to use code_paths parameter (unified approach)
-    status: pending
+    status: in_progress
   - id: phase4-etl
     content: "Reorganize ETL: rename Notebooks_Tested_On_Databricks/ to etl/"
     status: pending
