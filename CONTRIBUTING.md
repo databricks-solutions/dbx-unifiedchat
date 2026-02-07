@@ -1,4 +1,4 @@
-# Contributing to Multi-Agent Genie
+# Contributing to Databricks Unified Chat
 
 Thank you for your interest in contributing! This document provides guidelines for contributing to the project.
 
@@ -20,8 +20,8 @@ Follow our [Local Development Guide](docs/LOCAL_DEVELOPMENT.md) for complete set
 
 Quick setup:
 ```bash
-git clone <repo-url>
-cd KUMC_POC_hlsfieldtemp
+git clone https://github.com/databricks-solutions/dbx-unifiedchat.git
+cd dbx-unifiedchat
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 pip install -r requirements-dev.txt
@@ -42,8 +42,8 @@ pytest tests/unit/
 ```bash
 # Fork the repository on GitHub
 # Clone your fork
-git clone https://github.com/YOUR_USERNAME/multi-agent-genie.git
-cd multi-agent-genie
+git clone https://github.com/YOUR_USERNAME/dbx-unifiedchat.git
+cd dbx-unifiedchat
 
 # Create a feature branch
 git checkout -b feature/my-feature-name
@@ -232,6 +232,8 @@ When reporting bugs, include:
    - Databricks Runtime version (if applicable)
 6. **Logs/Screenshots**: Any relevant error messages
 
+**For security vulnerabilities**: Please do not report security issues through public GitHub issues. Instead, see our [Security Policy](SECURITY.md) for responsible disclosure guidelines.
+
 ## Suggesting Enhancements
 
 For feature requests:
@@ -300,8 +302,9 @@ chore: Update dependencies to latest versions
 ## Community
 
 - **Questions?** Open a discussion on GitHub
-- **Found a bug?** Open an issue with reproduction steps
-- **Want to chat?** Join our discussions
+- **Found a bug?** Open an issue with reproduction steps (see [Reporting Bugs](#reporting-bugs))
+- **Security issue?** Follow our [Security Policy](SECURITY.md)
+- **Want to chat?** Join our discussions on the [Databricks Solutions repository](https://github.com/databricks-solutions)
 
 ## Recognition
 
@@ -312,8 +315,25 @@ Contributors are recognized in:
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the Apache License 2.0.
+By contributing, you agree that your contributions will be licensed under the Apache License 2.0. See [LICENSE.md](LICENSE.md) for the full license text.
+
+## Code of Conduct
+
+This project is part of the Databricks Field Solutions community. We expect all contributors to:
+
+* Be respectful and inclusive
+* Welcome newcomers and help them get started
+* Focus on constructive feedback
+* Prioritize the community's best interests
+
+## Recognition
+
+Contributors are recognized in:
+
+- GitHub contributors list
+- [CHANGELOG.md](docs/CHANGELOG.md) for significant contributions
+- Release notes for major features
 
 ---
 
-**Thank you for contributing!** Your work helps make this project better for everyone. 🙏
+**Thank you for contributing!** Your work helps make this project better for everyone and benefits the entire Databricks community.

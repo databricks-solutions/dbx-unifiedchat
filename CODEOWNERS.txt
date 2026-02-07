@@ -1,0 +1,8 @@
+# CODEOWNERS for dbx-unifiedchat
+# 
+# This file defines individuals or teams responsible for code in this repository.
+# More information: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners for everything in the repo
+# Update this with specific maintainer GitHub handles when confirmed
+* @databricks-solutions-team

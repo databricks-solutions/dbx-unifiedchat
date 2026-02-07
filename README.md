@@ -1,172 +1,187 @@
-# Multi-Agent System for Cross-Domain Queries
+# DBX-UnifiedChat - Databricks Unified Chat
 
-> A production-ready multi-agent system built with LangGraph and Databricks Genie
+> A multi-agent system for intelligent cross-domain data queries using LangGraph, Databricks Genie, Lakebase, Model Serving built for Databricks Platform.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
-
-## 🎯 Two-Phase System
-
-This repository contains a complete data-to-deployment pipeline:
-
-### Phase 1: ETL Pipeline (Data Preparation) - **Run First**
-Prepare enriched metadata and vector search index for agent queries
-- Export Genie space metadata
-- Enrich table metadata with samples and statistics
-- Build vector search index for semantic retrieval
-
-### Phase 2: Agent System (Query & Inference) - **After ETL**
-Multi-agent system for intelligent cross-domain queries
-- Semantic query routing across multiple data sources
-- SQL synthesis and execution
-- Context-aware responses with reasoning
-
-## 🚀 Quick Start Guides
-
-### Getting Started: Choose Your Workflow
-
-#### 📊 Phase 1: ETL Pipeline
-
-```bash
-# See etl/README.md for complete ETL guide
-cd etl/
-# Run locally with sample data
-python local_dev_etl.py --all --sample-size 10
-```
-
-**ETL Workflows**:
-1. **Local Testing**: Test transformations with sample data
-2. **Databricks Testing**: Test on real services with small dataset  
-3. **Production**: Full pipeline on complete dataset
-
-📖 **Complete Guide**: [etl/README.md](etl/README.md)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE.md)
 
 ---
 
-#### 🤖 Phase 2: Agent Development (After ETL Completes)
+## Overview
 
-**1️⃣ Local Development** (Fastest - Daily work)
+Organizations struggle to query data across multiple domains and data sources, requiring deep SQL expertise and knowledge of complex data schemas. **Databricks Unified Chat** solves this by providing an intelligent multi-agent system that routes natural language queries to the appropriate data sources, synthesizes results, and delivers comprehensive answers.
+
+Built on LangGraph and Databricks Genie, this solution enables business users to ask questions spanning multiple data domains without needing to understand the underlying data architecture or write complex SQL queries.
+
+---
+
+## What Can You Build?
+
+* **Cross-Domain Data Queries** - Ask questions spanning multiple Genie spaces and get unified answers
+* **Semantic Query Routing** - Automatically route queries to the right data sources using vector search
+* **SQL Synthesis & Execution** - Generate and execute SQL queries across multiple domains
+* **Context-Aware Responses** - Receive intelligent answers with reasoning and data provenance
+* **Conversational Analytics** - Maintain conversation history and context across multiple queries
+* **Enterprise RAG System** - Leverage vector search for semantic understanding of your data catalog
+
+---
+
+## Architecture
+
+The system uses a multi-agent architecture powered by LangGraph:
+
+* **Supervisor Agent** - Orchestrates the workflow and coordinates between agents
+* **Thinking & Planning Agent** - Analyzes queries and creates execution plans
+* **Genie Agents** - Query individual Genie spaces for domain-specific data
+* **SQL Synthesis Agent** - Combines and synthesizes SQL across data sources
+* **SQL Execution Agent** - Executes queries and formats results
+* **Clarification Agent** - Handles ambiguous queries and requests user clarification
+
+The system leverages:
+* **Databricks Genie** for natural language to SQL conversion
+* **Vector Search** for semantic query routing and metadata retrieval
+* **MLflow** for model deployment and serving
+* **Unity Catalog** for data governance and metadata management
+
+### Key Technologies Applied:
+
+* **Multi-turn Chatting** - Supports clarification, continue, refine, and new question flows for conversational interactions
+* **Meta-question Fast Route** - Optimized path for handling meta-questions about the system itself
+* **Multi-step Instructed Retrieval** - Advanced retrieval strategy in table route with step-by-step instructions
+* **Parallel GenieAgent Tool Calls** - Concurrent execution of multiple Genie agents for improved performance in Genie route
+* **Lakebase with Long/Short-term Memory** - Persistent memory management for maintaining context across conversations
+
+See [Architecture Documentation](docs/ARCHITECTURE.md) for detailed design.
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+* Python 3.10 or higher
+* Databricks workspace with:
+  * Genie spaces configured
+  * Vector Search index for metadata
+  * SQL Warehouse or Compute cluster
+* Databricks CLI configured
+
+### Installation
+
 ```bash
-# Clone and setup
-git clone <repo-url>
-cd KUMC_POC_hlsfieldtemp
-python -m venv .venv && source .venv/bin/activate
+# Clone repository
+git clone https://github.com/databricks-solutions/dbx-unifiedchat.git
+cd dbx-unifiedchat
+
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
-cp .env.example .env  # Edit with your credentials
 
-# Run agent locally
-python -m src.multi_agent.main --query "Show me patient data"
+# Configure environment
+cp .env.example .env
+# Edit .env with your Databricks credentials and configuration
 ```
-⏱️ **Time**: ~5 minutes | 📖 **Guide**: [docs/LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md)
 
-**2️⃣ Test in Databricks** (Before deploying)
+### Configuration
+
+Set up your environment variables in `.env`:
+
 ```bash
-# Sync code to Databricks
-databricks workspace import-dir src /Workspace/src --overwrite
+DATABRICKS_HOST=https://your-workspace.cloud.databricks.com
+DATABRICKS_TOKEN=your-token
 
-# Open in Databricks: notebooks/test_agent_databricks.py
-# Test with real Genie spaces, Vector Search, etc.
+# Genie Configuration
+GENIE_SPACE_IDS=space_id_1,space_id_2
+
+# Vector Search Configuration
+VECTOR_SEARCH_ENDPOINT=your-endpoint
+VECTOR_SEARCH_INDEX=catalog.schema.index_name
+
+# SQL Configuration
+SQL_WAREHOUSE_ID=your-warehouse-id
 ```
-⏱️ **Time**: ~10 minutes | 📖 **Guide**: [notebooks/README.md](notebooks/README.md)
 
-**3️⃣ Deploy to Production**
+### Run Locally
+
 ```bash
-# Open in Databricks: notebooks/deploy_agent.py
-# Run deployment cells → Deploy to Model Serving
-```
-⏱️ **Time**: ~15 minutes | 📖 **Guide**: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)
-
-## 📋 Complete Development Flow
-
-```
-┌─────────────────────────────────────────────────────────┐
-│ STEP 1: ETL Pipeline (Data Preparation)                 │
-│ Run etl/ scripts to prepare data                        │
-└─────────────────────────────────────────────────────────┘
-              ↓
-┌─────────────────────────────────────────────────────────┐
-│ STEP 2: Agent Development (Query & Inference)           │
-│ Local Dev → Databricks Test → Deploy                   │
-│    ↓              ↓              ↓                       │
-│   Fast       Real Services  Production                  │
-└─────────────────────────────────────────────────────────┘
+# Test the agent with a sample query
+python -m src.multi_agent.main --query "Show me patient demographics by region"
 ```
 
-## 🏗️ Architecture
+### Deploy to Databricks
 
-The system uses a multi-agent architecture with specialized agents:
-- **SupervisorAgent**: Orchestrates workflow
-- **ThinkingPlanningAgent**: Query analysis and planning
-- **GenieAgents**: Query individual Genie spaces
-- **SQLSynthesisAgent**: Combines SQL across spaces
-- **SQLExecutionAgent**: Executes synthesized queries
+1. **Prepare your data** (First time only):
+   ```bash
+   cd etl/
+   python local_dev_etl.py --all --sample-size 10
+   ```
 
-[See Architecture Diagrams](docs/architecture/)
+2. **Test in Databricks notebook**:
+   * Open `notebooks/test_agent_databricks.py` in your Databricks workspace
+   * Run cells to test with real services
 
-## 📂 Repository Structure
+3. **Deploy to Model Serving**:
+   * Open `notebooks/deploy_agent.py` in your Databricks workspace
+   * Follow deployment instructions to create a serving endpoint
+
+See [Deployment Guide](docs/DEPLOYMENT.md) for complete instructions.
+
+---
+
+## Repository Structure
 
 ```
 .
-├── etl/                    # Phase 1: ETL Pipeline
-│   ├── README.md          # ETL 3 workflows guide
-│   ├── local_dev_etl.py   # Local ETL testing
-│   └── *.py               # ETL notebooks
-├── notebooks/             # Phase 2: Agent workflows
-│   ├── README.md          # Agent test & deploy guide
-│   ├── deploy_agent.py    # Deployment script
-│   └── test_agent_databricks.py  # Testing notebook
-├── src/multi_agent/       # Shared agent code
-│   ├── README.md          # Code structure guide
-│   ├── agents/            # Individual agents
-│   ├── core/              # Core infrastructure
-│   ├── tools/             # Agent tools
-│   └── utils/             # Utilities
-├── tests/                 # Test suite
-│   ├── README.md          # Testing guide
-│   ├── unit/              # Unit tests
-│   ├── integration/       # Integration tests
-│   └── e2e/               # End-to-end tests
-├── docs/                  # Documentation
-│   ├── architecture/      # Architecture diagrams
-│   ├── LOCAL_DEVELOPMENT.md
-│   ├── DEPLOYMENT.md
-│   └── CONFIGURATION.md
-├── config/                # Configuration files
-├── dev_config.yaml        # Databricks dev config
-├── prod_config.yaml       # Databricks prod config
-├── config.py              # Local dev config loader
-└── .env.example           # Local dev template
+├── etl/                      # ETL pipeline for metadata enrichment
+│   ├── local_dev_etl.py     # Local ETL testing script
+│   └── *.py                 # ETL notebooks for Databricks
+├── src/multi_agent/          # Core agent system
+│   ├── agents/              # Agent implementations
+│   ├── core/                # Graph, state, and configuration
+│   ├── tools/               # Agent tools and utilities
+│   └── main.py              # Entry point for local execution
+├── notebooks/                # Databricks notebooks
+│   ├── test_agent_databricks.py   # Testing notebook
+│   └── deploy_agent.py      # Deployment notebook
+├── tests/                    # Test suite
+│   ├── unit/                # Unit tests
+│   ├── integration/         # Integration tests
+│   └── e2e/                 # End-to-end tests
+├── docs/                     # Documentation
+│   ├── ARCHITECTURE.md      # System architecture
+│   ├── DEPLOYMENT.md        # Deployment guide
+│   ├── LOCAL_DEVELOPMENT.md # Local development guide
+│   └── CONFIGURATION.md     # Configuration reference
+├── config/                   # Configuration files
+├── dev_config.yaml          # Development configuration
+├── prod_config.yaml         # Production configuration
+└── pyproject.toml           # Python package configuration
 ```
 
-## 📚 Documentation
+---
 
-### Essential Guides
-- [**ETL Pipeline Guide**](etl/README.md) - Run ETL first (3 workflows)
-- [**Local Development**](docs/LOCAL_DEVELOPMENT.md) - Complete setup for peers
-- [**Databricks Testing**](notebooks/README.md) - Test before deploying
-- [**Deployment Guide**](docs/DEPLOYMENT.md) - Deploy to Model Serving
-- [**Configuration**](docs/CONFIGURATION.md) - Three config systems explained
+## Documentation
+
+### Getting Started
+
+* [**Local Development Guide**](docs/LOCAL_DEVELOPMENT.md) - Set up your local development environment
+* [**ETL Pipeline Guide**](etl/README.md) - Prepare metadata for the agent system
+* [**Configuration Reference**](docs/CONFIGURATION.md) - Configure for different environments
+* [**Deployment Guide**](docs/DEPLOYMENT.md) - Deploy to Databricks Model Serving
 
 ### Reference
-- [**Architecture**](docs/ARCHITECTURE.md) - System design
-- [**API Reference**](docs/API.md) - Agent APIs
-- [**Contributing**](CONTRIBUTING.md) - How to contribute
 
-## 🔧 Configuration
+* [**Architecture**](docs/ARCHITECTURE.md) - System design and agent workflows
+* [**API Reference**](docs/API.md) - Agent APIs and interfaces
+* [**Testing Guide**](tests/README.md) - Run tests and write new tests
+* [**Contributing**](CONTRIBUTING.md) - Contribution guidelines
 
-This repository supports three configuration systems:
+---
 
-| Config System | Used By | Purpose |
-|--------------|---------|---------|
-| `dev_config.yaml` | Databricks testing | Development environment config |
-| `prod_config.yaml` | Databricks deployment | Production environment config |
-| `config.py` + `.env` | Local development | Local dev configuration |
-
-All three use the **same agent code** from `src/multi_agent/`
-
-See [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for details.
-
-## 🧪 Testing
+## Testing
 
 ```bash
 # Run all tests
@@ -174,34 +189,124 @@ pytest
 
 # Run specific test suites
 pytest tests/unit/              # Fast unit tests
-pytest tests/integration/        # Integration tests  
-pytest tests/e2e/               # End-to-end tests
+pytest tests/integration/        # Integration tests with Databricks
+pytest tests/e2e/               # End-to-end system tests
 
 # Run with coverage
 pytest --cov=src.multi_agent tests/
 ```
 
-See [tests/README.md](tests/README.md) for complete testing guide.
-
-## 🤝 Contributing
-
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
-- Development workflow
-- Code style guidelines
-- Pull request process
-- Community guidelines
-
-## 📄 License
-
-This project is licensed under the Apache License 2.0 - see [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-Built with:
-- [LangGraph](https://github.com/langchain-ai/langgraph) - Agent orchestration
-- [Databricks](https://databricks.com/) - Platform and Genie
-- [MLflow](https://mlflow.org/) - Model deployment
+See [Testing Guide](tests/README.md) for detailed testing documentation.
 
 ---
 
-**Ready to get started?** Begin with the [ETL Pipeline Guide](etl/README.md) to prepare your data! 🚀
+## Configuration
+
+This repository supports three configuration modes:
+
+| Configuration | Environment | Purpose |
+|--------------|-------------|---------|
+| `.env` + `config.py` | Local development | Fast iteration with local Python |
+| `dev_config.yaml` | Databricks notebooks | Testing with real Databricks services |
+| `prod_config.yaml` | Model Serving | Production deployment configuration |
+
+All three configurations use the same agent code from `src/multi_agent/`.
+
+See [Configuration Guide](docs/CONFIGURATION.md) for details.
+
+---
+
+## Examples
+
+### Query Examples
+
+```python
+from src.multi_agent.main import run_agent
+
+# Simple query
+result = run_agent("What are the top 10 customers by revenue?")
+
+# Cross-domain query
+result = run_agent("Show me patient outcomes correlated with treatment protocols")
+
+# Complex analytical query
+result = run_agent("Compare sales performance across regions for the last quarter")
+```
+
+### Deployment Example
+
+```python
+# Deploy to Databricks Model Serving
+from databricks import agents
+
+# Register agent as MLflow model
+agents.deploy(
+    model_name="dbx-unifiedchat-agent",
+    model_version=1,
+    endpoint_name="unified-chat-endpoint"
+)
+```
+
+---
+
+## What's Included
+
+| Component | Description |
+|-----------|-------------|
+| **Multi-Agent System** | LangGraph-based agent orchestration with specialized agents |
+| **Genie Integration** | Native integration with Databricks Genie spaces |
+| **Vector Search** | Semantic routing and metadata retrieval |
+| **ETL Pipeline** | Metadata enrichment and index building |
+| **Deployment Tools** | Notebooks and scripts for Databricks deployment |
+| **Test Suite** | Comprehensive unit, integration, and E2E tests |
+
+---
+
+## Contributing
+
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for:
+
+* Development setup and workflow
+* Code style guidelines and testing requirements
+* Pull request process
+* Community guidelines
+
+For security vulnerabilities, please see our [Security Policy](SECURITY.md).
+
+---
+
+## Support Disclaimer
+
+The content provided here is for **reference and educational purposes only**. It is not officially supported by Databricks under any Service Level Agreements (SLAs). All materials are provided **AS IS**, without any guarantees or warranties, and are not intended for production use without proper review and testing.
+
+The source code in this project is provided under the Databricks License. All third-party libraries included or referenced are subject to their respective licenses. See [NOTICE.md](NOTICE.md) for third-party license information.
+
+If you encounter issues while using this content, please open a GitHub Issue in this repository. Issues will be reviewed as time permits, but there are **no formal SLAs** for support.
+
+---
+
+## License
+
+(c) 2026 Databricks, Inc. All rights reserved.
+
+The source in this project is provided subject to the Databricks License. See [LICENSE.md](LICENSE.md) for details.
+
+**Third-Party Licenses**: This project depends on various third-party packages. See [NOTICE.md](NOTICE.md) for complete attribution and license information.
+
+---
+
+## Acknowledgments
+
+Built with:
+
+* [**LangGraph**](https://github.com/langchain-ai/langgraph) - Agent orchestration and workflow management
+* [**Databricks Genie**](https://docs.databricks.com/genie/) - Natural language to SQL conversion
+* [**Databricks Vector Search**](https://docs.databricks.com/vector-search/) - Semantic search and retrieval
+* [**MLflow**](https://mlflow.org/) - Model deployment and serving
+* [**Unity Catalog**](https://docs.databricks.com/data-governance/unity-catalog/) - Data governance and metadata
+
+---
+
+## About Databricks Field Solutions
+
+This repository is part of the [Databricks Field Solutions](https://github.com/databricks-solutions) collection - a curated set of real-world implementations, demonstrations, and technical content created by Databricks field engineers to share practical expertise and best practices.

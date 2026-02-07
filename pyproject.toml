@@ -3,16 +3,16 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "multi-agent-genie"
-version = "1.0.0"
-description = "Multi-Agent System for Cross-Domain Queries with Databricks Genie"
+name = "dbx-unifiedchat"
+version = "0.9.0"
+description = "Production-ready multi-agent system for intelligent cross-domain data queries using LangGraph and Databricks Genie"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "Apache-2.0"}
 authors = [
-    {name = "Multi-Agent Genie Team"}
+    {name = "Databricks Field Solutions"}
 ]
-keywords = ["databricks", "genie", "multi-agent", "langgraph", "rag"]
+keywords = ["databricks", "genie", "multi-agent", "langgraph", "rag", "unified-chat"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -71,17 +71,17 @@ notebook = [
 ]
 
 all = [
-    "multi-agent-genie[dev,notebook]",
+    "dbx-unifiedchat[dev,notebook]",
 ]
 
 [project.scripts]
-multi-agent = "multi_agent.main:main"
+dbx-unifiedchat = "multi_agent.main:main"
 
 [project.urls]
-Homepage = "https://github.com/your-org/multi-agent-genie"
-Documentation = "https://github.com/your-org/multi-agent-genie/tree/main/docs"
-Repository = "https://github.com/your-org/multi-agent-genie"
-Issues = "https://github.com/your-org/multi-agent-genie/issues"
+Homepage = "https://github.com/databricks-solutions/dbx-unifiedchat"
+Documentation = "https://github.com/databricks-solutions/dbx-unifiedchat/tree/main/docs"
+Repository = "https://github.com/databricks-solutions/dbx-unifiedchat"
+Issues = "https://github.com/databricks-solutions/dbx-unifiedchat/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
