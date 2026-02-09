@@ -97,39 +97,100 @@ config.print_summary()
 
 # DBTITLE 1,ONE-TIME SETUP: Initialize Lakebase Tables for State Management
 """
-IMPORTANT: Run this cell ONCE to set up Lakebase tables for state management.
+IMPORTANT: Run this cell ONCE to set up Lakebase instance and tables for state management.
 
 This creates:
-1. checkpoints table - For short-term memory (multi-turn conversations)
-2. store table - For long-term memory (user preferences with semantic search)
-
-Prerequisites:
-- Lakebase instance must be created in: SQL Warehouses -> Lakebase Postgres -> Create database instance
-- Update LAKEBASE_INSTANCE_NAME above with your instance name
+1. Lakebase Postgres instance (if it doesn't exist)
+2. checkpoints table - For short-term memory (multi-turn conversations)
+3. store table - For long-term memory (user preferences with semantic search)
 """
 
-# Uncomment and run ONCE to initialize tables
-# from databricks_langchain import CheckpointSaver, DatabricksStore
-#
-# print("Initializing Lakebase tables...")
-# print(f"Instance: {LAKEBASE_INSTANCE_NAME}")
-#
-# # Setup checkpoint table for short-term memory
-# with CheckpointSaver(instance_name=LAKEBASE_INSTANCE_NAME) as saver:
-#     saver.setup()
-#     print("✓ Checkpoint table created/verified")
-#
-# # Setup store table for long-term memory
-# store = DatabricksStore(
-#     instance_name=LAKEBASE_INSTANCE_NAME,
-#     embedding_endpoint=EMBEDDING_ENDPOINT,
-#     embedding_dims=EMBEDDING_DIMS,
-# )
-# store.setup()
-# print("✓ Store table created/verified")
-#
-# print("\n✅ Lakebase tables are ready for state management!")
-# print("="*80)
+from databricks_langchain import CheckpointSaver, DatabricksStore
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.database import DatabaseInstance
+import time
+
+print("="*80)
+print("LAKEBASE INSTANCE SETUP")
+print("="*80)
+print(f"Instance name: {LAKEBASE_INSTANCE_NAME}")
+
+# Initialize Databricks workspace client
+w = WorkspaceClient()
+
+# Check if Lakebase instance exists, create if not
+instance_exists = False
+try:
+    instance = w.database.get_database_instance(LAKEBASE_INSTANCE_NAME)
+    print(f"✓ Lakebase instance '{LAKEBASE_INSTANCE_NAME}' already exists")
+    instance_exists = True
+except Exception as e:
+    print(f"Instance not found. Creating new Lakebase instance...")
+    try:
+        # Create Lakebase instance with DatabaseInstance object
+        instance = w.database.create_database_instance(
+            DatabaseInstance(
+                name=LAKEBASE_INSTANCE_NAME,
+                capacity="CU_1"  # Start with smallest capacity (1 compute unit)
+            )
+        )
+        print(f"✓ Lakebase instance '{LAKEBASE_INSTANCE_NAME}' creation initiated")
+        print(f"  Capacity: CU_1")
+        print("  Waiting for instance to become available...")
+        
+        # Wait for instance to be ready (can take 2-5 minutes)
+        max_wait_time = 300  # 5 minutes
+        wait_interval = 10  # Check every 10 seconds
+        elapsed_time = 0
+        
+        while elapsed_time < max_wait_time:
+            try:
+                instance = w.database.get_database_instance(LAKEBASE_INSTANCE_NAME)
+                # If we can get the instance without error, it's ready
+                print(f"✓ Instance is now available (waited {elapsed_time}s)")
+                instance_exists = True
+                break
+            except:
+                time.sleep(wait_interval)
+                elapsed_time += wait_interval
+                print(f"  Still waiting... ({elapsed_time}s elapsed)")
+        
+        if not instance_exists:
+            print(f"⚠️ Instance creation is taking longer than expected.")
+            print(f"   Please wait a few more minutes and re-run this cell.")
+            raise TimeoutError(f"Instance not ready after {max_wait_time}s")
+            
+    except Exception as create_error:
+        print(f"❌ Error creating Lakebase instance: {create_error}")
+        raise
+
+if instance_exists:
+    print("\n" + "="*80)
+    print("INITIALIZING LAKEBASE TABLES")
+    print("="*80)
+
+    # Setup checkpoint table for short-term memory
+    print("Setting up checkpoint table...")
+    with CheckpointSaver(instance_name=LAKEBASE_INSTANCE_NAME) as saver:
+        saver.setup()
+        print("✓ Checkpoint table created/verified")
+
+    # Setup store table for long-term memory
+    print("Setting up store table...")
+    store = DatabricksStore(
+        instance_name=LAKEBASE_INSTANCE_NAME,
+        embedding_endpoint=EMBEDDING_ENDPOINT,
+        embedding_dims=EMBEDDING_DIMS,
+    )
+    store.setup()
+    print("✓ Store table created/verified")
+
+    print("\n" + "="*80)
+    print("✅ LAKEBASE SETUP COMPLETE!")
+    print("="*80)
+    print(f"Instance: {LAKEBASE_INSTANCE_NAME}")
+    print("Tables: checkpoints, store")
+    print("="*80)
 
 # COMMAND ----------
 
