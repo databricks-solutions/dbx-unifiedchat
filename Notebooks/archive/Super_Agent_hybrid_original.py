@@ -2581,6 +2581,76 @@ if instance_exists:
 # MAGIC                 "error_hint": error_hint
 # MAGIC             }
 # MAGIC     
+# MAGIC     def execute_sql_parallel(
+# MAGIC         self,
+# MAGIC         sql_queries: List[str],
+# MAGIC         max_rows: int = 100,
+# MAGIC         return_format: str = "dict",
+# MAGIC         max_workers: int = 4
+# MAGIC     ) -> List[Dict[str, Any]]:
+# MAGIC         """
+# MAGIC         Execute multiple SQL queries in parallel using ThreadPoolExecutor.
+# MAGIC         
+# MAGIC         Each query runs in its own thread with an independent sql.connect() connection,
+# MAGIC         so there is no shared state between threads. This is safe because execute_sql()
+# MAGIC         creates and closes its own connection/cursor via context managers per call.
+# MAGIC         
+# MAGIC         ThreadPoolExecutor is used instead of asyncio because databricks-sql-connector
+# MAGIC         is synchronous (no native async API), and the work is I/O-bound (waiting on
+# MAGIC         SQL Warehouse HTTP responses), so the GIL is not a bottleneck.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             sql_queries: List of SQL query strings to execute
+# MAGIC             max_rows: Maximum rows per query (default: 100)
+# MAGIC             return_format: Result format - "dict", "json", or "markdown"
+# MAGIC             max_workers: Maximum concurrent threads (default: 4, tune to warehouse concurrency)
+# MAGIC         
+# MAGIC         Returns:
+# MAGIC             List of result dicts (same format as execute_sql), ordered to match input queries.
+# MAGIC             Each result includes a "query_number" field (1-indexed).
+# MAGIC         """
+# MAGIC         import concurrent.futures
+# MAGIC         
+# MAGIC         # Fast path: skip threading overhead for single query
+# MAGIC         if len(sql_queries) <= 1:
+# MAGIC             if sql_queries:
+# MAGIC                 result = self.execute_sql(sql_queries[0], max_rows, return_format)
+# MAGIC                 result["query_number"] = 1
+# MAGIC                 return [result]
+# MAGIC             return []
+# MAGIC         
+# MAGIC         print(f"⚡ Executing {len(sql_queries)} queries in parallel (max_workers={min(len(sql_queries), max_workers)})")
+# MAGIC         
+# MAGIC         results = [None] * len(sql_queries)  # Pre-allocate to preserve ordering
+# MAGIC         
+# MAGIC         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(sql_queries), max_workers)) as executor:
+# MAGIC             future_to_idx = {
+# MAGIC                 executor.submit(self.execute_sql, query, max_rows, return_format): idx
+# MAGIC                 for idx, query in enumerate(sql_queries)
+# MAGIC             }
+# MAGIC             
+# MAGIC             for future in concurrent.futures.as_completed(future_to_idx):
+# MAGIC                 idx = future_to_idx[future]
+# MAGIC                 try:
+# MAGIC                     result = future.result()
+# MAGIC                 except Exception as e:
+# MAGIC                     # Catch unexpected errors not handled inside execute_sql
+# MAGIC                     result = {
+# MAGIC                         "success": False,
+# MAGIC                         "sql": sql_queries[idx],
+# MAGIC                         "result": None,
+# MAGIC                         "row_count": 0,
+# MAGIC                         "columns": [],
+# MAGIC                         "error": f"Parallel execution error: {type(e).__name__}: {str(e)}"
+# MAGIC                     }
+# MAGIC                 result["query_number"] = idx + 1
+# MAGIC                 results[idx] = result
+# MAGIC         
+# MAGIC         succeeded = sum(1 for r in results if r["success"])
+# MAGIC         print(f"⚡ Parallel execution complete: {succeeded}/{len(sql_queries)} succeeded")
+# MAGIC         
+# MAGIC         return results
+# MAGIC     
 # MAGIC     def __call__(self, sql_query: str, max_rows: int = 100, return_format: str = "dict") -> Dict[str, Any]:
 # MAGIC         """Make agent callable."""
 # MAGIC         return self.execute_sql(sql_query, max_rows, return_format)
@@ -4283,32 +4353,24 @@ if instance_exists:
 # MAGIC     
 # MAGIC     # Use OOP agent with SQL Warehouse
 # MAGIC     execution_agent = SQLExecutionAgent(warehouse_id=SQL_WAREHOUSE_ID)
-# MAGIC     execution_results = []
-# MAGIC     all_successful = True
 # MAGIC     
-# MAGIC     # Execute each query
+# MAGIC     # Emit start events before parallel execution
 # MAGIC     for i, query in enumerate(sql_queries, 1):
-# MAGIC         print(f"\n{'─'*80}")
-# MAGIC         print(f"Query {i} of {len(sql_queries)}")
-# MAGIC         print(f"{'─'*80}")
-# MAGIC         
-# MAGIC         # Emit validation start event
 # MAGIC         writer({"type": "sql_validation_start", "query": query[:200], "query_number": i})
-# MAGIC         
-# MAGIC         # Emit execution start event
 # MAGIC         writer({"type": "sql_execution_start", "estimated_complexity": "standard", "query_number": i})
-# MAGIC         
-# MAGIC         result = execution_agent.execute_sql(query)
-# MAGIC         result["query_number"] = i  # Track which query this result is from
-# MAGIC         execution_results.append(result)
-# MAGIC         
-# MAGIC         if not result["success"]:
-# MAGIC             all_successful = False
-# MAGIC             print(f"❌ Query {i} failed: {result.get('error')}")
-# MAGIC         else:
+# MAGIC     
+# MAGIC     # Execute queries in parallel (ThreadPoolExecutor inside the class)
+# MAGIC     execution_results = execution_agent.execute_sql_parallel(sql_queries)
+# MAGIC     all_successful = all(r["success"] for r in execution_results)
+# MAGIC     
+# MAGIC     # Emit completion events after parallel execution (writer is not thread-safe)
+# MAGIC     for result in execution_results:
+# MAGIC         i = result["query_number"]
+# MAGIC         if result["success"]:
 # MAGIC             print(f"✓ Query {i} succeeded: {result['row_count']} rows")
-# MAGIC             # Emit execution complete event
 # MAGIC             writer({"type": "sql_execution_complete", "rows": result['row_count'], "columns": result['columns'], "query_number": i})
+# MAGIC         else:
+# MAGIC             print(f"❌ Query {i} failed: {result.get('error')}")
 # MAGIC     
 # MAGIC     # Prepare updates (both single and multiple for backward compatibility)
 # MAGIC     updates = {
