@@ -697,7 +697,7 @@ def load_space_context(table_name: str) -> Dict[str, str]:
 # Inline TypedDicts for Unified Agent (No kumc_poc imports)
 # ==============================================================================
 
-from typing import TypedDict, Optional, List, Dict, Any, Literal, Annotated
+from typing import TypedDict, Optional, List, Dict, Any, Literal, Annotated, Tuple
 from datetime import datetime
 import operator
 import uuid as uuid_module
@@ -769,6 +769,7 @@ class AgentState(TypedDict):
     # SQL Synthesis
     sql_query: Optional[str]  # Keep for backward compatibility (first query)
     sql_queries: Optional[List[str]]  # NEW: List of all SQL queries from multi-part questions
+    sql_query_labels: Optional[List[str]]  # NEW: Per-query labels (e.g. "QUERY 1: Most Common Diagnoses")
     sql_synthesis_explanation: Optional[str]
     synthesis_error: Optional[str]
     has_sql: Optional[bool]  # Whether SQL was successfully extracted
@@ -1242,24 +1243,30 @@ Use your available UC function tools to gather metadata intelligently.
             sql_query = None
             has_sql = False
             
-            # Try to extract SQL from markdown if present
+            # Try to extract SQL from markdown - use findall to capture ALL code blocks
             if "```sql" in final_content.lower():
-                sql_match = re.search(r'```sql\s*(.*?)\s*```', final_content, re.IGNORECASE | re.DOTALL)
-                if sql_match:
-                    sql_query = sql_match.group(1).strip()
+                # Find all ```sql blocks
+                sql_blocks = re.findall(r'```sql\s*(.*?)\s*```', final_content, re.IGNORECASE | re.DOTALL)
+                if sql_blocks:
+                    # Join all SQL blocks with newlines to preserve multi-query structure
+                    sql_query = '\n\n'.join(block.strip() for block in sql_blocks if block.strip())
                     has_sql = True
-                    # Remove SQL block from content to get explanation
+                    # Remove all SQL blocks from content to get explanation
                     final_content = re.sub(r'```sql\s*.*?\s*```', '', final_content, flags=re.IGNORECASE | re.DOTALL)
             elif "```" in final_content:
-                sql_match = re.search(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
-                if sql_match:
-                    # Check if it looks like SQL
-                    potential_sql = sql_match.group(1).strip()
-                    if any(keyword in potential_sql.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN']):
-                        sql_query = potential_sql
-                        has_sql = True
-                        # Remove SQL block from content to get explanation
-                        final_content = re.sub(r'```\s*.*?\s*```', '', final_content, flags=re.DOTALL)
+                # Find all generic code blocks
+                code_blocks = re.findall(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
+                # Filter for SQL-like blocks
+                sql_blocks = [
+                    block.strip() for block in code_blocks 
+                    if block.strip() and any(keyword in block.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN', 'WITH'])
+                ]
+                if sql_blocks:
+                    # Join all SQL blocks
+                    sql_query = '\n\n'.join(sql_blocks)
+                    has_sql = True
+                    # Remove all code blocks from content to get explanation
+                    final_content = re.sub(r'```\s*.*?\s*```', '', final_content, flags=re.DOTALL)
             
             # Clean up explanation
             explanation = final_content.strip()
@@ -1821,23 +1828,30 @@ Then combine them into a final SQL query.
             has_sql = False
             explanation = final_content
             
-            # Clean markdown if present and extract SQL
+            # Clean markdown if present and extract SQL - use findall to capture ALL code blocks
             if "```sql" in final_content.lower():
-                sql_match = re.search(r'```sql\s*(.*?)\s*```', final_content, re.IGNORECASE | re.DOTALL)
-                if sql_match:
-                    sql_query = sql_match.group(1).strip()
+                # Find all ```sql blocks
+                sql_blocks = re.findall(r'```sql\s*(.*?)\s*```', final_content, re.IGNORECASE | re.DOTALL)
+                if sql_blocks:
+                    # Join all SQL blocks with newlines to preserve multi-query structure
+                    sql_query = '\n\n'.join(block.strip() for block in sql_blocks if block.strip())
                     has_sql = True
-                    # Remove SQL block to get explanation
+                    # Remove all SQL blocks to get explanation
                     explanation = re.sub(r'```sql\s*.*?\s*```', '', final_content, flags=re.IGNORECASE | re.DOTALL)
             elif "```" in final_content:
-                sql_match = re.search(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
-                if sql_match:
-                    potential_sql = sql_match.group(1).strip()
-                    if any(keyword in potential_sql.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN']):
-                        sql_query = potential_sql
-                        has_sql = True
-                        # Remove SQL block to get explanation
-                        explanation = re.sub(r'```\s*.*?\s*```', '', final_content, flags=re.DOTALL)
+                # Find all generic code blocks
+                code_blocks = re.findall(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
+                # Filter for SQL-like blocks
+                sql_blocks = [
+                    block.strip() for block in code_blocks 
+                    if block.strip() and any(keyword in block.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN', 'WITH'])
+                ]
+                if sql_blocks:
+                    # Join all SQL blocks
+                    sql_query = '\n\n'.join(sql_blocks)
+                    has_sql = True
+                    # Remove all code blocks to get explanation
+                    explanation = re.sub(r'```\s*.*?\s*```', '', final_content, flags=re.DOTALL)
             else:
                 # No markdown, check if the entire content is SQL
                 if any(keyword in final_content.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN']):
@@ -1880,41 +1894,203 @@ print("✓ SQLSynthesisGenieAgent class defined")
 # --------------------------------------------------------------------------
 # Utility Function: Extract Multiple SQL Queries
 # --------------------------------------------------------------------------
-def extract_all_sql_queries(content: str) -> List[str]:
+SQL_KEYWORDS = {'SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER', 'MERGE', 'REPLACE'}
+
+def _split_multi_query_block(block: str) -> Tuple[List[str], List[str]]:
     """
-    Extract all SQL queries from markdown code blocks.
+    Split a single SQL block that may contain multiple semicolon-separated
+    queries into individual queries and their leading-comment labels.
     
-    This function finds all SQL code blocks in the content, supporting both:
-    - Explicit ```sql blocks
-    - Generic ``` blocks containing SQL keywords
+    Strategy:
+      1. Split the block on ';' (the standard SQL statement terminator).
+      2. For each resulting segment, extract any leading SQL comment lines
+         (lines starting with '--') as the query label / title.
+         The first leading comment line becomes the label text (without '--').
+      3. Only keep segments that contain real SQL keywords.
     
     Args:
-        content: The text content containing SQL code blocks
+        block: A SQL string, possibly containing multiple ';'-separated statements,
+               each optionally preceded by comment-line labels such as:
+                 -- QUERY 1: Most Common Diagnoses
+                 -- Patient counts by year
+                 -- Top procedures
+    
+    Returns:
+        Tuple of (queries, labels) where:
+          - queries:  list of individual SQL query strings (with trailing ';')
+          - labels:   list of label strings aligned by index. Empty string when
+                      no leading comment was found for a query.
+    """
+    raw_segments = block.split(';')
+    
+    queries: List[str] = []
+    labels: List[str] = []
+    
+    for segment in raw_segments:
+        segment = segment.strip()
+        if not segment:
+            continue
+        
+        # Does this segment contain actual SQL?
+        segment_upper = segment.upper()
+        if not any(kw in segment_upper for kw in SQL_KEYWORDS):
+            continue
+        
+        # Walk lines: collect leading comment lines, find where SQL body starts
+        lines = segment.split('\n')
+        leading_comments: List[str] = []
+        sql_start_idx = 0
+        
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith('--'):
+                # Strip the '--' prefix and any surrounding whitespace
+                comment_text = stripped.lstrip('-').strip()
+                if comment_text:
+                    leading_comments.append(comment_text)
+            elif stripped == '':
+                # Skip blank lines between comments and SQL body
+                continue
+            else:
+                # First non-comment, non-blank line → SQL body starts here
+                sql_start_idx = i
+                break
+        else:
+            # Every line was a comment or blank → no actual SQL
+            continue
+        
+        sql_text = '\n'.join(lines[sql_start_idx:]).strip()
+        if not sql_text:
+            continue
+        
+        # Use the first leading comment as the label / title
+        label = leading_comments[0] if leading_comments else ""
+        
+        queries.append(sql_text.rstrip(';').strip() + ';')
+        labels.append(label)
+    
+    return queries, labels
+
+def extract_all_sql_queries(content: str) -> Tuple[List[str], List[str]]:
+    """
+    Extract all SQL queries from content, with support for:
+      - Multiple ```sql code blocks (each treated as a separate query)
+      - A single code block containing multiple ';'-separated queries
+      - Leading comment lines (-- ...) used as query labels / titles
+      - Raw SQL without code fences
+    
+    Args:
+        content: The text content containing SQL (possibly in markdown code blocks)
         
     Returns:
-        List of SQL query strings (empty list if none found)
+        Tuple of (sql_queries, query_labels) where:
+          - sql_queries:  list of individual SQL query strings
+          - query_labels: list of label strings aligned with queries
     """
-    sql_queries = []
+    raw_blocks: List[str] = []
     
-    # Find all ```sql blocks (case-insensitive)
+    # 1. Find all ```sql blocks (case-insensitive)
     sql_pattern = r'```sql\s*(.*?)\s*```'
     matches = re.findall(sql_pattern, content, re.IGNORECASE | re.DOTALL)
     
     if matches:
-        sql_queries.extend([m.strip() for m in matches if m.strip()])
+        raw_blocks.extend([m.strip() for m in matches if m.strip()])
     else:
-        # Fallback: check for generic code blocks containing SQL keywords
+        # 2. Fallback: generic code blocks that look like SQL
         generic_pattern = r'```\s*(.*?)\s*```'
         matches = re.findall(generic_pattern, content, re.DOTALL)
         for match in matches:
             match = match.strip()
-            # Check if it looks like SQL (contains SQL keywords)
-            if match and any(kw in match.upper() for kw in ['SELECT', 'FROM', 'WHERE', 'JOIN']):
-                sql_queries.append(match)
+            if match and any(kw in match.upper() for kw in SQL_KEYWORDS):
+                raw_blocks.append(match)
     
-    return sql_queries
+    # 3. Last resort: treat the raw content itself as SQL (no code fences)
+    if not raw_blocks and any(kw in content.upper() for kw in ['SELECT', 'FROM']):
+        raw_blocks = [content.strip()]
+    
+    # 4. Split each block on ';' to extract individual queries + labels
+    all_queries: List[str] = []
+    all_labels: List[str] = []
+    for block in raw_blocks:
+        queries, labels = _split_multi_query_block(block)
+        all_queries.extend(queries)
+        all_labels.extend(labels)
+    
+    return all_queries, all_labels
 
 print("✓ extract_all_sql_queries utility function defined")
+
+# --------------------------------------------------------------------------
+# Helper Function: Extract SQL Queries from Agent Result
+# --------------------------------------------------------------------------
+def extract_sql_queries_from_agent_result(
+    result: dict,
+    agent_name: str = "agent"
+) -> Tuple[List[str], List[str]]:
+    """
+    Extract SQL queries and labels from agent result dictionary.
+    
+    This helper provides a simple, robust extraction strategy:
+      1. Try result['sql'] field first (primary source)
+      2. Try result['explanation'] field if sql is empty (fallback)
+      3. Try combined content as last resort
+    
+    Takes first non-empty result, delegating all parsing complexity to
+    extract_all_sql_queries() which handles:
+      - Markdown code fences
+      - Semicolon splitting
+      - Label extraction from comments
+      - Multiple query detection
+    
+    Args:
+        result: Agent result dict with 'sql' and/or 'explanation' fields
+        agent_name: Name for logging (e.g., 'sql_synthesis_table')
+    
+    Returns:
+        Tuple of (queries, labels):
+          - queries: List of individual SQL query strings
+          - labels: List of label strings (from leading comments)
+          Returns ([], []) if extraction fails
+    
+    Example:
+        result = {
+            "sql": "-- Query 1\\nSELECT...; -- Query 2\\nSELECT...;",
+            "explanation": "Here are the queries...",
+            "has_sql": True
+        }
+        queries, labels = extract_sql_queries_from_agent_result(result, "table_agent")
+        # Returns: (["SELECT...", "SELECT..."], ["Query 1", "Query 2"])
+    """
+    sql_query = result.get("sql", "")
+    explanation = result.get("explanation", "")
+    
+    # Attempt 1: Extract from sql field (primary source)
+    if sql_query:
+        queries, labels = extract_all_sql_queries(sql_query)
+        if queries:
+            print(f"✓ [{agent_name}] Extracted {len(queries)} quer{'y' if len(queries) == 1 else 'ies'} from 'sql' field")
+            return queries, labels
+    
+    # Attempt 2: Extract from explanation (fallback)
+    if explanation:
+        queries, labels = extract_all_sql_queries(explanation)
+        if queries:
+            print(f"✓ [{agent_name}] Extracted {len(queries)} quer{'y' if len(queries) == 1 else 'ies'} from 'explanation' field")
+            return queries, labels
+    
+    # Attempt 3: Try combined content (last resort)
+    if sql_query or explanation:
+        combined = f"{explanation}\n\n{sql_query}" if explanation and sql_query else (explanation or sql_query)
+        queries, labels = extract_all_sql_queries(combined)
+        if queries:
+            print(f"✓ [{agent_name}] Extracted {len(queries)} quer{'y' if len(queries) == 1 else 'ies'} from combined content")
+            return queries, labels
+    
+    # No SQL found
+    print(f"⚠ [{agent_name}] No SQL queries extracted from result")
+    return [], []
+
+print("✓ extract_sql_queries_from_agent_result helper function defined")
 
 class SQLExecutionAgent:
     """
@@ -2427,6 +2603,7 @@ class ResultSummarizeAgent:
             
             # NEW: Check for multiple SQL queries and results
             sql_queries = state.get('sql_queries', [])
+            query_labels = state.get('sql_query_labels', [])
             execution_results = state.get('execution_results', [])
             
             # Fallback to single query/result for backward compatibility
@@ -2439,7 +2616,9 @@ class ResultSummarizeAgent:
             if sql_queries:
                 if len(sql_queries) == 1:
                     # Single query (original behavior)
-                    prompt += f"""**SQL Generation:** ✅ Successful
+                    label = query_labels[0] if query_labels else ""
+                    label_display = f" — {label}" if label else ""
+                    prompt += f"""**SQL Generation:** ✅ Successful{label_display}
 **SQL Query:** 
 ```sql
 {sql_queries[0]}
@@ -2452,7 +2631,9 @@ class ResultSummarizeAgent:
 
 """
                     for i, query in enumerate(sql_queries, 1):
-                        prompt += f"""**SQL Query {i}:** 
+                        label = query_labels[i-1] if i <= len(query_labels) and query_labels[i-1] else ""
+                        label_display = f" — {label}" if label else ""
+                        prompt += f"""**SQL Query {i}{label_display}:** 
 ```sql
 {query}
 ```
@@ -2592,7 +2773,17 @@ class ResultSummarizeAgent:
    - Print out the SQL query in a code block
    - Print out the result in a readable format (preferably as a markdown table)
    - Provide insights and analysis for the result
-5. States the outcome (success with X rows, error, needs clarification, etc.)
+5. **Code Annotation for Human Readability:**
+   - For each result table, scan the columns for raw codes (e.g., diagnosis_code, procedure_code, ICD codes, CPT codes, not limited to medical domain)
+   - If you find columns containing raw codes WITHOUT corresponding human-readable description columns:
+     * Add a new column with a descriptive name like "{code_column}_description" 
+     * Populate it with human-readable descriptions/meanings of those codes
+     * Use your knowledge base to translate common codes (ICD-10, CPT, etc.) into plain language
+     * Example: diagnosis_code "I10" → diagnosis_code_description "Essential (primary) hypertension"
+     * Example: procedure_code "99213" → procedure_code_description "Office visit, established patient, 20-29 minutes"
+   - Present the enhanced table with both the original codes and the new description columns
+   - This makes the results more interpretable for non-technical users
+6. States the outcome (success with X rows, error, needs clarification, etc.)
 
 Use markdown formatting for readability. Keep it clear and user-friendly. 
 """
@@ -2694,7 +2885,8 @@ def extract_execution_context(state: AgentState) -> dict:
     """Extract minimal context for SQL execution."""
     return {
         "sql_query": state.get("sql_query"),
-        "sql_queries": state.get("sql_queries", [])
+        "sql_queries": state.get("sql_queries", []),
+        "sql_query_labels": state.get("sql_query_labels", [])
     }
 
 def extract_summarize_context(state: AgentState) -> dict:
@@ -2709,6 +2901,7 @@ def extract_summarize_context(state: AgentState) -> dict:
         "messages": truncate_message_history(messages, max_turns=5),
         "sql_query": state.get("sql_query"),
         "sql_queries": state.get("sql_queries", []),
+        "sql_query_labels": state.get("sql_query_labels", []),
         "execution_result": state.get("execution_result"),
         "execution_results": state.get("execution_results", []),
         "execution_error": state.get("execution_error"),
@@ -3686,19 +3879,15 @@ def sql_synthesis_table_node(state: AgentState) -> dict:
         explanation = result.get("explanation", "")
         has_sql = result.get("has_sql", False)
         
-        # NEW: Extract all SQL queries from the complete response
-        # Check both the extracted SQL and the full explanation for SQL blocks
-        full_content = explanation
-        if sql_query:
-            full_content = f"{explanation}\n\n```sql\n{sql_query}\n```"
-        
-        sql_queries = extract_all_sql_queries(full_content)
+        # Extract all SQL queries using helper function
+        sql_queries, query_labels = extract_sql_queries_from_agent_result(result, "sql_synthesis_table")
         
         if sql_queries:
             # Multi-query support
             print(f"✓ Extracted {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
             for i, query in enumerate(sql_queries, 1):
-                print(f"  Query {i} preview: {query[:100]}...")
+                label_info = f" [{query_labels[i-1]}]" if i <= len(query_labels) and query_labels[i-1] else ""
+                print(f"  Query {i}{label_info} preview: {query[:100]}...")
             
             if explanation:
                 print(f"Agent Explanation: {explanation[:200]}...")
@@ -3710,6 +3899,7 @@ def sql_synthesis_table_node(state: AgentState) -> dict:
             # Return updates for successful synthesis
             return {
                 "sql_queries": sql_queries,
+                "sql_query_labels": query_labels,
                 "sql_query": sql_queries[0],  # For backward compatibility
                 "has_sql": True,
                 "sql_synthesis_explanation": explanation,
@@ -3838,19 +4028,15 @@ def sql_synthesis_genie_node(state: AgentState) -> dict:
         explanation = result.get("explanation", "")
         has_sql = result.get("has_sql", False)
         
-        # NEW: Extract all SQL queries from the complete response
-        # Check both the extracted SQL and the full explanation for SQL blocks
-        full_content = explanation
-        if sql_query:
-            full_content = f"{explanation}\n\n```sql\n{sql_query}\n```"
-        
-        sql_queries = extract_all_sql_queries(full_content)
+        # Extract all SQL queries using helper function
+        sql_queries, query_labels = extract_sql_queries_from_agent_result(result, "sql_synthesis_genie")
         
         if sql_queries:
             # Multi-query support
             print(f"✓ Extracted {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
             for i, query in enumerate(sql_queries, 1):
-                print(f"  Query {i} preview: {query[:100]}...")
+                label_info = f" [{query_labels[i-1]}]" if i <= len(query_labels) and query_labels[i-1] else ""
+                print(f"  Query {i}{label_info} preview: {query[:100]}...")
             
             if explanation:
                 print(f"Agent Explanation: {explanation[:200]}...")
@@ -3863,6 +4049,7 @@ def sql_synthesis_genie_node(state: AgentState) -> dict:
             # Return updates for successful synthesis
             return {
                 "sql_queries": sql_queries,
+                "sql_query_labels": query_labels,
                 "sql_query": sql_queries[0],  # For backward compatibility
                 "has_sql": True,
                 "sql_synthesis_explanation": explanation,

@@ -6176,7 +6176,7 @@ with mlflow.start_run():
         resources=resources,
         # ⚠️ CRITICAL: Pass production config via ModelConfig (Databricks best practice!)
         # This config overrides the development_config in agent.py
-        model_config="../prod_config.yaml",  # Production configuration
+        model_config="../../prod_config.yaml",  # Production configuration
         pip_requirements=[
             f"databricks-sdk=={get_distribution('databricks-sdk').version}",  # Required for Config() unified auth
             f"databricks-sql-connector=={get_distribution('databricks-sql-connector').version}",  # Required for SQLExecutionAgent
