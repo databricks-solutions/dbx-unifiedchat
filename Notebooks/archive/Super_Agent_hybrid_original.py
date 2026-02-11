@@ -2677,7 +2677,7 @@ print("="*80)
 # MAGIC             with sql.connect(
 # MAGIC                 server_hostname=cfg.host,
 # MAGIC                 http_path=f"/sql/1.0/warehouses/{self.warehouse_id}",
-# MAGIC                 credentials_provider=cfg.authenticate,  # Unified authentication - handles OAuth automatically
+# MAGIC                 credentials_provider=lambda: cfg.authenticate,  # Unified authentication - handles OAuth automatically
 # MAGIC                 # Production settings for resilience
 # MAGIC                 session_configuration={
 # MAGIC                     "ansi_mode": "true"  # Enable ANSI SQL compliance for consistent behavior
