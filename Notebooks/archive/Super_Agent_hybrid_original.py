@@ -1629,10 +1629,32 @@ print("="*80)
 # MAGIC                 "  * WHERE clauses for filtering\n"
 # MAGIC                 "  * Appropriate aggregations\n"
 # MAGIC                 "  * Clear column aliases\n"
-# MAGIC                 "  * Always use real column names, never make up ones\n"
+# MAGIC                 "  * Always use real column names, never make up ones\n\n"
+# MAGIC                 "## MULTI-QUERY STRATEGY:\n"
+# MAGIC                 "- If the question has multiple parts (sub_questions) and you think it's better to report\n"
+# MAGIC                 "  each query and result separately instead of combining into one big complex query:\n"
+# MAGIC                 "  * Generate MULTIPLE separate SQL queries (one per sub-question)\n"
+# MAGIC                 "  * This is preferred when: sub-questions are independent, results are easier to interpret\n"
+# MAGIC                 "    separately, or combining would create overly complex SQL\n"
+# MAGIC                 "- If sub-questions are closely related and naturally combine (e.g., same table, similar filters):\n"
+# MAGIC                 "  * You may generate a single combined SQL query\n\n"
+# MAGIC                 "## OUTPUT FORMAT:\n"
 # MAGIC                 "- Return your response with:\n"
 # MAGIC                 "1. Your explanations; If SQL cannot be generated, explain what metadata is missing\n"
-# MAGIC                 "2. The final SQL query in a ```sql code block\n\n"
+# MAGIC                 "2. SQL queries formatted as follows:\n"
+# MAGIC                 "   * For SINGLE-part questions: One ```sql code block with query ending in semicolon\n"
+# MAGIC                 "   * For MULTI-part questions: Use SEPARATE ```sql code blocks (one per query)\n"
+# MAGIC                 "   * Each query MUST end with a semicolon (;)\n"
+# MAGIC                 "   * Add a leading comment before each query: -- Query N: <brief description>\n"
+# MAGIC                 "   * Example for multi-part:\n"
+# MAGIC                 "     ```sql\n"
+# MAGIC                 "     -- Query 1: Most common diagnoses\n"
+# MAGIC                 "     SELECT diagnosis_code, COUNT(*) AS freq FROM diagnosis GROUP BY diagnosis_code;\n"
+# MAGIC                 "     ```\n"
+# MAGIC                 "     ```sql\n"
+# MAGIC                 "     -- Query 2: Top procedures\n"
+# MAGIC                 "     SELECT procedure_code, COUNT(*) AS count FROM procedures GROUP BY procedure_code;\n"
+# MAGIC                 "     ```\n\n"
 # MAGIC             )
 # MAGIC         )
 # MAGIC     
@@ -2096,7 +2118,15 @@ print("="*80)
 # MAGIC Step 4: Combine all successful SQL fragments
 # MAGIC
 # MAGIC ## SQL SYNTHESIS:
-# MAGIC Combine all SQL fragments into a single query.
+# MAGIC
+# MAGIC MULTI-QUERY STRATEGY:
+# MAGIC - If the question has multiple parts and you think it's better to report each query
+# MAGIC   and result separately instead of combining into one big complex query:
+# MAGIC   * Generate MULTIPLE separate SQL queries (one per sub-question)
+# MAGIC   * This is preferred when: sub-questions are independent, results are easier to interpret
+# MAGIC     separately, or combining would create overly complex SQL
+# MAGIC - If sub-questions are closely related and naturally combine (e.g., same Genie space, similar context):
+# MAGIC   * You may combine SQL fragments into a single query
 # MAGIC
 # MAGIC OUTPUT REQUIREMENTS:
 # MAGIC - Generate complete, executable SQL with:
@@ -2107,7 +2137,20 @@ print("="*80)
 # MAGIC   * Always use real column names from the data
 # MAGIC - Return your response with:
 # MAGIC   1. Your explanation (including which execution strategy you used)
-# MAGIC   2. The final SQL query in a ```sql code block"""
+# MAGIC   2. SQL queries formatted as follows:
+# MAGIC      * For SINGLE-part questions: One ```sql code block with query ending in semicolon
+# MAGIC      * For MULTI-part questions: Use SEPARATE ```sql code blocks (one per query)
+# MAGIC      * Each query MUST end with a semicolon (;)
+# MAGIC      * Add a leading comment before each query: -- Query N: <brief description>
+# MAGIC      * Example for multi-part:
+# MAGIC        ```sql
+# MAGIC        -- Query 1: Most common diagnoses
+# MAGIC        SELECT diagnosis_code, COUNT(*) AS freq FROM diagnosis GROUP BY diagnosis_code;
+# MAGIC        ```
+# MAGIC        ```sql
+# MAGIC        -- Query 2: Top procedures
+# MAGIC        SELECT procedure_code, COUNT(*) AS count FROM procedures GROUP BY procedure_code;
+# MAGIC        ```"""
 # MAGIC             )
 # MAGIC         )
 # MAGIC         
