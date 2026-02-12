@@ -1187,6 +1187,9 @@ print("="*80)
 # MAGIC     is_meta_question: Optional[bool]
 # MAGIC     meta_answer: Optional[str]
 # MAGIC     
+# MAGIC     # Irrelevant question handling (NEW)
+# MAGIC     is_irrelevant: Optional[bool]
+# MAGIC     
 # MAGIC     # Deprecated
 # MAGIC     original_query: Optional[str]
 # MAGIC     
@@ -1304,6 +1307,7 @@ print("="*80)
 # MAGIC         "question_clear": False,
 # MAGIC         "is_meta_question": False,
 # MAGIC         "meta_answer": None,
+# MAGIC         "is_irrelevant": False,
 # MAGIC         "plan": None,
 # MAGIC         "sub_questions": None,
 # MAGIC         "requires_multiple_spaces": None,
@@ -3631,8 +3635,31 @@ print("="*80)
 # MAGIC Available Data Sources:
 # MAGIC {json.dumps(space_context, indent=2)}
 # MAGIC
-# MAGIC ## Task 1: Detect Meta-Questions (NEW)
-# MAGIC First, determine if this is a META-QUESTION about the system itself:
+# MAGIC ## Task 0: Detect Irrelevant Questions (NEW)
+# MAGIC FIRST, determine if this is an IRRELEVANT question completely unrelated to data analytics:
+# MAGIC - Greetings, small talk, casual conversation (e.g., "Hello", "How are you?", "What's up?")
+# MAGIC - Questions about weather, sports, politics, entertainment, current events
+# MAGIC - Personal questions about the AI/system itself (e.g., "Who created you?", "Are you sentient?")
+# MAGIC - Jokes, riddles, creative writing requests, role-playing
+# MAGIC - Questions about topics outside of data analysis and business intelligence
+# MAGIC - Programming help, homework, recipes, travel advice, etc.
+# MAGIC
+# MAGIC Examples of irrelevant questions (all should set is_irrelevant=true):
+# MAGIC - "What's the weather like today?"
+# MAGIC - "Tell me a joke"
+# MAGIC - "Who won the Super Bowl?"
+# MAGIC - "How do I make pasta?"
+# MAGIC - "What are your thoughts on politics?"
+# MAGIC
+# MAGIC If it's irrelevant, you MUST:
+# MAGIC 1. Set "is_irrelevant": true
+# MAGIC 2. Provide a polite refusal explaining you're a data analytics assistant
+# MAGIC 3. Redirect the user to ask questions about the available data sources
+# MAGIC
+# MAGIC NOTE: If a question mentions data but in an irrelevant context (e.g., "What's the weather like in my data?"), treat it as irrelevant.
+# MAGIC
+# MAGIC ## Task 1: Detect Meta-Questions
+# MAGIC Next, determine if this is a META-QUESTION about the system itself:
 # MAGIC - Questions about available tables, data sources, spaces, schemas
 # MAGIC - Questions about system capabilities, what data is available
 # MAGIC - Questions about the structure or organization of data
@@ -3667,6 +3694,33 @@ print("="*80)
 # MAGIC
 # MAGIC Your response format depends on the situation:
 # MAGIC
+# MAGIC **CASE 0: Irrelevant Question** (is_irrelevant=true)
+# MAGIC Output polite refusal markdown FIRST, then JSON metadata:
+# MAGIC
+# MAGIC I'm a data analytics assistant focused on helping you analyze and query the available data sources.
+# MAGIC
+# MAGIC I can help you with questions about the data domains available in the system. To see what data is available, you can ask:
+# MAGIC - "What data sources are available?"
+# MAGIC - "What tables can I query?"
+# MAGIC - "Show me example questions I can ask"
+# MAGIC
+# MAGIC Could you rephrase your question to focus on analyzing the available data?
+# MAGIC
+# MAGIC ```json
+# MAGIC {{{{
+# MAGIC   "is_irrelevant": true,
+# MAGIC   "is_meta_question": false,
+# MAGIC   "meta_answer": null,
+# MAGIC   "intent_type": "new_question",
+# MAGIC   "confidence": 0.95,
+# MAGIC   "context_summary": "User asked an irrelevant question unrelated to data analytics",
+# MAGIC   "question_clear": true,
+# MAGIC   "clarification_reason": null,
+# MAGIC   "clarification_options": null,
+# MAGIC   "metadata": {{{{"domain": "irrelevant", "complexity": "simple", "topic_change_score": 1.0}}}}
+# MAGIC }}}}
+# MAGIC ```
+# MAGIC
 # MAGIC **CASE 1: Meta-Question** (is_meta_question=true)
 # MAGIC Output markdown answer FIRST, then JSON metadata:
 # MAGIC
@@ -3676,6 +3730,7 @@ print("="*80)
 # MAGIC
 # MAGIC ```json
 # MAGIC {{
+# MAGIC   "is_irrelevant": false,
 # MAGIC   "is_meta_question": true,
 # MAGIC   "meta_answer": null,
 # MAGIC   "intent_type": "new_question",
@@ -3697,6 +3752,7 @@ print("="*80)
 # MAGIC
 # MAGIC ```json
 # MAGIC {{
+# MAGIC   "is_irrelevant": false,
 # MAGIC   "is_meta_question": false,
 # MAGIC   "meta_answer": null,
 # MAGIC   "intent_type": "new_question",
@@ -3714,6 +3770,7 @@ print("="*80)
 # MAGIC
 # MAGIC ```json
 # MAGIC {{
+# MAGIC   "is_irrelevant": false,
 # MAGIC   "is_meta_question": false,
 # MAGIC   "meta_answer": null,
 # MAGIC   "intent_type": "new_question" | "refinement" | "continuation" | "clarification_response",
@@ -3731,10 +3788,10 @@ print("="*80)
 # MAGIC ```
 # MAGIC
 # MAGIC CRITICAL: 
-# MAGIC - For meta-questions and clarifications: markdown FIRST (will be streamed to user), then JSON
+# MAGIC - For irrelevant questions, meta-questions, and clarifications: markdown FIRST (will be streamed to user), then JSON
 # MAGIC - For regular clear queries: JSON ONLY (no markdown needed)
 # MAGIC - Always use proper markdown formatting with ##/### headings, **bold**, bullet lists
-# MAGIC - Use professional but friendly tone for healthcare analytics
+# MAGIC - Use professional but friendly tone for data analytics
 # MAGIC """
 # MAGIC     
 # MAGIC     # Call LLM with stream for immediate markdown output (using pooled connection)
@@ -3800,6 +3857,7 @@ print("="*80)
 # MAGIC         result = json.loads(json_section)
 # MAGIC         
 # MAGIC         # Extract results
+# MAGIC         is_irrelevant = result.get("is_irrelevant", False)
 # MAGIC         is_meta_question = result.get("is_meta_question", False)
 # MAGIC         meta_answer = result.get("meta_answer")
 # MAGIC         intent_type = result["intent_type"].lower()
@@ -3813,6 +3871,7 @@ print("="*80)
 # MAGIC         print(f"✓ Intent: {intent_type} (confidence: {confidence:.2f})")
 # MAGIC         print(f"  Context: {context_summary[:100]}...")
 # MAGIC         print(f"  Question clear: {question_clear}")
+# MAGIC         print(f"  Irrelevant: {is_irrelevant}")
 # MAGIC         print(f"  Meta-question: {is_meta_question}")
 # MAGIC         
 # MAGIC         # Create conversation turn
@@ -3844,6 +3903,57 @@ print("="*80)
 # MAGIC             "confidence": confidence,
 # MAGIC             "complexity": metadata.get("complexity", "moderate")
 # MAGIC         })
+# MAGIC         
+# MAGIC         # NEW: Check if this is an irrelevant question - handle immediately
+# MAGIC         if is_irrelevant:
+# MAGIC             print("🚫 Irrelevant question detected - providing polite refusal")
+# MAGIC             
+# MAGIC             # Create turn for irrelevant question
+# MAGIC             turn["metadata"]["is_irrelevant"] = True
+# MAGIC             
+# MAGIC             # Emit metadata event (markdown was already streamed during LLM call)
+# MAGIC             writer({
+# MAGIC                 "type": "irrelevant_question_detected",
+# MAGIC                 "note": "Irrelevant refusal markdown already streamed to UI"
+# MAGIC             })
+# MAGIC             
+# MAGIC             # Use the markdown section that was streamed (from hybrid output)
+# MAGIC             # If no markdown section (edge case), format a simple response
+# MAGIC             if markdown_section and markdown_section.strip():
+# MAGIC                 irrelevant_display = markdown_section
+# MAGIC             else:
+# MAGIC                 irrelevant_display = """I'm a data analytics assistant focused on helping you analyze and query the available data sources.
+# MAGIC
+# MAGIC I can help you with questions about the data domains available in the system. To see what data is available, you can ask:
+# MAGIC - "What data sources are available?"
+# MAGIC - "What tables can I query?"
+# MAGIC - "Show me example questions I can ask"
+# MAGIC
+# MAGIC Could you rephrase your question to focus on analyzing the available data?"""
+# MAGIC             
+# MAGIC             # Return with irrelevant flag to skip SQL generation
+# MAGIC             return {
+# MAGIC                 "current_turn": turn,
+# MAGIC                 "turn_history": [turn],
+# MAGIC                 "intent_metadata": IntentMetadata(
+# MAGIC                     intent_type=intent_type,
+# MAGIC                     confidence=confidence,
+# MAGIC                     reasoning=f"Irrelevant question: {intent_type}",
+# MAGIC                     topic_change_score=1.0,
+# MAGIC                     domain="irrelevant",
+# MAGIC                     operation=None,
+# MAGIC                     complexity=metadata.get("complexity", "simple"),
+# MAGIC                     parent_turn_id=None
+# MAGIC                 ),
+# MAGIC                 "question_clear": True,  # Set to True so it doesn't trigger clarification
+# MAGIC                 "is_irrelevant": True,  # Flag for routing
+# MAGIC                 "is_meta_question": False,
+# MAGIC                 "pending_clarification": None,
+# MAGIC                 "messages": [
+# MAGIC                     AIMessage(content=irrelevant_display),
+# MAGIC                     SystemMessage(content="Irrelevant question detected, skipping SQL generation")
+# MAGIC                 ]
+# MAGIC             }
 # MAGIC         
 # MAGIC         # NEW: Check if this is a meta-question - handle immediately
 # MAGIC         if is_meta_question:
@@ -4727,7 +4837,11 @@ print("="*80)
 # MAGIC     
 # MAGIC     # Define routing logic based on explicit state
 # MAGIC     def route_after_unified(state: AgentState) -> str:
-# MAGIC         """Route after unified node: planning or END (clarification/meta-question)"""
+# MAGIC         """Route after unified node: planning or END (clarification/meta-question/irrelevant)"""
+# MAGIC         # Check if irrelevant question - go directly to END with refusal
+# MAGIC         if state.get("is_irrelevant", False):
+# MAGIC             return END
+# MAGIC         
 # MAGIC         # Check if meta-question - go directly to END with answer
 # MAGIC         if state.get("is_meta_question", False):
 # MAGIC             return END

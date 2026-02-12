@@ -62,6 +62,9 @@ class AgentState(TypedDict):
     is_meta_question: Optional[bool]
     meta_answer: Optional[str]
     
+    # Irrelevant question handling
+    is_irrelevant: Optional[bool]
+    
     # Deprecated (kept for backward compatibility)
     original_query: Optional[str]
     
@@ -189,6 +192,7 @@ def get_reset_state_template() -> Dict[str, Any]:
         "question_clear": False,
         "is_meta_question": False,
         "meta_answer": None,
+        "is_irrelevant": False,
         
         # Planning fields (per-query)
         "plan": None,

@@ -381,8 +381,33 @@ Conversation History:
 Available Data Sources:
 {json.dumps(space_context, indent=2)}
 
-## Task 1: Detect Meta-Questions (NEW)
-First, determine if this is a META-QUESTION about the system itself:
+## Task 0: Detect Irrelevant Questions (NEW)
+FIRST, determine if this is an IRRELEVANT question completely unrelated to data analytics:
+- Greetings, small talk, casual conversation (e.g., "Hello", "How are you?", "What's up?")
+- Questions about weather, sports, politics, entertainment, current events
+- Personal questions about the AI/system itself (e.g., "Who created you?", "Are you sentient?")
+- Jokes, riddles, creative writing requests, role-playing
+- Questions about topics outside of data analysis and business intelligence
+- Programming help, homework, recipes, travel advice, etc.
+
+Examples of irrelevant questions (all should set is_irrelevant=true):
+- "What's the weather like today?"
+- "Tell me a joke"
+- "Who won the Super Bowl?"
+- "How do I make pasta?"
+- "What are your thoughts on politics?"
+- "I want to buy some milk."
+- "Trim me a haircut."
+
+If it's irrelevant, you MUST:
+1. Set "is_irrelevant": true
+2. Provide a polite refusal explaining you're a data analytics assistant
+3. Redirect the user to ask questions about the available data sources
+
+NOTE: If a question mentions data but in an irrelevant context (e.g., "What's the weather like in my data?"), treat it as irrelevant.
+
+## Task 1: Detect Meta-Questions
+Next, determine if this is a META-QUESTION about the system itself:
 - Questions about available tables, data sources, spaces, schemas
 - Questions about system capabilities, what data is available
 - Questions about the structure or organization of data
@@ -426,6 +451,33 @@ Determine if the query is clear enough to generate SQL:
 
 Your response format depends on the situation:
 
+**CASE 0: Irrelevant Question** (is_irrelevant=true)
+Output polite refusal markdown FIRST, then JSON metadata:
+
+I'm a data analytics assistant focused on helping you analyze and query the available data sources.
+
+I can help you with questions about the data domains available in the system. To see what data is available, you can ask:
+- "What data sources are available?"
+- "What tables can I query?"
+- "Show me example questions I can ask"
+
+Could you rephrase your question to focus on analyzing the available data?
+
+```json
+{{{{
+  "is_irrelevant": true,
+  "is_meta_question": false,
+  "meta_answer": null,
+  "intent_type": "new_question",
+  "confidence": 0.95,
+  "context_summary": "User asked an irrelevant question unrelated to data analytics",
+  "question_clear": true,
+  "clarification_reason": null,
+  "clarification_options": null,
+  "metadata": {{{{"domain": "irrelevant", "complexity": "simple", "topic_change_score": 1.0}}}}
+}}}}
+```
+
 **CASE 1: Meta-Question** (is_meta_question=true)
 Output markdown answer FIRST, then JSON metadata:
 
@@ -435,6 +487,7 @@ Output markdown answer FIRST, then JSON metadata:
 
 ```json
 {{
+  "is_irrelevant": false,
   "is_meta_question": true,
   "meta_answer": null,
   "intent_type": "new_question",
@@ -456,6 +509,7 @@ Output clarification markdown FIRST, then JSON metadata:
 
 ```json
 {{
+  "is_irrelevant": false,
   "is_meta_question": false,
   "meta_answer": null,
   "intent_type": "new_question",
@@ -473,6 +527,7 @@ Output ONLY JSON (no markdown prefix):
 
 ```json
 {{
+  "is_irrelevant": false,
   "is_meta_question": false,
   "meta_answer": null,
   "intent_type": "new_question" | "refinement" | "continuation" | "clarification_response",
@@ -490,10 +545,10 @@ Output ONLY JSON (no markdown prefix):
 ```
 
 CRITICAL: 
-- For meta-questions and clarifications: markdown FIRST (will be streamed to user), then JSON
+- For irrelevant questions, meta-questions, and clarifications: markdown FIRST (will be streamed to user), then JSON
 - For regular clear queries: JSON ONLY (no markdown needed)
 - Always use proper markdown formatting with ##/### headings, **bold**, bullet lists
-- Use professional but friendly tone for healthcare analytics
+- Use professional but friendly tone for data analytics
 """
     
     # Call LLM with stream for immediate markdown output (using pooled connection)
@@ -559,6 +614,7 @@ CRITICAL:
         result = json.loads(json_section)
         
         # Extract results
+        is_irrelevant = result.get("is_irrelevant", False)
         is_meta_question = result.get("is_meta_question", False)
         meta_answer = result.get("meta_answer")
         intent_type = result["intent_type"].lower()
@@ -572,6 +628,7 @@ CRITICAL:
         print(f"✓ Intent: {intent_type} (confidence: {confidence:.2f})")
         print(f"  Context: {context_summary[:100]}...")
         print(f"  Question clear: {question_clear}")
+        print(f"  Irrelevant: {is_irrelevant}")
         print(f"  Meta-question: {is_meta_question}")
         
         # Create conversation turn
@@ -603,6 +660,57 @@ CRITICAL:
             "confidence": confidence,
             "complexity": metadata.get("complexity", "moderate")
         })
+        
+        # NEW: Check if this is an irrelevant question - handle immediately
+        if is_irrelevant:
+            print("🚫 Irrelevant question detected - providing polite refusal")
+            
+            # Create turn for irrelevant question
+            turn["metadata"]["is_irrelevant"] = True
+            
+            # Emit metadata event (markdown was already streamed during LLM call)
+            writer({
+                "type": "irrelevant_question_detected",
+                "note": "Irrelevant refusal markdown already streamed to UI"
+            })
+            
+            # Use the markdown section that was streamed (from hybrid output)
+            # If no markdown section (edge case), format a simple response
+            if markdown_section and markdown_section.strip():
+                irrelevant_display = markdown_section
+            else:
+                irrelevant_display = """I'm a data analytics assistant focused on helping you analyze and query the available data sources.
+
+I can help you with questions about the data domains available in the system. To see what data is available, you can ask:
+- "What data sources are available?"
+- "What tables can I query?"
+- "Show me example questions I can ask"
+
+Could you rephrase your question to focus on analyzing the available data?"""
+            
+            # Return with irrelevant flag to skip SQL generation
+            return {
+                "current_turn": turn,
+                "turn_history": [turn],
+                "intent_metadata": IntentMetadata(
+                    intent_type=intent_type,
+                    confidence=confidence,
+                    reasoning=f"Irrelevant question: {intent_type}",
+                    topic_change_score=1.0,
+                    domain="irrelevant",
+                    operation=None,
+                    complexity=metadata.get("complexity", "simple"),
+                    parent_turn_id=None
+                ),
+                "question_clear": True,  # Set to True so it doesn't trigger clarification
+                "is_irrelevant": True,  # Flag for routing
+                "is_meta_question": False,
+                "pending_clarification": None,
+                "messages": [
+                    AIMessage(content=irrelevant_display),
+                    SystemMessage(content="Irrelevant question detected, skipping SQL generation")
+                ]
+            }
         
         # NEW: Check if this is a meta-question - handle immediately
         if is_meta_question:
