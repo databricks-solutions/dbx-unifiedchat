@@ -1319,9 +1319,13 @@ print("="*80)
 # MAGIC         "execution_plan": None,
 # MAGIC         "genie_route_plan": None,
 # MAGIC         "sql_query": None,
+# MAGIC         "sql_queries": None,
+# MAGIC         "sql_query_labels": None,
 # MAGIC         "sql_synthesis_explanation": None,
 # MAGIC         "synthesis_error": None,
+# MAGIC         "has_sql": None,
 # MAGIC         "execution_result": None,
+# MAGIC         "execution_results": None,
 # MAGIC         "execution_error": None,
 # MAGIC         "final_summary": None,
 # MAGIC     }
@@ -1340,9 +1344,12 @@ print("="*80)
 # MAGIC
 # MAGIC # For reference, the template includes per-query fields (see conversation_models.get_reset_state_template()):
 # MAGIC # RESET_STATE_TEMPLATE = {
-# MAGIC     # Clarification fields (per-query) - SIMPLIFIED from 7+ legacy fields to 2
+# MAGIC     # Clarification fields (per-query)
 # MAGIC     # "pending_clarification": None,
 # MAGIC     # "question_clear": False,
+# MAGIC     # "is_meta_question": False,
+# MAGIC     # "meta_answer": None,
+# MAGIC     # "is_irrelevant": False,
 # MAGIC     
 # MAGIC     # Planning fields (per-query)
 # MAGIC     # "plan": None,
@@ -1358,11 +1365,15 @@ print("="*80)
 # MAGIC     
 # MAGIC     # SQL fields (per-query)
 # MAGIC     # "sql_query": None,
+# MAGIC     # "sql_queries": None,
+# MAGIC     # "sql_query_labels": None,
 # MAGIC     # "sql_synthesis_explanation": None,
 # MAGIC     # "synthesis_error": None,
+# MAGIC     # "has_sql": None,
 # MAGIC     
 # MAGIC     # Execution fields (per-query)
 # MAGIC     # "execution_result": None,
+# MAGIC     # "execution_results": None,
 # MAGIC     # "execution_error": None,
 # MAGIC     
 # MAGIC     # Summary (per-query)
