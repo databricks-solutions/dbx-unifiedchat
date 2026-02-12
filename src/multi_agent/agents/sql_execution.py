@@ -18,13 +18,16 @@ from ..core.config import get_config
 def extract_execution_context(state: AgentState) -> dict:
     """Extract minimal context for SQL execution."""
     return {
-        "sql_query": state.get("sql_query")
+        "sql_query": state.get("sql_query"),
+        "sql_queries": state.get("sql_queries", []),
+        "sql_query_labels": state.get("sql_query_labels", [])
     }
 
 
 def sql_execution_node(state: AgentState) -> dict:
     """
     SQL execution node wrapping SQLExecutionAgent class.
+    Supports executing multiple SQL queries for multi-part questions.
     Combines OOP modularity with explicit state management.
     
     OPTIMIZED: Uses minimal state extraction to reduce token usage
@@ -37,24 +40,24 @@ def sql_execution_node(state: AgentState) -> dict:
     print("🚀 SQL EXECUTION AGENT (Token Optimized)")
     print("="*80)
     
-    # OPTIMIZATION: Extract only minimal context needed for execution
-    context = extract_execution_context(state)
-    print(f"📊 State optimization: Using {len(context)} fields (vs {len([k for k in state.keys() if state.get(k) is not None])} in full state)")
+    # NEW: Support multiple queries
+    sql_queries = state.get("sql_queries", [])
     
-    sql_query = context.get("sql_query")
+    # Fallback to single query for backward compatibility
+    if not sql_queries:
+        single_query = state.get("sql_query")
+        if single_query:
+            sql_queries = [single_query]
     
-    if not sql_query:
-        print("❌ No SQL query to execute")
+    if not sql_queries:
+        print("❌ No SQL queries to execute")
         # Return error update
         return {
-            "execution_error": "No SQL query provided"
+            "execution_error": "No SQL queries provided",
+            "next_agent": "summarize"
         }
     
-    # Emit validation start event
-    writer({"type": "sql_validation_start", "query": sql_query[:200]})
-    
-    # Emit execution start event
-    writer({"type": "sql_execution_start", "estimated_complexity": "standard"})
+    print(f"📊 Executing {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
     
     # Get SQL Warehouse ID from config
     config = get_config()
@@ -68,41 +71,65 @@ def sql_execution_node(state: AgentState) -> dict:
         }
     
     # Use OOP agent with SQL Warehouse
-    # Note: SQLExecutionAgent should be imported from appropriate module
-    # For now, we'll use a placeholder that needs to be implemented
     try:
         from ..agents.sql_execution_agent import SQLExecutionAgent
         execution_agent = SQLExecutionAgent(warehouse_id=sql_warehouse_id)
-        result = execution_agent(sql_query)
     except ImportError:
-        # Fallback: Execute SQL directly if SQLExecutionAgent not available
-        # This is a simplified version - full implementation should use SQLExecutionAgent
-        result = _execute_sql_fallback(sql_query, sql_warehouse_id)
+        # Fallback for single query if SQLExecutionAgent not available
+        result = _execute_sql_fallback(sql_queries[0], sql_warehouse_id)
+        return {
+            "execution_result": result,
+            "execution_results": [result],
+            "next_agent": "summarize",
+            "messages": [
+                SystemMessage(content=f"Execution {'successful' if result['success'] else 'failed'}: {result.get('row_count', 0)} rows")
+            ]
+        }
     
-    # Prepare updates based on result
+    # Emit start events before parallel execution
+    for i, query in enumerate(sql_queries, 1):
+        writer({"type": "sql_validation_start", "query": query[:200], "query_number": i})
+        writer({"type": "sql_execution_start", "estimated_complexity": "standard", "query_number": i})
+    
+    # Execute queries in parallel (ThreadPoolExecutor inside the class)
+    execution_results = execution_agent.execute_sql_parallel(sql_queries)
+    all_successful = all(r["success"] for r in execution_results)
+    
+    # Emit completion events after parallel execution (writer is not thread-safe)
+    for result in execution_results:
+        i = result["query_number"]
+        if result["success"]:
+            print(f"✓ Query {i} succeeded: {result['row_count']} rows")
+            writer({"type": "sql_execution_complete", "rows": result['row_count'], "columns": result['columns'], "query_number": i})
+        else:
+            print(f"❌ Query {i} failed: {result.get('error')}")
+    
+    # Prepare updates (both single and multiple for backward compatibility)
     updates = {
-        "execution_result": result,
+        "execution_results": execution_results,
+        "execution_result": execution_results[0],  # For backward compatibility
         "next_agent": "summarize",
         "messages": []
     }
     
-    if result["success"]:
-        print(f"✓ Query executed successfully!")
-        print(f"📊 Rows returned: {result['row_count']}")
-        print(f"📋 Columns: {', '.join(result['columns'])}")
-        
-        # Emit execution complete event
-        writer({"type": "sql_execution_complete", "rows": result['row_count'], "columns": result['columns']})
+    if all_successful:
+        total_rows = sum(r["row_count"] for r in execution_results)
+        success_msg = f"Executed {len(sql_queries)} quer{'y' if len(sql_queries) == 1 else 'ies'} successfully. Total rows: {total_rows}"
+        print(f"\n✅ {success_msg}")
         
         updates["messages"].append(
-            SystemMessage(content=f"Execution successful: {result['row_count']} rows returned")
+            SystemMessage(content=success_msg)
         )
     else:
-        print(f"❌ SQL execution failed: {result.get('error', 'Unknown error')}")
-        updates["execution_error"] = result.get("error")
+        failed_count = sum(1 for r in execution_results if not r["success"])
+        success_count = len(sql_queries) - failed_count
+        error_msg = f"{failed_count} of {len(sql_queries)} queries failed"
         
+        print(f"\n⚠️ Partial success: {success_count} succeeded, {failed_count} failed")
+        
+        updates["execution_error"] = error_msg
         updates["messages"].append(
-            SystemMessage(content=f"Execution failed: {result.get('error')}")
+            SystemMessage(content=f"{success_count} queries succeeded, {failed_count} failed")
         )
     
     return updates

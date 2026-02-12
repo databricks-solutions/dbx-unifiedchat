@@ -39,6 +39,9 @@ from .sql_synthesis_agents import (
     SQLSynthesisGenieAgent
 )
 
+# SQL extraction utilities for multi-query support
+from ..utils.sql_extraction import extract_sql_queries_from_agent_result
+
 # LLM and utility imports
 try:
     from databricks_langchain import ChatDatabricks
@@ -332,20 +335,29 @@ def sql_synthesis_table_node(state: AgentState) -> dict:
         explanation = result.get("explanation", "")
         has_sql = result.get("has_sql", False)
         
-        if has_sql and sql_query and explanation:
-            print("✓ SQL query synthesized successfully")
-            print(f"SQL Preview: {sql_query[:200]}...")
+        # Extract all SQL queries using helper function
+        sql_queries, query_labels = extract_sql_queries_from_agent_result(result, "sql_synthesis_table")
+        
+        if sql_queries:
+            # Multi-query support
+            print(f"✓ Extracted {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
+            for i, query in enumerate(sql_queries, 1):
+                label_info = f" [{query_labels[i-1]}]" if i <= len(query_labels) and query_labels[i-1] else ""
+                print(f"  Query {i}{label_info} preview: {query[:100]}...")
+            
             if explanation:
                 print(f"Agent Explanation: {explanation[:200]}...")
             
             # Emit detailed success events
-            writer({"type": "sql_generated", "agent": "sql_synthesis_table", "query_preview": sql_query[:200], "content": f"💻 SQL Query Generated ({len(sql_query)} chars)"})
+            writer({"type": "sql_generated", "agent": "sql_synthesis_table", "query_preview": sql_queries[0][:200], "content": f"💻 {len(sql_queries)} SQL Quer{'y' if len(sql_queries) == 1 else 'ies'} Generated"})
             writer({"type": "agent_result", "agent": "sql_synthesis_table", "result": "success", "content": f"✅ SQL synthesis complete: {explanation[:150]}..."})
             
             # Return updates for successful synthesis
             return {
-                "sql_query": sql_query,
-                "has_sql": has_sql,
+                "sql_queries": sql_queries,
+                "sql_query_labels": query_labels,
+                "sql_query": sql_queries[0],  # For backward compatibility
+                "has_sql": True,
                 "sql_synthesis_explanation": explanation,
                 "next_agent": "sql_execution",
                 "messages": [
@@ -476,22 +488,30 @@ def sql_synthesis_genie_node(state: AgentState) -> dict:
         explanation = result.get("explanation", "")
         has_sql = result.get("has_sql", False)
         
-        # Update explicit state
-        if has_sql and sql_query and explanation:
-            print("✓ SQL fragments combined successfully")
-            print(f"SQL Preview: {sql_query[:200]}...")
+        # Extract all SQL queries using helper function
+        sql_queries, query_labels = extract_sql_queries_from_agent_result(result, "sql_synthesis_genie")
+        
+        if sql_queries:
+            # Multi-query support
+            print(f"✓ Extracted {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
+            for i, query in enumerate(sql_queries, 1):
+                label_info = f" [{query_labels[i-1]}]" if i <= len(query_labels) and query_labels[i-1] else ""
+                print(f"  Query {i}{label_info} preview: {query[:100]}...")
+            
             if explanation:
                 print(f"Agent Explanation: {explanation[:200]}...")
             
             # Emit detailed success events
-            writer({"type": "sql_generated", "agent": "sql_synthesis_genie", "query_preview": sql_query[:200], "content": f"💻 Combined SQL Query Generated ({len(sql_query)} chars)"})
+            writer({"type": "sql_generated", "agent": "sql_synthesis_genie", "query_preview": sql_queries[0][:200], "content": f"💻 {len(sql_queries)} SQL Quer{'y' if len(sql_queries) == 1 else 'ies'} Generated"})
             writer({"type": "agent_result", "agent": "sql_synthesis_genie", "result": "success", "content": f"✅ SQL synthesis complete: {explanation[:150]}..."})
-            writer({"type": "agent_thinking", "agent": "sql_synthesis_genie", "content": f"🎯 Successfully combined SQL from {len(genie_route_plan)} Genie agents"})
+            writer({"type": "agent_thinking", "agent": "sql_synthesis_genie", "content": f"🎯 Successfully extracted {len(sql_queries)} SQL queries from {len(genie_route_plan)} Genie agents"})
             
             # Return updates for successful synthesis
             return {
-                "sql_query": sql_query,
-                "has_sql": has_sql,
+                "sql_queries": sql_queries,
+                "sql_query_labels": query_labels,
+                "sql_query": sql_queries[0],  # For backward compatibility
+                "has_sql": True,
                 "sql_synthesis_explanation": explanation,
                 "next_agent": "sql_execution",
                 "messages": [
