@@ -212,12 +212,12 @@ def enrich_column_metadata(columns_metadata: pd.DataFrame, table_identifier: str
         # Only sample and build dictionaries if not excluded
         if not original_config.get('exclude', False):
             # Sample values if requested or by default
-            if original_config.get('get_example_values', True):
+            if original_config.get('enable_format_assistance', True):
                 sampled_values = sample_column_values(table_identifier, col_name, sample_size)
                 enriched_col['sample_values'] = sampled_values
             
             # Build value dictionary if requested
-            if original_config.get('build_value_dictionary', False):
+            if original_config.get('enable_entity_matching', False):
                 value_dict = build_value_dictionary(table_identifier, col_name, max_unique_values)
                 enriched_col['value_dictionary'] = value_dict
         
