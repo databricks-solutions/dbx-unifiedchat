@@ -4,46 +4,46 @@ overview: Build a full-stack Databricks APX app (FastAPI + React) under `tables_
 todos:
   - id: data-synthesis
     content: "Phase 1: Create data synthesis scripts (per-domain .py files) using Faker + Spark, execute on prod cluster via run_python_file_on_databricks MCP tool"
-    status: pending
+    status: completed
   - id: apx-init
     content: "Phase 2: Initialize APX project in tables_to_genies/, install prerequisites (uv, bun), configure app.yaml"
-    status: pending
+    status: completed
   - id: backend-uc
     content: "Phase 3a: Build UC Catalog Browser API routes (list catalogs/schemas/tables, include/exclude selection)"
-    status: pending
+    status: completed
   - id: adapt-etl
     content: "Phase 4: Adapt etl/02_enrich_table_metadata.py into tables_to_genies/etl/enrich_tables_direct.py (remove Genie space.json dependency, use SQL connector)"
-    status: pending
+    status: completed
   - id: backend-enrichment
     content: "Phase 3b: Build Enrichment API routes (trigger, poll status, return results)"
-    status: pending
+    status: completed
   - id: graphrag-integration
     content: "Phase 5: Integrate Microsoft GraphRAG for table relationship graph (entity extraction, community detection, edge generation)"
-    status: pending
+    status: completed
   - id: backend-graph
     content: "Phase 3c: Build Graph API routes (build graph, return Cytoscape.js-compatible nodes/edges)"
-    status: pending
+    status: completed
   - id: backend-genie
     content: "Phase 3d: Build Genie Room API routes (plan rooms, create via Databricks SDK, track progress)"
-    status: pending
+    status: completed
   - id: frontend-page1
     content: "Phase 6a: Build Catalog Browser page (tree-view with checkboxes, search, select-all)"
-    status: pending
+    status: completed
   - id: frontend-page2
     content: "Phase 6b: Build Enrichment Runner page (progress bar, results table)"
-    status: pending
+    status: completed
   - id: frontend-page3
     content: "Phase 6c: Build Graph Explorer page (Cytoscape.js canvas, zoom/pan/click, node detail panel)"
-    status: pending
+    status: completed
   - id: frontend-page4
     content: "Phase 6d: Build Genie Room Builder page (box-select on graph, room name input, planned rooms list)"
-    status: pending
+    status: completed
   - id: frontend-page5
     content: "Phase 6e: Build Genie Room Creator page (create-all trigger, per-room progress, room URLs)"
-    status: pending
+    status: completed
   - id: deploy
     content: "Phase 7: Deploy app to prod workspace via APX/DABs, configure resources and permissions"
-    status: pending
+    status: completed
 isProject: false
 ---
 

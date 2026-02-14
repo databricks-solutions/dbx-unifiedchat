@@ -1,0 +1,206 @@
+"""
+Pydantic models following APX 3-model pattern.
+"""
+from pydantic import BaseModel, Field
+from typing import List, Optional
+from datetime import datetime
+from enum import Enum
+
+
+# ============================================================================
+# UC BROWSER MODELS
+# ============================================================================
+
+class CatalogOut(BaseModel):
+    """Catalog output model."""
+    name: str
+    comment: Optional[str] = None
+    owner: Optional[str] = None
+
+
+class SchemaOut(BaseModel):
+    """Schema output model."""
+    name: str
+    catalog_name: str
+    comment: Optional[str] = None
+    owner: Optional[str] = None
+
+
+class TableOut(BaseModel):
+    """Table output model."""
+    name: str
+    catalog_name: str
+    schema_name: str
+    table_type: str
+    comment: Optional[str] = None
+    owner: Optional[str] = None
+    fqn: str
+
+
+class ColumnOut(BaseModel):
+    """Column output model."""
+    name: str
+    type_text: str
+    type_name: str
+    comment: Optional[str] = None
+    nullable: bool
+    position: int
+
+
+class TableSelectionIn(BaseModel):
+    """Input for saving table selection."""
+    table_fqns: List[str]
+
+
+class TableSelectionOut(BaseModel):
+    """Table selection output."""
+    table_fqns: List[str]
+    count: int
+
+
+# ============================================================================
+# ENRICHMENT MODELS
+# ============================================================================
+
+class EnrichmentStatus(str, Enum):
+    """Enrichment job status."""
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class EnrichmentRunIn(BaseModel):
+    """Input for running enrichment."""
+    table_fqns: List[str]
+
+
+class EnrichmentStatusOut(BaseModel):
+    """Enrichment job status."""
+    job_id: str
+    status: EnrichmentStatus
+    progress: int
+    total: int
+    error: Optional[str] = None
+
+
+class ColumnEnriched(BaseModel):
+    """Enriched column model."""
+    name: str
+    type: str
+    comment: str
+    sample_values: List[str]
+
+
+class EnrichmentResultOut(BaseModel):
+    """Full enrichment result for a table."""
+    fqn: str
+    catalog: str
+    schema: str
+    table: str
+    column_count: int
+    columns: List[ColumnEnriched]
+    enriched: bool
+    timestamp: str
+
+
+class EnrichmentResultListOut(BaseModel):
+    """Summary enrichment result."""
+    fqn: str
+    column_count: int
+    enriched: bool
+
+
+# ============================================================================
+# GRAPH MODELS
+# ============================================================================
+
+class GraphBuildStatus(str, Enum):
+    """Graph build status."""
+    PENDING = "pending"
+    BUILDING = "building"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class GraphBuildStatusOut(BaseModel):
+    """Graph build status."""
+    job_id: str
+    status: GraphBuildStatus
+    error: Optional[str] = None
+
+
+class GraphNodeOut(BaseModel):
+    """Graph node (table) model."""
+    id: str
+    label: str
+    catalog: str
+    schema: str
+    column_count: int
+    community: int
+    columns: List[str]
+
+
+class GraphEdgeOut(BaseModel):
+    """Graph edge (relationship) model."""
+    source: str
+    target: str
+    weight: float
+    types: str
+
+
+class GraphDataOut(BaseModel):
+    """Full graph data."""
+    elements: List[dict]
+    node_count: int
+    edge_count: int
+    communities: Optional[dict] = None
+
+
+# ============================================================================
+# GENIE ROOM MODELS
+# ============================================================================
+
+class GenieRoomStatus(str, Enum):
+    """Genie room status."""
+    PENDING = "pending"
+    CREATING = "creating"
+    CREATED = "created"
+    FAILED = "failed"
+
+
+class GenieRoomIn(BaseModel):
+    """Input for creating a Genie room definition."""
+    name: str = Field(..., min_length=1)
+    table_fqns: List[str] = Field(..., min_items=1)
+
+
+class GenieRoomOut(BaseModel):
+    """Full Genie room output."""
+    id: str
+    name: str
+    tables: List[str]
+    table_count: int
+
+
+class GenieRoomListOut(BaseModel):
+    """Summary Genie room for lists."""
+    id: str
+    name: str
+    table_count: int
+
+
+class GenieCreationStatusOut(BaseModel):
+    """Status of Genie room creation process."""
+    status: str
+    rooms: List[dict]
+
+
+class CreatedGenieRoomOut(BaseModel):
+    """Created Genie room with URL."""
+    id: str
+    name: str
+    space_id: str
+    url: str
+    table_count: int
+    status: GenieRoomStatus
