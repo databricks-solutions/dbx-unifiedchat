@@ -77,3 +77,6 @@ genie_exports/
 # Logs
 *.log
 logs/
+
+# node modules
+**/src/tables_genies/ui/node_modules/
