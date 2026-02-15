@@ -6,18 +6,20 @@ Uses concepts from Microsoft GraphRAG:
 - Community detection for clustering related tables
 - Semantic relationship discovery
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Callable, Optional, Awaitable
 import networkx as nx
 from collections import defaultdict
+import json
+import asyncio
 
 
 class GraphRAGTableGraphBuilder:
     """
     Builds table relationship graph using GraphRAG concepts.
     
-    Simplified implementation focusing on:
-    - Schema/catalog co-location
-    - Column name overlap (FK hints)
+    Implementation supports:
+    - Structural analysis: Schema/catalog co-location, column overlap, FK hints
+    - LLM-based semantic analysis: Entity extraction, semantic relationship detection
     - Community detection (Louvain algorithm)
     - Domain clustering
     """
@@ -25,6 +27,7 @@ class GraphRAGTableGraphBuilder:
     def __init__(self):
         self.graph = None
         self.communities = {}
+        self.semantic_entities = {}
     
     def extract_entities(self, enriched_tables: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -130,6 +133,165 @@ class GraphRAGTableGraphBuilder:
         
         return relationships
     
+    async def extract_entities_with_llm(
+        self, 
+        enriched_tables: List[Dict[str, Any]], 
+        llm_func: Callable[[str], Awaitable[str]]
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Extract semantic entities using LLM.
+        
+        Args:
+            enriched_tables: List of enriched table metadata with table_description
+            llm_func: Async function that takes a prompt and returns LLM response
+            
+        Returns:
+            Dict mapping table FQN to extracted entities
+        """
+        entities_by_table = {}
+        
+        # Build prompt for batch entity extraction
+        table_summaries = []
+        for table in enriched_tables:
+            if not table.get('enriched'):
+                continue
+            
+            fqn = table['fqn']
+            description = table.get('table_description', '')
+            columns = table.get('enriched_columns', [])
+            
+            # Create a concise summary
+            col_summary = ', '.join([
+                f"{col.get('column_name')} ({col.get('data_type')})"
+                for col in columns[:10]
+            ])
+            
+            table_summaries.append({
+                'fqn': fqn,
+                'table_name': table['table'],
+                'description': description,
+                'columns': col_summary
+            })
+        
+        prompt = f"""Analyze these database tables and extract semantic entities for each.
+
+Tables:
+{json.dumps(table_summaries, indent=2)}
+
+For each table, identify:
+1. Primary domain (e.g., "healthcare", "finance", "e-commerce")
+2. Key business concepts (e.g., ["patient", "claim", "insurance"])
+3. Data themes (e.g., ["transactional", "regulatory", "analytical"])
+
+Return a JSON object mapping each FQN to its entities. Format:
+{{
+  "catalog.schema.table": {{
+    "domain": "...",
+    "concepts": ["...", "..."],
+    "themes": ["...", "..."]
+  }}
+}}
+
+Only return valid JSON, no explanations."""
+
+        try:
+            response = await llm_func(prompt)
+            # Clean response
+            response_clean = response.replace('```json', '').replace('```', '').strip()
+            
+            # Try to parse as JSON
+            try:
+                entities_by_table = json.loads(response_clean)
+            except json.JSONDecodeError as je:
+                print(f"Failed to parse LLM response as JSON: {je}")
+                print(f"Response preview: {response_clean[:200]}...")
+                return {}
+            
+            self.semantic_entities = entities_by_table
+            return entities_by_table
+        except Exception as e:
+            print(f"LLM entity extraction failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {}
+    
+    async def detect_semantic_relationships(
+        self,
+        entities_by_table: Dict[str, Dict[str, Any]],
+        llm_func: Callable[[str], Awaitable[str]]
+    ) -> List[Dict[str, Any]]:
+        """
+        Detect semantic relationships using LLM.
+        
+        Args:
+            entities_by_table: Extracted entities per table
+            llm_func: Async function that takes a prompt and returns LLM response
+            
+        Returns:
+            List of semantic relationship dicts with source, target, weight, reason
+        """
+        if not entities_by_table:
+            return []
+        
+        prompt = f"""Analyze these table entities and identify semantic relationships.
+
+Table Entities:
+{json.dumps(entities_by_table, indent=2)}
+
+Identify pairs of tables that are semantically related based on:
+- Shared domain or business concepts
+- Complementary data themes (e.g., transactional + regulatory)
+- Part of the same business process
+
+For each related pair, provide:
+- source: First table FQN
+- target: Second table FQN
+- confidence: Score from 1-10 indicating relationship strength
+- reason: Brief explanation of the relationship
+
+Return a JSON array of relationships. Format:
+[
+  {{
+    "source": "catalog.schema.table1",
+    "target": "catalog.schema.table2",
+    "confidence": 8,
+    "reason": "Both handle insurance claims lifecycle"
+  }}
+]
+
+Only identify meaningful relationships (confidence >= 5). Return valid JSON only."""
+
+        try:
+            response = await llm_func(prompt)
+            # Clean response
+            response_clean = response.replace('```json', '').replace('```', '').strip()
+            
+            # Try to parse as JSON
+            try:
+                relationships = json.loads(response_clean)
+            except json.JSONDecodeError as je:
+                print(f"Failed to parse LLM response as JSON: {je}")
+                print(f"Response preview: {response_clean[:200]}...")
+                return []
+            
+            # Convert to standard format
+            semantic_rels = []
+            for rel in relationships:
+                semantic_rels.append({
+                    'source': rel['source'],
+                    'target': rel['target'],
+                    'weight': rel.get('confidence', 5),
+                    'types': ['semantic'],
+                    'reason': rel.get('reason', '')
+                })
+            
+            return semantic_rels
+        except Exception as e:
+            print(f"LLM semantic relationship detection failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
     def detect_communities(self, G: nx.Graph) -> Dict[str, int]:
         """
         Detect communities using Louvain algorithm.
@@ -148,17 +310,22 @@ class GraphRAGTableGraphBuilder:
                 communities[node] = hash(data.get('schema', 'default')) % 10
             return communities
     
-    def build_graph(self, enriched_tables: List[Dict[str, Any]]) -> nx.Graph:
+    async def build_graph(
+        self,
+        enriched_tables: List[Dict[str, Any]],
+        llm_func: Optional[Callable[[str], Awaitable[str]]] = None
+    ) -> nx.Graph:
         """
         Build NetworkX graph with GraphRAG-detected relationships.
         
         Args:
             enriched_tables: List of enriched table metadata dicts
+            llm_func: Optional async LLM function for semantic analysis
         
         Returns:
             NetworkX Graph with nodes (tables) and edges (relationships)
         """
-        # Extract entities
+        # Extract structural entities
         entities = self.extract_entities(enriched_tables)
         
         # Create graph
@@ -168,7 +335,7 @@ class GraphRAGTableGraphBuilder:
         for fqn, table_data in entities['tables'].items():
             G.add_node(fqn, **table_data)
         
-        # Add edges based on detected relationships
+        # Add structural edges
         relationships = self.detect_relationships(entities)
         for rel in relationships:
             G.add_edge(
@@ -177,6 +344,36 @@ class GraphRAGTableGraphBuilder:
                 weight=rel['weight'],
                 types=','.join(rel['types'])
             )
+        
+        # LLM-based semantic analysis (if available)
+        if llm_func:
+            try:
+                # Extract entities with LLM
+                semantic_entities = await self.extract_entities_with_llm(enriched_tables, llm_func)
+                
+                # Detect semantic relationships
+                semantic_rels = await self.detect_semantic_relationships(semantic_entities, llm_func)
+                
+                # Add semantic edges to graph
+                for rel in semantic_rels:
+                    # Check if edge already exists
+                    if G.has_edge(rel['source'], rel['target']):
+                        # Augment existing edge
+                        existing_types = G[rel['source']][rel['target']].get('types', '')
+                        G[rel['source']][rel['target']]['types'] = existing_types + ',semantic'
+                        G[rel['source']][rel['target']]['weight'] += rel['weight']
+                        G[rel['source']][rel['target']]['semantic_reason'] = rel.get('reason', '')
+                    else:
+                        # Add new semantic edge
+                        G.add_edge(
+                            rel['source'],
+                            rel['target'],
+                            weight=rel['weight'],
+                            types='semantic',
+                            semantic_reason=rel.get('reason', '')
+                        )
+            except Exception as e:
+                print(f"LLM analysis failed, continuing with structural graph: {e}")
         
         # Detect communities
         if G.number_of_nodes() > 0:
@@ -225,14 +422,18 @@ class GraphRAGTableGraphBuilder:
         
         # Edges
         for source, target, data in self.graph.edges(data=True):
-            elements.append({
-                'data': {
-                    'source': source,
-                    'target': target,
-                    'weight': data.get('weight', 1),
-                    'types': data.get('types', ''),
-                }
-            })
+            edge_data = {
+                'source': source,
+                'target': target,
+                'weight': data.get('weight', 1),
+                'types': data.get('types', ''),
+            }
+            
+            # Add semantic reason if available
+            if 'semantic_reason' in data:
+                edge_data['semantic_reason'] = data['semantic_reason']
+            
+            elements.append({'data': edge_data})
         
         return {
             'elements': elements,

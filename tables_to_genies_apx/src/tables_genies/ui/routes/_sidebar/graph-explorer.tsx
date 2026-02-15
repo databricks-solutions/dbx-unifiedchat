@@ -128,6 +128,18 @@ function GraphVisualization() {
       },
     },
     {
+      // Semantic edges (LLM-discovered relationships)
+      selector: 'edge[?types*="semantic"]',
+      style: {
+        'line-color': '#a855f7',
+        'line-style': 'dashed',
+        'width': 3,
+        'opacity': 0.8,
+        'target-arrow-shape': 'triangle',
+        'target-arrow-color': '#a855f7'
+      },
+    },
+    {
       selector: 'node[schema = "demo_mixed"]',
       style: { 'background-color': '#ef4444' }
     },
@@ -141,12 +153,27 @@ function GraphVisualization() {
     },
   ];
 
+  // Count semantic edges
+  const semanticEdgeCount = graphData.elements.filter(
+    (el: any) => el.data?.source && el.data?.types?.includes('semantic')
+  ).length;
+
   return (
     <Card>
       <CardHeader>
         <CardTitle>
           Table Relationship Graph ({graphData.node_count} tables, {graphData.edge_count} relationships)
         </CardTitle>
+        {semanticEdgeCount > 0 && (
+          <div className="text-sm text-slate-600 dark:text-slate-400 mt-2">
+            <span className="inline-flex items-center gap-2">
+              <span className="w-8 h-0.5 bg-slate-400"></span>
+              <span>Structural</span>
+              <span className="w-8 h-0.5 bg-purple-500 border-dashed border-t-2 border-purple-500"></span>
+              <span>Semantic ({semanticEdgeCount} LLM-discovered)</span>
+            </span>
+          </div>
+        )}
       </CardHeader>
       <CardContent>
         <div className="border rounded-lg" style={{ height: '600px' }}>

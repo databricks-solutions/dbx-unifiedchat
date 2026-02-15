@@ -9,6 +9,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.core import Config
 from databricks.sdk.service.jobs import Task, NotebookTask, JobEnvironment, Source
 from databricks.sdk.service.compute import Environment
+from databricks.sdk.service.sql import StatementParameterListItem
 from databricks import sql
 import uuid
 import threading
@@ -365,46 +366,55 @@ async def get_graph_build_logs():
 
 @api.post("/graph/build", response_model=GraphBuildStatusOut, operation_id="buildGraph")
 async def build_graph():
-    """Build table relationship graph using GraphRAG approach."""
+    """Build table relationship graph using LLM-powered GraphRAG approach."""
     global _graph_data, _graph_build_logs
     
     _graph_build_logs = []
-    _add_graph_log("Starting GraphRAG-based graph build process...")
+    _add_graph_log("Starting LLM-powered GraphRAG graph build process...")
     
-    _add_graph_log("Fetching enrichment results from Unity Catalog...")
-    enrichment_results = await list_enrichment_results()
-    if not enrichment_results:
-        _add_graph_log("No enrichment results available", level="error")
-        raise HTTPException(status_code=400, detail="No enrichment results available")
-    
-    _add_graph_log(f"Found {len(enrichment_results)} enriched tables.")
+    # Fetch full enriched documents with table descriptions
+    _add_graph_log("Fetching full enrichment metadata from Unity Catalog...")
     
     try:
+        # Fetch full enriched_doc JSON
+        statement = """
+            SELECT table_fqn, enriched_doc 
+            FROM serverless_dbx_unifiedchat_catalog.gold.enriched_table_metadata 
+            WHERE enriched = true
+            ORDER BY id DESC
+            LIMIT 100
+        """
+        
+        def _fetch():
+            local_client = WorkspaceClient(config=Config())
+            return local_client.statement_execution.execute_statement(
+                warehouse_id=warehouse_id,
+                statement=statement,
+                wait_timeout="30s"
+            )
+            
+        res = await asyncio.to_thread(_fetch)
+        
+        if not res.result or not res.result.data_array:
+            _add_graph_log("No enrichment results available", level="error")
+            raise HTTPException(status_code=400, detail="No enrichment results available")
+        
+        _add_graph_log(f"Found {len(res.result.data_array)} enriched tables.")
+        
         # Import GraphRAG module
         import sys
-        import os
         from pathlib import Path
         
-        # Get the absolute path to the workspace root
-        # Current file: /Users/yang.yang/CursorProjects/KUMC_POC_hlsfieldtemp/tables_to_genies_apx/src/tables_genies/backend/router.py
         current_file = Path(__file__).resolve()
-        root_path = current_file.parents[5] # Go up 6 levels to reach KUMC_POC_hlsfieldtemp
+        root_path = current_file.parents[5]
         graphrag_path = root_path / "tables_to_genies" / "graphrag"
         
-        _add_graph_log(f"Debug: root_path={root_path}")
-        _add_graph_log(f"Debug: graphrag_path={graphrag_path}")
-        
         if not graphrag_path.exists():
-            # Try alternative path if root detection is off
-            # Let's check if we are in a container or different structure
-            _add_graph_log(f"Warning: Path not found at {graphrag_path}, trying relative search...")
-            # Fallback to searching for the directory
             possible_roots = [Path.cwd(), Path.home() / "CursorProjects/KUMC_POC_hlsfieldtemp"]
             for pr in possible_roots:
                 gp = pr / "tables_to_genies" / "graphrag"
                 if gp.exists():
                     graphrag_path = gp
-                    _add_graph_log(f"Found GraphRAG at: {graphrag_path}")
                     break
         
         if not graphrag_path.exists():
@@ -414,53 +424,82 @@ async def build_graph():
         if str(graphrag_path) not in sys.path:
             sys.path.insert(0, str(graphrag_path))
         
-        try:
-            from build_table_graph import GraphRAGTableGraphBuilder
-        except ImportError as ie:
-            _add_graph_log(f"ImportError: {str(ie)}. Current sys.path: {sys.path}", level="error")
-            raise ie
+        from build_table_graph import GraphRAGTableGraphBuilder
         
         _add_graph_log("Initializing GraphRAG Table Graph Builder...")
         builder = GraphRAGTableGraphBuilder()
         
-        # Convert enrichment results to dict format expected by GraphRAG module
-        _add_graph_log("Preparing table metadata for entity extraction...")
+        # Parse enriched documents
+        _add_graph_log("Parsing enriched metadata (descriptions, columns)...")
         enriched_tables_data = []
-        for result in enrichment_results:
-            parts = result.fqn.split('.')
+        for row in res.result.data_array:
+            table_fqn = row[0]
+            enriched_doc = json.loads(row[1])
+            parts = table_fqn.split('.')
+            
             enriched_tables_data.append({
-                'fqn': result.fqn,
+                'fqn': table_fqn,
                 'catalog': parts[0],
                 'schema': parts[1],
                 'table': parts[2],
-                'column_count': result.column_count,
-                'columns': [{'name': col} for col in result.columns],
-                'enriched': result.enriched
+                'column_count': enriched_doc.get('total_columns', 0),
+                'columns': [{'name': col['column_name']} for col in enriched_doc.get('enriched_columns', [])],
+                'enriched': enriched_doc.get('enriched', False),
+                'table_description': enriched_doc.get('table_description', ''),
+                'enriched_columns': enriched_doc.get('enriched_columns', [])
             })
         
-        # Extract entities
-        _add_graph_log("Extracting entities (tables, columns, schemas)...")
-        entities = builder.extract_entities(enriched_tables_data)
-        _add_graph_log(f"Extracted {len(entities['tables'])} table entities across {len(entities['schemas'])} schemas.")
+        # Define LLM function wrapper
+        async def llm_func(prompt: str) -> str:
+            """Call LLM via ai_query through statement execution."""
+            _add_graph_log("Calling LLM for analysis...")
+            
+            def _llm_call():
+                local_client = WorkspaceClient(config=Config())
+                # Use ai_query with Claude Sonnet
+                llm_statement = "SELECT ai_query('databricks-claude-sonnet-4-5', :prompt) as result"
+                param = StatementParameterListItem(name='prompt', value=prompt, type='STRING')
+                return local_client.statement_execution.execute_statement(
+                    warehouse_id=warehouse_id,
+                    statement=llm_statement,
+                    parameters=[param],
+                    wait_timeout="50s"
+                )
+            
+            llm_res = await asyncio.to_thread(_llm_call)
+            
+            if llm_res.result and llm_res.result.data_array:
+                return llm_res.result.data_array[0][0]
+            else:
+                raise Exception("LLM call returned no results")
         
-        # Detect relationships
-        _add_graph_log("Detecting relationships (schema co-location, column overlap, FK hints)...")
-        relationships = builder.detect_relationships(entities)
-        _add_graph_log(f"Detected {len(relationships)} potential relationships.")
+        # Build graph with LLM-powered semantic analysis
+        _add_graph_log("Building graph with structural + semantic analysis...")
+        _add_graph_log("  → Phase 1: Structural analysis (schema, columns, FK hints)...")
+        _add_graph_log("  → Phase 2: LLM entity extraction...")
+        _add_graph_log("  → Phase 3: LLM semantic relationship detection...")
         
-        # Build graph with community detection
-        _add_graph_log("Building graph with community detection (Louvain algorithm)...")
-        G = builder.build_graph(enriched_tables_data)
+        G = await builder.build_graph(enriched_tables_data, llm_func=llm_func)
+        
         _add_graph_log(f"Graph constructed: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges.")
         
-        # Log sample relationships
-        for rel in relationships[:5]:
-            source_name = rel['source'].split('.')[-1]
-            target_name = rel['target'].split('.')[-1]
-            _add_graph_log(f"  {source_name} <-> {target_name} (weight: {rel['weight']}, types: {rel['types']})")
+        # Log semantic entities if extracted
+        if builder.semantic_entities:
+            _add_graph_log(f"LLM extracted entities for {len(builder.semantic_entities)} tables.")
+            sample_fqn = list(builder.semantic_entities.keys())[0]
+            sample_entities = builder.semantic_entities[sample_fqn]
+            _add_graph_log(f"  Example: {sample_fqn.split('.')[-1]} → domain: {sample_entities.get('domain', 'N/A')}")
         
-        if len(relationships) > 5:
-            _add_graph_log(f"  ... and {len(relationships) - 5} more relationships")
+        # Count semantic edges
+        semantic_edge_count = sum(1 for _, _, data in G.edges(data=True) if 'semantic' in data.get('types', ''))
+        if semantic_edge_count > 0:
+            _add_graph_log(f"Discovered {semantic_edge_count} semantic relationships via LLM.", level="success")
+            
+            # Log sample semantic relationships
+            for u, v, data in list(G.edges(data=True))[:3]:
+                if 'semantic' in data.get('types', ''):
+                    reason = data.get('semantic_reason', 'N/A')
+                    _add_graph_log(f"  {u.split('.')[-1]} <-> {v.split('.')[-1]}: {reason}")
         
         # Detect communities
         _add_graph_log("Running community detection...")
@@ -478,11 +517,13 @@ async def build_graph():
             communities=graph_output.get('communities')
         )
         
-        _add_graph_log("Graph build completed successfully.", level="success")
+        _add_graph_log("LLM-powered GraphRAG build completed successfully.", level="success")
         return GraphBuildStatusOut(job_id="graph-1", status=GraphBuildStatus.COMPLETED)
         
     except Exception as e:
+        import traceback
         _add_graph_log(f"Error building graph: {str(e)}", level="error")
+        _add_graph_log(f"Traceback: {traceback.format_exc()}", level="error")
         raise HTTPException(status_code=500, detail=str(e))
 
 
