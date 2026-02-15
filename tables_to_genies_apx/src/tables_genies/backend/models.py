@@ -143,6 +143,7 @@ class EnrichmentResultListOut(BaseModel):
     fqn: str
     column_count: int
     enriched: bool
+    columns: List[str] = []
 
 
 # ============================================================================
@@ -162,6 +163,13 @@ class GraphBuildStatusOut(BaseModel):
     job_id: str
     status: GraphBuildStatus
     error: Optional[str] = None
+
+
+class GraphBuildLogOut(BaseModel):
+    """Graph build log entry."""
+    timestamp: str
+    message: str
+    level: str = "info"
 
 
 class GraphNodeOut(BaseModel):

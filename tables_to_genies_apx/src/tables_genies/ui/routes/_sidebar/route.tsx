@@ -7,9 +7,9 @@ export const Route = createFileRoute('/_sidebar')({
 });
 
 const navItems = [
+  { to: '/graph-explorer', label: '3. Explore Graph', icon: <Share2 size={16} /> },
   { to: '/catalog-browser', label: '1. Browse Catalogs', icon: <Database size={16} /> },
   { to: '/enrichment', label: '2. Enrich Tables', icon: <Sparkles size={16} /> },
-  { to: '/graph-explorer', label: '3. Explore Graph', icon: <Share2 size={16} /> },
   { to: '/genie-builder', label: '4. Build Rooms', icon: <Boxes size={16} /> },
   { to: '/genie-create', label: '5. Create Rooms', icon: <Rocket size={16} /> },
 ];

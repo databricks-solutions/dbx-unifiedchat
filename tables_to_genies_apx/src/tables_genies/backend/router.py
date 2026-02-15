@@ -25,6 +25,7 @@ warehouse_id = "a4ed2ccbda385db9"
 # In-memory storage
 _selection: TableSelectionOut = TableSelectionOut(table_fqns=[], count=0)
 _graph_data: Optional[GraphDataOut] = None
+_graph_build_logs: List[GraphBuildLogOut] = []
 _genie_rooms = []
 _genie_creation_status: Optional[GenieCreationStatusOut] = None
 
@@ -253,35 +254,39 @@ async def list_enrichment_results():
     """List enriched tables from Unity Catalog."""
     
     try:
-        # Query enriched results from UC table
-        conn = sql.connect(
-            server_hostname=config.host,
-            http_path=f"/sql/1.0/warehouses/{warehouse_id}",
-            credentials_provider=lambda: config.authenticate,
-        )
-        
-        cursor = conn.cursor()
-        cursor.execute("""
+        # Use Statement Execution API (non-blocking)
+        statement = """
             SELECT table_fqn, enriched_doc 
-            FROM yyang.multi_agent_genie.enriched_tables_direct 
+            FROM serverless_dbx_unifiedchat_catalog.gold.enriched_table_metadata 
             WHERE enriched = true
             ORDER BY id DESC
             LIMIT 100
-        """)
+        """
+        
+        # Run blocking SDK call in thread pool
+        def _fetch():
+            # Create a fresh client for this thread
+            local_client = WorkspaceClient(config=Config())
+            return local_client.statement_execution.execute_statement(
+                warehouse_id=warehouse_id,
+                statement=statement,
+                wait_timeout="30s"
+            )
+            
+        res = await asyncio.to_thread(_fetch)
         
         results = []
-        for row in cursor.fetchall():
-            table_fqn = row[0]
-            enriched_doc = json.loads(row[1])
-            
-            results.append(EnrichmentResultListOut(
-                fqn=table_fqn,
-                column_count=enriched_doc.get('total_columns', 0),
-                enriched=enriched_doc.get('enriched', False)
-            ))
-        
-        cursor.close()
-        conn.close()
+        if res.result and res.result.data_array:
+            for row in res.result.data_array:
+                table_fqn = row[0]
+                enriched_doc = json.loads(row[1])
+                
+                results.append(EnrichmentResultListOut(
+                    fqn=table_fqn,
+                    column_count=enriched_doc.get('total_columns', 0),
+                    enriched=enriched_doc.get('enriched', False),
+                    columns=[col['column_name'] for col in enriched_doc.get('enriched_columns', [])]
+                ))
         
         return results
         
@@ -295,26 +300,23 @@ async def get_enrichment_result(fqn: str):
     """Get enrichment result for specific table from Unity Catalog."""
     
     try:
-        conn = sql.connect(
-            server_hostname=config.host,
-            http_path=f"/sql/1.0/warehouses/{warehouse_id}",
-            credentials_provider=lambda: config.authenticate,
-        )
+        # Use Statement Execution API (non-blocking)
+        statement = f"SELECT enriched_doc FROM serverless_dbx_unifiedchat_catalog.gold.enriched_table_metadata WHERE table_fqn = '{fqn}'"
         
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT enriched_doc FROM yyang.multi_agent_genie.enriched_tables_direct WHERE table_fqn = ?",
-            (fqn,)
-        )
+        def _fetch():
+            local_client = WorkspaceClient(config=Config())
+            return local_client.statement_execution.execute_statement(
+                warehouse_id=warehouse_id,
+                statement=statement,
+                wait_timeout="30s"
+            )
+            
+        res = await asyncio.to_thread(_fetch)
         
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
-        
-        if not row:
+        if not res.result or not res.result.data_array:
             raise HTTPException(status_code=404, detail=f"Table {fqn} not found")
         
-        enriched_doc = json.loads(row[0])
+        enriched_doc = json.loads(res.result.data_array[0][0])
         
         # Convert to response model
         return EnrichmentResultOut(
@@ -346,39 +348,91 @@ async def get_enrichment_result(fqn: str):
 # GRAPH ROUTES
 # ============================================================================
 
+def _add_graph_log(message: str, level: str = "info"):
+    """Add a log entry for graph building."""
+    global _graph_build_logs
+    _graph_build_logs.append(GraphBuildLogOut(
+        timestamp=datetime.now().strftime("%H:%M:%S"),
+        message=message,
+        level=level
+    ))
+    print(f"[{level.upper()}] {message}")
+
+@api.get("/graph/build-logs", response_model=List[GraphBuildLogOut], operation_id="getGraphBuildLogs")
+async def get_graph_build_logs():
+    """Get graph build logs."""
+    return _graph_build_logs
+
 @api.post("/graph/build", response_model=GraphBuildStatusOut, operation_id="buildGraph")
 async def build_graph():
     """Build table relationship graph."""
-    global _graph_data
+    global _graph_data, _graph_build_logs
     
-    if not _enrichment_results:
+    _graph_build_logs = []
+    _add_graph_log("Starting graph build process...")
+    
+    _add_graph_log("Fetching enrichment results from Unity Catalog...")
+    enrichment_results = await list_enrichment_results()
+    if not enrichment_results:
+        _add_graph_log("No enrichment results available", level="error")
         raise HTTPException(status_code=400, detail="No enrichment results available")
+    
+    _add_graph_log(f"Found {len(enrichment_results)} enriched tables.")
     
     try:
         # Simplified graph building (full GraphRAG implementation in graph_builder.py)
         import networkx as nx
         
+        _add_graph_log("Initializing NetworkX graph...")
         G = nx.Graph()
         
         # Add nodes
-        for result in _enrichment_results:
+        _add_graph_log("Adding table nodes to graph...")
+        for result in enrichment_results:
             parts = result.fqn.split('.')
             G.add_node(result.fqn, **{
+                'id': result.fqn,
                 'label': parts[2],
                 'catalog': parts[0],
                 'schema': parts[1],
                 'column_count': result.column_count,
                 'community': 0
             })
+        _add_graph_log(f"Added {G.number_of_nodes()} nodes.")
         
-        # Add edges (same schema)
+        # Add edges (same schema and column overlap)
+        _add_graph_log("Analyzing table relationships...")
         nodes = list(G.nodes(data=True))
         for i, (node1, data1) in enumerate(nodes):
             for node2, data2 in nodes[i+1:]:
+                weight = 0
+                edge_types = []
+                
+                # Same schema = strong relationship
                 if data1['schema'] == data2['schema']:
-                    G.add_edge(node1, node2, weight=5, types='same_schema')
+                    weight += 5
+                    edge_types.append('same_schema')
+                
+                # Column overlap detection
+                res1 = next((r for r in enrichment_results if r.fqn == node1), None)
+                res2 = next((r for r in enrichment_results if r.fqn == node2), None)
+                
+                if res1 and res2:
+                    cols1 = set(res1.columns)
+                    cols2 = set(res2.columns)
+                    overlap = cols1 & cols2
+                    if overlap:
+                        weight += len(overlap) * 2
+                        edge_types.append('column_overlap')
+                        _add_graph_log(f"Found relationship: {data1['label']} <-> {data2['label']} ({len(overlap)} columns overlap)")
+                
+                if weight > 0:
+                    G.add_edge(node1, node2, weight=weight, edge_type=','.join(edge_types))
+        
+        _add_graph_log(f"Identified {G.number_of_edges()} relationships.")
         
         # Convert to Cytoscape format
+        _add_graph_log("Formatting graph for visualization...")
         elements = []
         for node, data in G.nodes(data=True):
             elements.append({'data': {'id': node, **data}})
@@ -391,9 +445,11 @@ async def build_graph():
             edge_count=G.number_of_edges()
         )
         
+        _add_graph_log("Graph build completed successfully.", level="success")
         return GraphBuildStatusOut(job_id="graph-1", status=GraphBuildStatus.COMPLETED)
         
     except Exception as e:
+        _add_graph_log(f"Error building graph: {str(e)}", level="error")
         raise HTTPException(status_code=500, detail=str(e))
 
 
