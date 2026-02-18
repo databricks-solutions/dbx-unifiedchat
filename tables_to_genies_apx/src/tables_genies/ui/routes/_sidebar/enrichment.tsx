@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { Suspense, useState } from 'react';
+import { Suspense, useState, useEffect, useRef } from 'react';
 import { useGetSelectionSuspense, useRunEnrichment, useGetEnrichmentStatusSuspense } from '@/lib/api';
 import { selector } from '@/lib/selector';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
@@ -9,27 +9,73 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowLeft, ExternalLink } from 'lucide-react';
+import { loadState, saveState } from '@/lib/workflow-state';
 
 export const Route = createFileRoute('/_sidebar/enrichment')({
-  component: () => (
-    <div>
-      <h1 className="text-3xl font-bold mb-6">Enrich Tables</h1>
-      <Suspense fallback={<EnrichmentSkeleton />}>
-        <EnrichmentView />
-      </Suspense>
-    </div>
-  ),
+  validateSearch: (search: Record<string, unknown>) => {
+    return {
+      jobId: search.jobId ? Number(search.jobId) : undefined,
+    };
+  },
+  component: () => {
+    const { jobId } = Route.useSearch();
+    return (
+      <div>
+        <h1 className="text-3xl font-bold mb-6">Enrich Tables</h1>
+        <Suspense fallback={<EnrichmentSkeleton />}>
+          <EnrichmentView initialJobId={jobId} />
+        </Suspense>
+      </div>
+    );
+  },
 });
 
-function EnrichmentView() {
+function EnrichmentView({ initialJobId }: { initialJobId?: number }) {
   const { data: selection } = useGetSelectionSuspense(selector());
-  const [jobId, setJobId] = useState<number | null>(null);
+  const [jobId, setJobId] = useState<number | null>(initialJobId || null);
   const [jobUrl, setJobUrl] = useState<string | null>(null);
   const [metadataTable, setMetadataTable] = useState('serverless_dbx_unifiedchat_catalog.gold.enriched_table_metadata');
   const [chunksTable, setChunksTable] = useState('serverless_dbx_unifiedchat_catalog.gold.enriched_table_chunks');
   const [writeMode, setWriteMode] = useState<'overwrite' | 'append' | 'error'>('overwrite');
+  const isLoadedRef = useRef(false);
   const runEnrichmentMutation = useRunEnrichment();
   const navigate = useNavigate();
+
+  // Load state on mount
+  useEffect(() => {
+    const savedState = loadState('enrichment');
+    if (savedState) {
+      if (!initialJobId && savedState.jobId) {
+        setJobId(savedState.jobId);
+        setJobUrl(savedState.jobUrl);
+      }
+      setMetadataTable(savedState.metadataTable);
+      setChunksTable(savedState.chunksTable);
+      setWriteMode(savedState.writeMode);
+    }
+    isLoadedRef.current = true;
+  }, [initialJobId]);
+
+  // Save state on changes
+  useEffect(() => {
+    if (!isLoadedRef.current) return;
+
+    saveState('enrichment', {
+      jobId,
+      jobUrl,
+      metadataTable,
+      chunksTable,
+      writeMode,
+    });
+
+    // Update URL if jobId changes
+    if (jobId) {
+      navigate({
+        search: (prev) => ({ ...prev, jobId }),
+        replace: true,
+      });
+    }
+  }, [jobId, jobUrl, metadataTable, chunksTable, writeMode, navigate]);
 
   const handleRunEnrichment = async () => {
     const result = await runEnrichmentMutation.mutateAsync({

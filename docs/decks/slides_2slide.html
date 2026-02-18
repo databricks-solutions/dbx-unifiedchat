@@ -1,0 +1,763 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>DBX-UnifiedChat — 2-Slide Deck</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap');
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --dbx-red:    #FF3621;
+    --dbx-dark:   #13171C;
+    --dbx-mid:    #1E2329;
+    --dbx-card:   #1C2128;
+    --dbx-card2:  #222830;
+    --dbx-border: #333B46;
+    --dbx-blue:   #2196F3;
+    --dbx-teal:   #00BFA5;
+    --dbx-amber:  #FFB300;
+    --dbx-purple: #9C27B0;
+    --dbx-green:  #43A047;
+    --dbx-text:   #E4E9EF;
+    --dbx-muted:  #7D8B99;
+    --radius:     14px;
+  }
+
+  html, body {
+    background: #0D1117;
+    font-family: 'DM Sans', system-ui, sans-serif;
+    color: var(--dbx-text);
+  }
+
+  /* ═══════════════════════════════════════════
+     SLIDE WRAPPER
+  ═══════════════════════════════════════════ */
+  .slide-wrapper {
+    width: 1280px;
+    margin: 0 auto 0;
+    display: flex; flex-direction: column; gap: 0;
+  }
+
+  .slide-nav {
+    display: flex; gap: 6px;
+    padding: 18px 0 12px;
+    justify-content: center;
+  }
+  .slide-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--dbx-border);
+  }
+  .slide-dot.active { background: var(--dbx-red); }
+
+  .slide {
+    width: 1280px; min-height: 720px;
+    background: var(--dbx-dark);
+    display: flex; flex-direction: column;
+    padding: 40px 52px 34px;
+    gap: 24px;
+    border: 1px solid var(--dbx-border);
+    border-radius: 16px;
+    margin-bottom: 48px;
+    position: relative;
+    overflow: hidden;
+  }
+  /* subtle gradient glow */
+  .slide-1::after {
+    content: '';
+    position: absolute; bottom: -120px; right: -80px;
+    width: 400px; height: 400px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(255,54,33,.06) 0%, transparent 70%);
+    pointer-events: none;
+  }
+  .slide-2::after {
+    content: '';
+    position: absolute; bottom: -120px; left: -80px;
+    width: 400px; height: 400px; border-radius: 50%;
+    background: radial-gradient(circle, rgba(30,136,229,.06) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  /* ═══════════════════════════════════════════
+     COMMON HEADER
+  ═══════════════════════════════════════════ */
+  .slide-header {
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 1px solid var(--dbx-border);
+    padding-bottom: 20px;
+  }
+  .brand-row { display: flex; align-items: center; gap: 12px; }
+  .brand-icon {
+    width: 32px; height: 32px; border-radius: 8px;
+    background: var(--dbx-red);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 16px; font-weight: 800; color: #fff;
+  }
+  .brand-text { font-size: 18px; font-weight: 700; letter-spacing: -.3px; }
+  .brand-text span { color: var(--dbx-red); }
+  .slide-label {
+    font-size: 11px; font-weight: 700; letter-spacing: 1px;
+    text-transform: uppercase; color: var(--dbx-muted);
+  }
+  .slide-counter {
+    font-size: 12px; color: var(--dbx-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .slide-counter strong { color: var(--dbx-text); }
+
+  /* ═══════════════════════════════════════════
+     SLIDE 1 LAYOUT
+  ═══════════════════════════════════════════ */
+
+  /* Hero section */
+  .s1-hero {
+    display: grid; grid-template-columns: 1fr auto;
+    gap: 32px; align-items: center;
+  }
+  .s1-hero-text h2 {
+    font-size: 36px; font-weight: 800; line-height: 1.15;
+    letter-spacing: -.8px;
+  }
+  .s1-hero-text h2 em {
+    font-style: normal;
+    background: linear-gradient(90deg, var(--dbx-red) 0%, #FF7043 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .s1-hero-text p {
+    margin-top: 10px; font-size: 14.5px; color: #9CA8B5;
+    line-height: 1.6; max-width: 580px;
+  }
+  .s1-metrics {
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .metric-box {
+    background: var(--dbx-card2);
+    border: 1px solid var(--dbx-border);
+    border-radius: 10px; padding: 12px 20px;
+    text-align: center; min-width: 130px;
+  }
+  .metric-value {
+    font-size: 26px; font-weight: 800;
+    line-height: 1;
+  }
+  .metric-label {
+    font-size: 10.5px; color: var(--dbx-muted);
+    margin-top: 3px; font-weight: 500;
+  }
+  .mv-red    { color: var(--dbx-red); }
+  .mv-blue   { color: #64B5F6; }
+  .mv-teal   { color: var(--dbx-teal); }
+
+  /* Agent Architecture */
+  .s1-arch {
+    display: grid; grid-template-columns: 1.15fr 1fr;
+    gap: 20px;
+  }
+
+  .arch-panel {
+    background: var(--dbx-card);
+    border: 1px solid var(--dbx-border);
+    border-radius: var(--radius);
+    padding: 22px;
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  .arch-panel-title {
+    font-size: 11px; font-weight: 700; letter-spacing: .8px;
+    text-transform: uppercase; color: var(--dbx-muted);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .arch-panel-title::before {
+    content: '';
+    display: inline-block;
+    width: 14px; height: 3px; border-radius: 2px;
+  }
+  .title-red::before  { background: var(--dbx-red); }
+  .title-blue::before { background: var(--dbx-blue); }
+
+  /* Flow diagram */
+  .flow-diagram {
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .flow-level {
+    display: flex; align-items: center; justify-content: center;
+    gap: 8px;
+  }
+  .flow-box {
+    padding: 7px 13px;
+    border-radius: 8px;
+    font-size: 11.5px; font-weight: 600;
+    display: flex; align-items: center; gap: 5px;
+    white-space: nowrap;
+  }
+  .fb-sup    { background: rgba(255,54,33,.18);  color: #FF7043; border: 1px solid rgba(255,54,33,.3); }
+  .fb-plan   { background: rgba(156,39,176,.18); color: #CE93D8; border: 1px solid rgba(156,39,176,.3); }
+  .fb-genie  { background: rgba(33,150,243,.18); color: #90CAF9; border: 1px solid rgba(33,150,243,.3); }
+  .fb-sql    { background: rgba(67,160,71,.18);  color: #A5D6A7; border: 1px solid rgba(67,160,71,.3); }
+  .fb-sum    { background: rgba(255,179,0,.18);  color: #FFE082; border: 1px solid rgba(255,179,0,.3); }
+  .fb-mem    { background: rgba(0,188,212,.18);  color: #80DEEA; border: 1px solid rgba(0,188,212,.3); }
+  .fb-vs     { background: rgba(103,58,183,.18); color: #CE93D8; border: 1px solid rgba(103,58,183,.3); }
+
+  .flow-arrow-v {
+    text-align: center; font-size: 14px; color: var(--dbx-muted);
+  }
+  .flow-divider {
+    width: 1px; height: 20px; background: var(--dbx-border);
+    align-self: center;
+  }
+
+  /* Feature list */
+  .feat-list {
+    display: flex; flex-direction: column; gap: 7px;
+  }
+  .feat-row {
+    display: flex; align-items: flex-start; gap: 9px;
+  }
+  .feat-icon {
+    width: 22px; height: 22px; border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .fi-red    { background: rgba(255,54,33,.15); }
+  .fi-blue   { background: rgba(33,150,243,.15); }
+  .fi-teal   { background: rgba(0,191,165,.15); }
+  .fi-amber  { background: rgba(255,179,0,.15); }
+  .fi-purple { background: rgba(156,39,176,.15); }
+  .fi-green  { background: rgba(67,160,71,.15); }
+
+  .feat-content { display: flex; flex-direction: column; gap: 1px; }
+  .feat-name  { font-size: 12px; font-weight: 700; color: var(--dbx-text); }
+  .feat-desc  { font-size: 11px; color: var(--dbx-muted); line-height: 1.4; }
+
+  /* ── Footer / stack row ── */
+  .s-footer {
+    display: flex; align-items: center; justify-content: space-between;
+    border-top: 1px solid var(--dbx-border); padding-top: 14px;
+    flex-shrink: 0;
+  }
+  .stack-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .stack-chip {
+    font-size: 10.5px; color: var(--dbx-muted);
+    background: var(--dbx-mid); border: 1px solid var(--dbx-border);
+    padding: 3px 9px; border-radius: 20px;
+  }
+  .stack-label { font-size: 11px; color: var(--dbx-muted); font-weight: 600; }
+  .cta-link {
+    font-size: 12px; font-weight: 700; color: var(--dbx-red);
+    letter-spacing: .2px; text-decoration: none;
+  }
+
+  /* ═══════════════════════════════════════════
+     SLIDE 2 LAYOUT
+  ═══════════════════════════════════════════ */
+  .s2-headline {
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .s2-headline h2 {
+    font-size: 32px; font-weight: 800; letter-spacing: -.7px; line-height: 1.2;
+  }
+  .s2-headline h2 em {
+    font-style: normal;
+    background: linear-gradient(90deg, var(--dbx-blue), #42A5F5);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .s2-headline p {
+    font-size: 14px; color: #9CA8B5; line-height: 1.5; max-width: 760px;
+  }
+
+  .s2-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 20px;
+    flex: 1;
+  }
+
+  /* App panel */
+  .app-panel {
+    background: var(--dbx-card);
+    border: 1px solid var(--dbx-border);
+    border-radius: var(--radius);
+    padding: 22px;
+    display: flex; flex-direction: column; gap: 14px;
+    position: relative; overflow: hidden;
+  }
+  .app-panel::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    background: linear-gradient(90deg, var(--dbx-blue), #42A5F5);
+  }
+
+  .panel-header {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .panel-icon {
+    width: 40px; height: 40px; border-radius: 10px;
+    display: flex; align-items: center; justify-content: center; font-size: 20px;
+  }
+  .pi-blue   { background: rgba(33,150,243,.15); border: 1px solid rgba(33,150,243,.2); }
+  .pi-teal   { background: rgba(0,191,165,.15);  border: 1px solid rgba(0,191,165,.2); }
+
+  .panel-title { font-size: 15px; font-weight: 700; }
+  .panel-sub   { font-size: 11px; color: var(--dbx-muted); margin-top: 2px; }
+
+  .panel-desc {
+    font-size: 13px; color: #9CA8B5; line-height: 1.6;
+  }
+
+  /* Wizard steps */
+  .wizard {
+    display: flex; flex-direction: column; gap: 0;
+    border: 1px solid var(--dbx-border); border-radius: 10px;
+    overflow: hidden;
+  }
+  .wizard-step {
+    display: flex; align-items: center; gap: 14px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--dbx-border);
+    transition: background .2s;
+  }
+  .wizard-step:last-child { border-bottom: none; }
+  .wz-num {
+    width: 24px; height: 24px; border-radius: 50%;
+    background: rgba(33,150,243,.18); border: 1px solid rgba(33,150,243,.4);
+    color: #90CAF9; font-size: 11px; font-weight: 700;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .wz-content { flex: 1; }
+  .wz-title   { font-size: 12px; font-weight: 700; color: var(--dbx-text); }
+  .wz-desc    { font-size: 11px; color: var(--dbx-muted); }
+  .wz-badge   {
+    font-size: 10px; font-weight: 600; padding: 2px 7px;
+    border-radius: 20px; color: #90CAF9;
+    background: rgba(33,150,243,.12); border: 1px solid rgba(33,150,243,.25);
+    white-space: nowrap;
+  }
+
+  /* ETL panel */
+  .etl-panel {
+    background: var(--dbx-card);
+    border: 1px solid var(--dbx-border);
+    border-radius: var(--radius);
+    padding: 22px;
+    display: flex; flex-direction: column; gap: 14px;
+    position: relative; overflow: hidden;
+  }
+  .etl-panel::before {
+    content: '';
+    position: absolute; top: 0; left: 0; right: 0; height: 3px;
+    background: linear-gradient(90deg, var(--dbx-teal), #4DB6AC);
+  }
+
+  /* ETL flow */
+  .etl-flow {
+    display: flex; flex-direction: column; gap: 0;
+    border: 1px solid var(--dbx-border); border-radius: 10px;
+    overflow: hidden;
+  }
+  .etl-block {
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--dbx-border);
+    display: flex; align-items: center; gap: 12px;
+  }
+  .etl-block:last-child { border-bottom: none; }
+  .etl-num {
+    width: 28px; height: 28px; border-radius: 8px;
+    background: rgba(0,191,165,.15); border: 1px solid rgba(0,191,165,.3);
+    color: var(--dbx-teal); font-size: 12px; font-weight: 800;
+    display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+  }
+  .etl-content { flex: 1; }
+  .etl-title  { font-size: 12.5px; font-weight: 700; color: var(--dbx-text); }
+  .etl-desc   { font-size: 11px; color: var(--dbx-muted); margin-top: 1px; }
+  .etl-tag    {
+    font-size: 10px; font-weight: 600; padding: 2px 7px;
+    border-radius: 20px; color: var(--dbx-teal);
+    background: rgba(0,191,165,.1); border: 1px solid rgba(0,191,165,.25);
+    white-space: nowrap;
+  }
+
+  .outcome-box {
+    background: rgba(0,191,165,.06);
+    border: 1px solid rgba(0,191,165,.2);
+    border-radius: 8px; padding: 10px 14px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .outcome-title {
+    font-size: 10.5px; font-weight: 700;
+    color: var(--dbx-teal); letter-spacing: .4px;
+    text-transform: uppercase;
+  }
+  .outcome-items {
+    display: flex; flex-wrap: wrap; gap: 6px;
+  }
+  .outcome-item {
+    font-size: 10.5px; color: #9CA8B5;
+    background: var(--dbx-mid); border: 1px solid var(--dbx-border);
+    padding: 2px 8px; border-radius: 20px;
+  }
+
+  /* Integration callout */
+  .integration-row {
+    display: flex; gap: 10px; align-items: stretch;
+  }
+  .integ-card {
+    flex: 1;
+    background: var(--dbx-mid); border: 1px solid var(--dbx-border);
+    border-radius: 8px; padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 3px;
+    text-align: center;
+  }
+  .integ-emoji { font-size: 18px; }
+  .integ-name  { font-size: 11.5px; font-weight: 700; color: var(--dbx-text); }
+  .integ-role  { font-size: 10px; color: var(--dbx-muted); line-height: 1.3; }
+
+</style>
+</head>
+<body>
+<div class="slide-wrapper">
+
+  <!-- ▒▒▒▒▒▒▒▒▒▒▒▒  SLIDE 1  ▒▒▒▒▒▒▒▒▒▒▒▒ -->
+  <div class="slide slide-1">
+
+    <!-- Header -->
+    <div class="slide-header">
+      <div class="brand-row">
+        <div class="brand-icon">D</div>
+        <div class="brand-text">DBX-<span>UnifiedChat</span></div>
+      </div>
+      <div class="slide-label">Multi-Agent Intelligence on Databricks</div>
+      <div class="slide-counter"><strong>01</strong> / 02</div>
+    </div>
+
+    <!-- Hero -->
+    <div class="s1-hero">
+      <div class="s1-hero-text">
+        <h2>Ask any question.<br/>Get answers from <em>all your data</em> — instantly.</h2>
+        <p>
+          A production-ready, LangGraph-powered multi-agent system that understands natural language,
+          routes queries intelligently across Databricks Genie spaces, synthesizes SQL across domains,
+          and returns coherent, cited answers — without users writing a single line of SQL.
+        </p>
+      </div>
+      <div class="s1-metrics">
+        <div class="metric-box">
+          <div class="metric-value mv-red">2–15s</div>
+          <div class="metric-label">Response time</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-value mv-blue">7</div>
+          <div class="metric-label">Specialized agents</div>
+        </div>
+        <div class="metric-box">
+          <div class="metric-value mv-teal">∞</div>
+          <div class="metric-label">Genie spaces scalable</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Architecture + Features -->
+    <div class="s1-arch">
+
+      <!-- Flow diagram -->
+      <div class="arch-panel">
+        <div class="arch-panel-title title-red">Agent Orchestration Flow</div>
+
+        <div class="flow-diagram">
+          <div class="flow-level">
+            <div class="flow-box fb-sup">🎯 Supervisor Agent</div>
+          </div>
+          <div class="flow-arrow-v">↓</div>
+          <div class="flow-level">
+            <div class="flow-box fb-plan">🧠 Think &amp; Plan Agent</div>
+            <div class="flow-box fb-vs">🔍 Vector Search</div>
+          </div>
+          <div class="flow-arrow-v">↓ routes to</div>
+          <div class="flow-level" style="gap:6px">
+            <div class="flow-box fb-genie">💬 Genie Agent A</div>
+            <div class="flow-box fb-genie">💬 Genie Agent B</div>
+            <span style="color:var(--dbx-muted);font-size:11px;align-self:center">…parallel</span>
+          </div>
+          <div class="flow-arrow-v">↓ when cross-domain join needed</div>
+          <div class="flow-level">
+            <div class="flow-box fb-sql">⚡ SQL Synthesis Agent</div>
+            <div class="flow-box fb-sql">🔄 SQL Execution Agent</div>
+          </div>
+          <div class="flow-arrow-v">↓</div>
+          <div class="flow-level">
+            <div class="flow-box fb-sum">✍️ Summarize Agent</div>
+            <div class="flow-box fb-mem">🗂 Lakebase Memory</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Feature list -->
+      <div class="arch-panel">
+        <div class="arch-panel-title title-blue">Key Capabilities</div>
+        <div class="feat-list">
+          <div class="feat-row">
+            <div class="feat-icon fi-red">🔁</div>
+            <div class="feat-content">
+              <div class="feat-name">Multi-turn Conversations</div>
+              <div class="feat-desc">Clarify, refine, and continue queries with full context</div>
+            </div>
+          </div>
+          <div class="feat-row">
+            <div class="feat-icon fi-blue">⚡</div>
+            <div class="feat-content">
+              <div class="feat-name">Parallel Genie Execution</div>
+              <div class="feat-desc">Multiple Genie agents run concurrently for speed</div>
+            </div>
+          </div>
+          <div class="feat-row">
+            <div class="feat-icon fi-teal">🔍</div>
+            <div class="feat-content">
+              <div class="feat-name">Semantic Routing</div>
+              <div class="feat-desc">Vector search picks the right Genie space automatically</div>
+            </div>
+          </div>
+          <div class="feat-row">
+            <div class="feat-icon fi-amber">🗄</div>
+            <div class="feat-content">
+              <div class="feat-name">Lakebase Long + Short Memory</div>
+              <div class="feat-desc">PostgreSQL-backed persistent user context across sessions</div>
+            </div>
+          </div>
+          <div class="feat-row">
+            <div class="feat-icon fi-purple">📊</div>
+            <div class="feat-content">
+              <div class="feat-name">MLflow Observability</div>
+              <div class="feat-desc">Full trace logging, evaluation, and model tracking</div>
+            </div>
+          </div>
+          <div class="feat-row">
+            <div class="feat-icon fi-green">🚀</div>
+            <div class="feat-content">
+              <div class="feat-name">Model Serving Deployment</div>
+              <div class="feat-desc">Auto-scaled endpoint on Databricks, one-command deploy</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Footer -->
+    <div class="s-footer">
+      <div class="stack-row">
+        <span class="stack-label">Powered by:</span>
+        <span class="stack-chip">LangGraph</span>
+        <span class="stack-chip">Databricks Genie</span>
+        <span class="stack-chip">Vector Search</span>
+        <span class="stack-chip">Lakebase</span>
+        <span class="stack-chip">MLflow</span>
+        <span class="stack-chip">Claude 4.5 Sonnet/Haiku</span>
+        <span class="stack-chip">Model Serving</span>
+      </div>
+      <a class="cta-link" href="#">databricks.com/field-solutions ›</a>
+    </div>
+
+  </div>
+
+  <!-- ▒▒▒▒▒▒▒▒▒▒▒▒  SLIDE 2  ▒▒▒▒▒▒▒▒▒▒▒▒ -->
+  <div class="slide slide-2">
+
+    <!-- Header -->
+    <div class="slide-header">
+      <div class="brand-row">
+        <div class="brand-icon">D</div>
+        <div class="brand-text">DBX-<span>UnifiedChat</span></div>
+      </div>
+      <div class="slide-label">Tools to Build &amp; Power the System</div>
+      <div class="slide-counter"><strong>02</strong> / 02</div>
+    </div>
+
+    <!-- Headline -->
+    <div class="s2-headline">
+      <h2>From raw tables to <em>intelligent Genie spaces</em> — a complete toolkit.</h2>
+      <p>
+        The Tables-to-Genies App provides a guided wizard to transform Unity Catalog tables into
+        Genie spaces. The ETL Pipeline enriches metadata and builds the semantic vector index
+        that powers intelligent query routing.
+      </p>
+    </div>
+
+    <!-- Two-column body -->
+    <div class="s2-grid">
+
+      <!-- App Panel -->
+      <div class="app-panel">
+        <div class="panel-header">
+          <div class="panel-icon pi-blue">🗂</div>
+          <div>
+            <div class="panel-title">Tables → Genies App</div>
+            <div class="panel-sub">Databricks App (Dash) · Unity Catalog · Genie SDK</div>
+          </div>
+        </div>
+
+        <div class="panel-desc">
+          A 5-step guided wizard deployed as a Databricks App that takes any Unity Catalog schema
+          and turns it into a set of ready-to-use Genie spaces — complete with relationship
+          graph visualization and one-click creation.
+        </div>
+
+        <div class="wizard">
+          <div class="wizard-step">
+            <div class="wz-num">1</div>
+            <div class="wz-content">
+              <div class="wz-title">Catalog Browser</div>
+              <div class="wz-desc">Hierarchical tree view of catalogs, schemas &amp; tables with checkbox selection</div>
+            </div>
+            <div class="wz-badge">UC SDK</div>
+          </div>
+          <div class="wizard-step">
+            <div class="wz-num">2</div>
+            <div class="wz-content">
+              <div class="wz-title">Enrichment Runner</div>
+              <div class="wz-desc">Column metadata, sample values &amp; statistics with live progress tracking</div>
+            </div>
+            <div class="wz-badge">SQL Connector</div>
+          </div>
+          <div class="wizard-step">
+            <div class="wz-num">3</div>
+            <div class="wz-content">
+              <div class="wz-title">Graph Explorer</div>
+              <div class="wz-desc">NetworkX graph showing table relationships, FK hints &amp; community clusters</div>
+            </div>
+            <div class="wz-badge">NetworkX</div>
+          </div>
+          <div class="wizard-step">
+            <div class="wz-num">4</div>
+            <div class="wz-content">
+              <div class="wz-title">Genie Room Builder</div>
+              <div class="wz-desc">Group tables into logical rooms with custom names and configurations</div>
+            </div>
+            <div class="wz-badge">In-memory</div>
+          </div>
+          <div class="wizard-step">
+            <div class="wz-num">5</div>
+            <div class="wz-content">
+              <div class="wz-title">Genie Room Creator</div>
+              <div class="wz-desc">Creates live Genie spaces with per-room status tracking &amp; clickable URLs</div>
+            </div>
+            <div class="wz-badge">Genie SDK</div>
+          </div>
+        </div>
+
+        <div class="integration-row">
+          <div class="integ-card">
+            <div class="integ-emoji">📦</div>
+            <div class="integ-name">88 Tables</div>
+            <div class="integ-role">across 18 demo domains</div>
+          </div>
+          <div class="integ-card">
+            <div class="integ-emoji">🕸️</div>
+            <div class="integ-name">Graph Analysis</div>
+            <div class="integ-role">Louvain community detection</div>
+          </div>
+          <div class="integ-card">
+            <div class="integ-emoji">🌐</div>
+            <div class="integ-name">Live App</div>
+            <div class="integ-role">Deployed on Databricks Apps</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ETL Panel -->
+      <div class="etl-panel">
+        <div class="panel-header">
+          <div class="panel-icon pi-teal">⚙️</div>
+          <div>
+            <div class="panel-title">ETL Pipeline</div>
+            <div class="panel-sub">Vector Search · Metadata Enrichment · Index Building</div>
+          </div>
+        </div>
+
+        <div class="panel-desc">
+          A prerequisite 3-step pipeline that exports Genie space metadata,
+          enriches table information with AI-ready context, and builds the
+          semantic vector index that powers intelligent query routing in the agent system.
+        </div>
+
+        <div class="etl-flow">
+          <div class="etl-block">
+            <div class="etl-num">01</div>
+            <div class="etl-content">
+              <div class="etl-title">Export Genie Spaces</div>
+              <div class="etl-desc">Exports all Genie space configs and metadata to Unity Catalog volume</div>
+            </div>
+            <div class="etl-tag">~5 min</div>
+          </div>
+          <div class="etl-block">
+            <div class="etl-num">02</div>
+            <div class="etl-content">
+              <div class="etl-title">Enrich Table Metadata</div>
+              <div class="etl-desc">Adds column details, sample values, stats → creates enriched_genie_docs table</div>
+            </div>
+            <div class="etl-tag">~15 min</div>
+          </div>
+          <div class="etl-block">
+            <div class="etl-num">03</div>
+            <div class="etl-content">
+              <div class="etl-title">Build Vector Search Index</div>
+              <div class="etl-desc">Creates semantic vector index from enriched chunks — enables agent routing</div>
+            </div>
+            <div class="etl-tag">~30 min</div>
+          </div>
+        </div>
+
+        <div class="outcome-box">
+          <div class="outcome-title">✅ Pipeline Outputs</div>
+          <div class="outcome-items">
+            <span class="outcome-item">enriched_genie_docs table</span>
+            <span class="outcome-item">enriched_genie_docs_chunks table</span>
+            <span class="outcome-item">Vector Search index (ready)</span>
+            <span class="outcome-item">Agents can query semantically</span>
+          </div>
+        </div>
+
+        <div style="margin-top:auto">
+          <div class="arch-panel-title title-blue" style="margin-bottom:10px">Three Execution Modes</div>
+          <div style="display:flex;gap:8px">
+            <div class="integ-card">
+              <div class="integ-emoji">🧪</div>
+              <div class="integ-name">Local Dev</div>
+              <div class="integ-role">Sample data, fast iteration</div>
+            </div>
+            <div class="integ-card">
+              <div class="integ-emoji">🔬</div>
+              <div class="integ-name">Databricks Test</div>
+              <div class="integ-role">Real services, small sample</div>
+            </div>
+            <div class="integ-card">
+              <div class="integ-emoji">🚀</div>
+              <div class="integ-name">Production</div>
+              <div class="integ-role">Full dataset, scheduled jobs</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Footer -->
+    <div class="s-footer">
+      <div class="stack-row">
+        <span class="stack-label">Stack:</span>
+        <span class="stack-chip">Dash + dash-bootstrap</span>
+        <span class="stack-chip">NetworkX + Cytoscape</span>
+        <span class="stack-chip">Databricks SDK</span>
+        <span class="stack-chip">Unity Catalog</span>
+        <span class="stack-chip">Vector Search</span>
+        <span class="stack-chip">Databricks Apps</span>
+      </div>
+      <a class="cta-link" href="#">databricks.com/field-solutions ›</a>
+    </div>
+
+  </div>
+
+</div>
+</body>
+</html>

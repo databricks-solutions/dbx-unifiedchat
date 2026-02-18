@@ -1,8 +1,9 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { Suspense, useState, useCallback, useMemo, useRef } from 'react';
+import { Suspense, useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useBuildGraph, useGetGraphData, useGetGraphDataSuspense, useGetGraphBuildLogs, useCreateGenieRoom, useListGenieRoomsSuspense, useDeleteGenieRoom, useGenerateFromCommunities } from '@/lib/api';
 import { selector } from '@/lib/selector';
+import { loadState, saveState } from '@/lib/workflow-state';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -51,14 +52,52 @@ function GraphExplorerContent() {
     }
   };
 
+  const loadPersistedState = () => {
+    try {
+      const saved = localStorage.getItem('graph-explorer-state');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  };
+
+  const persistedState = loadPersistedState();
   const [graphBuilt, setGraphBuilt] = useState(loadGraphBuiltState());
   const buildGraphMutation = useBuildGraph();
   const navigate = useNavigate();
 
+  // Visualization state
+  const [showStructuralEdges, setShowStructuralEdges] = useState(persistedState.showStructuralEdges ?? true);
+  const [showSemanticEdges, setShowSemanticEdges] = useState(persistedState.showSemanticEdges ?? true);
+  const [highlightedCommunity, setHighlightedCommunity] = useState<string | null>(persistedState.highlightedCommunity || null);
+  const [expandedRoomName, setExpandedRoomName] = useState<string | null>(persistedState.expandedRoomName || null);
+
+  // Persist state changes to localStorage
+  useEffect(() => {
+    saveState('graph-explorer', {
+      graphBuilt: !!graphBuilt,
+      showStructuralEdges,
+      showSemanticEdges,
+      highlightedCommunity,
+      expandedRoomName,
+    });
+  }, [graphBuilt, showStructuralEdges, showSemanticEdges, highlightedCommunity, expandedRoomName]);
+
+  // Load state on mount
+  useEffect(() => {
+    const savedState = loadState('graph-explorer');
+    if (savedState) {
+      setShowStructuralEdges(savedState.showStructuralEdges);
+      setShowSemanticEdges(savedState.showSemanticEdges);
+      setHighlightedCommunity(savedState.highlightedCommunity);
+      setExpandedRoomName(savedState.expandedRoomName);
+    }
+  }, []);
+
   // Check if graph data actually exists on mount if we think it's built
   const { error: graphDataError } = useGetGraphData({
     query: {
-      enabled: graphBuilt,
+      enabled: !!graphBuilt,
       retry: false,
     }
   });
@@ -75,7 +114,7 @@ function GraphExplorerContent() {
       refetchInterval: () => {
         return buildGraphMutation.isPending ? 1000 : false;
       },
-      enabled: buildGraphMutation.isPending || graphBuilt
+      enabled: buildGraphMutation.isPending || !!graphBuilt
     }
   });
 
@@ -133,12 +172,12 @@ function GraphExplorerContent() {
 
       {graphBuilt && (
         <Suspense fallback={<Skeleton className="h-96 w-full" />}>
-          <GraphVisualization />
+          <GraphVisualization graphBuilt={!!graphBuilt} />
         </Suspense>
       )}
 
       <div className="flex gap-4">
-        <Button variant="outline" onClick={() => navigate({ to: '/enrichment' })}>
+        <Button variant="outline" onClick={() => navigate({ to: '/enrichment', search: (prev: any) => prev })}>
           <ArrowLeft size={16} /> Back
         </Button>
         {graphBuilt && (
@@ -294,7 +333,7 @@ const edgeTypes: EdgeTypes = {
   semantic: SemanticEdge,
 };
 
-function GraphVisualization() {
+function GraphVisualization({ graphBuilt }: { graphBuilt: boolean }) {
   const queryClient = useQueryClient();
   const { data: graphData } = useGetGraphDataSuspense({ query: selector() } as any);
   const { data: genieRooms = [] } = useListGenieRoomsSuspense({ query: selector() } as any);
@@ -327,6 +366,32 @@ function GraphVisualization() {
   const [showSemanticEdges, setShowSemanticEdges] = useState(persistedState.showSemanticEdges ?? true);
   const [highlightedCommunity, setHighlightedCommunity] = useState<string | null>(persistedState.highlightedCommunity || null);
   const [expandedRoomName, setExpandedRoomName] = useState<string | null>(persistedState.expandedRoomName || null);
+  const isLoadedRef = useRef(false);
+
+  // Load state on mount
+  useEffect(() => {
+    const savedState = loadState('graph-explorer');
+    if (savedState) {
+      setShowStructuralEdges(savedState.showStructuralEdges);
+      setShowSemanticEdges(savedState.showSemanticEdges);
+      setHighlightedCommunity(savedState.highlightedCommunity);
+      setExpandedRoomName(savedState.expandedRoomName);
+    }
+    isLoadedRef.current = true;
+  }, []);
+
+  // Persist state changes to localStorage
+  useEffect(() => {
+    if (!isLoadedRef.current) return;
+
+    saveState('graph-explorer', {
+      graphBuilt,
+      showStructuralEdges,
+      showSemanticEdges,
+      highlightedCommunity,
+      expandedRoomName,
+    });
+  }, [graphBuilt, showStructuralEdges, showSemanticEdges, highlightedCommunity, expandedRoomName]);
 
   // Store full room data locally since list API only returns summary
   const [fullRoomData, setFullRoomData] = useState<any>({});
@@ -338,44 +403,7 @@ function GraphVisualization() {
   // Store React Flow instance
   const reactFlowInstanceRef = useRef<any>(null);
 
-  // Persist state changes to localStorage (currently not used, but may be re-enabled later for auto-persisting state)
-  // const persistState = useCallback((updates: any) => {
-  //   try {
-  //     const currentState = {
-  //       showStructuralEdges,
-  //       showSemanticEdges,
-  //       highlightedCommunity,
-  //       expandedRoomName,
-  //       ...updates
-  //     };
-  //     localStorage.setItem('graph-explorer-state', JSON.stringify(currentState));
-  //   } catch (error) {
-  //     console.warn('Failed to persist graph explorer state:', error);
-  //   }
-  // }, [showStructuralEdges, showSemanticEdges, highlightedCommunity, expandedRoomName]);
-
-  // Persisted state setters (kept for future use if needed)
-  // const setShowStructuralEdgesPersisted = useCallback((value: boolean) => {
-  //   setShowStructuralEdges(value);
-  //   persistState({ showStructuralEdges: value });
-  // }, [persistState]);
-
-  // const setShowSemanticEdgesPersisted = useCallback((value: boolean) => {
-  //   setShowSemanticEdges(value);
-  //   persistState({ showSemanticEdges: value });
-  // }, [persistState]);
-
-  // const setHighlightedCommunityPersisted = useCallback((value: string | null) => {
-  //   setHighlightedCommunity(value);
-  //   persistState({ highlightedCommunity: value });
-  // }, [persistState]);
-
-  // const setExpandedRoomNamePersisted = useCallback((value: string | null) => {
-  //   setExpandedRoomName(value);
-  //   persistState({ expandedRoomName: value });
-  // }, [persistState]);
-
-  // Populate fullRoomData from API on mount/update
+  // Populate full room data from API on mount/update
   useMemo(() => {
     const newFullRoomData: Record<string, { id: string; name: string; tables: string[] }> = {};
     genieRooms.forEach((room: any) => {

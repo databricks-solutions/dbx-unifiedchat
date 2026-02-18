@@ -2,8 +2,8 @@ import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { useState, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import customInstance from '@/lib/axios-instance';
-import { useSaveSelection, useListCatalogsSuspense, useListSchemasSuspense, useListTablesSuspense } from '@/lib/api';
-import { selector } from '@/lib/selector';
+import { useSaveSelection } from '@/lib/api';
+import { loadState, saveState } from '@/lib/workflow-state';
 
 export const Route = createFileRoute('/_sidebar/catalog-browser')({
   component: CatalogBrowser,
@@ -156,8 +156,45 @@ function CatalogBrowser() {
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
   const [catalogSelectAllLoading, setCatalogSelectAllLoading] = useState(false);
   const [allCatalogTables, setAllCatalogTables] = useState<Map<string, Table[]>>(new Map());
+  const isLoadedRef = useRef(false);
   const navigate = useNavigate();
   const saveSelectionMutation = useSaveSelection();
+
+  // Load state on mount
+  useEffect(() => {
+    const savedState = loadState('catalog-browser');
+    if (savedState) {
+      setSelectedCatalog(savedState.selectedCatalog);
+      setSelectedSchema(savedState.selectedSchema);
+      setSelectedTables(new Set(savedState.selectedTables));
+      
+      // Convert object back to Map
+      const tableMap = new Map<string, Table[]>();
+      Object.entries(savedState.allCatalogTables).forEach(([key, tables]) => {
+        tableMap.set(key, tables);
+      });
+      setAllCatalogTables(tableMap);
+    }
+    isLoadedRef.current = true;
+  }, []);
+
+  // Save state on changes
+  useEffect(() => {
+    if (!isLoadedRef.current) return;
+
+    // Convert Map to Object for storage
+    const tableObj: Record<string, Table[]> = {};
+    allCatalogTables.forEach((tables, key) => {
+      tableObj[key] = tables;
+    });
+
+    saveState('catalog-browser', {
+      selectedCatalog,
+      selectedSchema,
+      selectedTables: Array.from(selectedTables),
+      allCatalogTables: tableObj,
+    });
+  }, [selectedCatalog, selectedSchema, selectedTables, allCatalogTables]);
 
   // Check if all tables in a specific schema are selected
   const isSchemaFullySelected = (catalogName: string, schemaName: string): boolean => {
@@ -273,6 +310,19 @@ function CatalogBrowser() {
     }
     setSelectedTables(newSelection);
   };
+
+  const hasUnsavedChanges = selectedTables.size > 0;
+
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [hasUnsavedChanges]);
 
   const handleSelectAllInSchema = async () => {
     if (!tables || tables.length === 0) return;

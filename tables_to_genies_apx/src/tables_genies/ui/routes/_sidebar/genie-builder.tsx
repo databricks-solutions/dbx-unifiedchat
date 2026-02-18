@@ -1,8 +1,9 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { Suspense, useState } from 'react';
+import { Suspense, useState, useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useGetGraphDataSuspense, useCreateGenieRoom, useListGenieRoomsSuspense, useDeleteGenieRoom, useUpdateGenieRoom } from '@/lib/api';
 import { selector } from '@/lib/selector';
+import { loadState, saveState } from '@/lib/workflow-state';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -41,6 +42,27 @@ function GenieBuilderView() {
   const [roomName, setRoomName] = useState('');
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [editingRoomName, setEditingRoomName] = useState('');
+  const isLoadedRef = useRef(false);
+
+  // Load state on mount
+  useEffect(() => {
+    const savedState = loadState('genie-builder');
+    if (savedState) {
+      setRoomName(savedState.roomName);
+      setSelectedTableFqns(savedState.selectedTableFqns);
+    }
+    isLoadedRef.current = true;
+  }, []);
+
+  // Save state on changes
+  useEffect(() => {
+    if (!isLoadedRef.current) return;
+
+    saveState('genie-builder', {
+      roomName,
+      selectedTableFqns,
+    });
+  }, [roomName, selectedTableFqns]);
   
   const createRoomMutation = useCreateGenieRoom({
     mutation: {
@@ -98,6 +120,19 @@ function GenieBuilderView() {
       data: { name: editingRoomName.trim() }
     });
   };
+
+  const hasUnsavedChanges = roomName.trim() !== '' || selectedTableFqns.length > 0;
+
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (hasUnsavedChanges) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [hasUnsavedChanges]);
 
   const startEditing = (room: any) => {
     setEditingRoomId(room.id);

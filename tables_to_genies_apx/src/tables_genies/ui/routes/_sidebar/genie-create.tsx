@@ -1,11 +1,12 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { Suspense, useState } from 'react';
+import { Suspense, useState, useEffect, useRef } from 'react';
 import { useListGenieRoomsSuspense, useCreateAllGenieRooms, useGetGenieCreationStatus, useListCreatedGenieRooms } from '@/lib/api';
 import { selector } from '@/lib/selector';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowLeft, ExternalLink } from 'lucide-react';
+import { loadState, saveState } from '@/lib/workflow-state';
 
 export const Route = createFileRoute('/_sidebar/genie-create')({
   component: () => (
@@ -21,8 +22,27 @@ export const Route = createFileRoute('/_sidebar/genie-create')({
 function GenieCreateView() {
   const { data: rooms } = useListGenieRoomsSuspense(selector());
   const [creationStarted, setCreationStarted] = useState(false);
+  const isLoadedRef = useRef(false);
   const createAllMutation = useCreateAllGenieRooms();
   const navigate = useNavigate();
+
+  // Load state on mount
+  useEffect(() => {
+    const savedState = loadState('genie-create');
+    if (savedState) {
+      setCreationStarted(savedState.creationStarted);
+    }
+    isLoadedRef.current = true;
+  }, []);
+
+  // Save state on changes
+  useEffect(() => {
+    if (!isLoadedRef.current) return;
+
+    saveState('genie-create', {
+      creationStarted,
+    });
+  }, [creationStarted]);
 
   const handleCreateAll = async () => {
     await createAllMutation.mutateAsync();
