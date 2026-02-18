@@ -1,7 +1,9 @@
 import { createFileRoute, useNavigate, Link, Outlet } from '@tanstack/react-router';
-import { Database, Sparkles, Share2, Boxes, Rocket, ChevronLeft, ChevronRight } from 'lucide-react';
-import { useState } from 'react';
+import { Database, Sparkles, Share2, Boxes, Rocket, ChevronLeft, ChevronRight, AlertTriangle, X } from 'lucide-react';
+import { useState, useCallback } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 import { clearAllWorkflowState } from '@/lib/workflow-state';
+import customInstance from '@/lib/axios-instance';
 
 export const Route = createFileRoute('/_sidebar')({
   component: SidebarLayout,
@@ -17,15 +19,24 @@ const navItems = [
 
 function SidebarLayout() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [resetting, setResetting] = useState(false);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
-  const handleReset = () => {
-    if (window.confirm('Are you sure you want to reset the entire workflow? This will clear all your selections and progress.')) {
-      clearAllWorkflowState();
-      navigate({ to: '/catalog-browser' });
-      window.location.reload(); // Force reload to clear all in-memory state
+  const handleReset = useCallback(async () => {
+    setResetting(true);
+    try {
+      await customInstance({ url: '/api/reset', method: 'POST' });
+    } catch (e) {
+      console.error('Failed to reset server state:', e);
     }
-  };
+    clearAllWorkflowState();
+    queryClient.clear();
+    setShowResetConfirm(false);
+    navigate({ to: '/catalog-browser' });
+    window.location.reload();
+  }, [queryClient, navigate]);
 
   return (
     <div className="flex h-screen bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-50">
@@ -73,7 +84,7 @@ function SidebarLayout() {
         {/* Sidebar Footer */}
         <div className="p-4 border-t border-slate-200 dark:border-slate-700">
           <button
-            onClick={handleReset}
+            onClick={() => setShowResetConfirm(true)}
             className={`flex items-center gap-3 w-full px-4 py-2 rounded-md text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors ${
               sidebarCollapsed ? 'justify-center' : ''
             }`}
@@ -91,6 +102,92 @@ function SidebarLayout() {
           <Outlet />
         </div>
       </main>
+
+      {/* Reset Confirmation Modal */}
+      {showResetConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          {/* Backdrop */}
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={() => !resetting && setShowResetConfirm(false)}
+          />
+          {/* Dialog */}
+          <div className="relative bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 w-full max-w-md mx-4 overflow-hidden">
+            {/* Header */}
+            <div className="flex items-start gap-4 p-6 pb-2">
+              <div className="flex-shrink-0 w-11 h-11 rounded-full bg-red-100 dark:bg-red-900/30 flex items-center justify-center">
+                <AlertTriangle className="w-6 h-6 text-red-600 dark:text-red-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
+                  Reset Entire Workflow?
+                </h3>
+              </div>
+              <button
+                onClick={() => setShowResetConfirm(false)}
+                disabled={resetting}
+                className="flex-shrink-0 p-1 rounded-md text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors disabled:opacity-50"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="px-6 pb-4">
+              <p className="text-sm text-slate-600 dark:text-slate-400 mb-4">
+                This will <span className="font-semibold text-red-600 dark:text-red-400">permanently clear all progress</span> and reset every page back to scratch:
+              </p>
+              <ul className="space-y-2 text-sm">
+                <li className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
+                  <Database size={14} className="text-slate-400 flex-shrink-0" />
+                  <span><strong>Browse Catalogs</strong> — all table selections cleared</span>
+                </li>
+                <li className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
+                  <Sparkles size={14} className="text-slate-400 flex-shrink-0" />
+                  <span><strong>Enrich Tables</strong> — enrichment job state cleared</span>
+                </li>
+                <li className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
+                  <Share2 size={14} className="text-slate-400 flex-shrink-0" />
+                  <span><strong>Explore Graph</strong> — graph data removed</span>
+                </li>
+                <li className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
+                  <Boxes size={14} className="text-slate-400 flex-shrink-0" />
+                  <span><strong>Build Rooms</strong> — all room definitions deleted</span>
+                </li>
+                <li className="flex items-center gap-2 text-slate-700 dark:text-slate-300">
+                  <Rocket size={14} className="text-slate-400 flex-shrink-0" />
+                  <span><strong>Create Rooms</strong> — creation progress cleared</span>
+                </li>
+              </ul>
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-end gap-3 px-6 py-4 bg-slate-50 dark:bg-slate-800/50 border-t border-slate-200 dark:border-slate-700">
+              <button
+                onClick={() => setShowResetConfirm(false)}
+                disabled={resetting}
+                className="px-4 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-700 transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleReset}
+                disabled={resetting}
+                className="px-4 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700 transition-colors disabled:opacity-70 flex items-center gap-2"
+              >
+                {resetting ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                    Resetting…
+                  </>
+                ) : (
+                  'Yes, Reset Everything'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

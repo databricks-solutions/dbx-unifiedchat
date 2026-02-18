@@ -3,7 +3,7 @@ import { Suspense, useState, useCallback, useMemo, useRef, useEffect } from 'rea
 import { useQueryClient } from '@tanstack/react-query';
 import { useBuildGraph, useGetGraphData, useGetGraphDataSuspense, useGetGraphBuildLogs, useCreateGenieRoom, useListGenieRoomsSuspense, useDeleteGenieRoom, useGenerateFromCommunities } from '@/lib/api';
 import { selector } from '@/lib/selector';
-import { loadState, saveState } from '@/lib/workflow-state';
+import { loadState, saveState, isStepCompleted, markStepCompleted } from '@/lib/workflow-state';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -65,6 +65,7 @@ function GraphExplorerContent() {
   const [graphBuilt, setGraphBuilt] = useState(loadGraphBuiltState());
   const buildGraphMutation = useBuildGraph();
   const navigate = useNavigate();
+  const enrichmentDone = isStepCompleted('enrichment-done');
 
   // Visualization state
   const [showStructuralEdges, setShowStructuralEdges] = useState(persistedState.showStructuralEdges ?? true);
@@ -122,6 +123,7 @@ function GraphExplorerContent() {
     await buildGraphMutation.mutateAsync();
     setGraphBuilt(true);
     localStorage.setItem('graph-explorer-built', 'true');
+    markStepCompleted('graph-built');
   };
 
   return (
@@ -135,10 +137,15 @@ function GraphExplorerContent() {
                 <Button 
                   variant="outline" 
                   onClick={handleBuildGraph} 
-                  disabled={buildGraphMutation.isPending}
+                  disabled={buildGraphMutation.isPending || !enrichmentDone}
                 >
                   {buildGraphMutation.isPending ? 'Building...' : 'Build Graph'}
                 </Button>
+                {!enrichmentDone && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    Complete step 2 (Enrich Tables) first to enable graph building.
+                  </p>
+                )}
 
             {buildGraphMutation.isPending && (
               <div className="mt-4 space-y-2">
@@ -180,7 +187,7 @@ function GraphExplorerContent() {
         <Button variant="outline" onClick={() => navigate({ to: '/enrichment', search: (prev: any) => prev })}>
           <ArrowLeft size={16} /> Back
         </Button>
-        {graphBuilt && (
+        {graphBuilt && isStepCompleted('graph-built') && (
           <Button onClick={() => navigate({ to: '/genie-builder' })}>
             Next: Build Rooms →
           </Button>
@@ -377,7 +384,11 @@ function GraphVisualization({ graphBuilt }: { graphBuilt: boolean }) {
       setHighlightedCommunity(savedState.highlightedCommunity);
       setExpandedRoomName(savedState.expandedRoomName);
     }
-    isLoadedRef.current = true;
+    // Set isLoadedRef after a short delay to ensure state updates have processed
+    const timer = setTimeout(() => {
+      isLoadedRef.current = true;
+    }, 100);
+    return () => clearTimeout(timer);
   }, []);
 
   // Persist state changes to localStorage
@@ -654,13 +665,12 @@ function GraphVisualization({ graphBuilt }: { graphBuilt: boolean }) {
             return newData;
           });
           queryClient.invalidateQueries({ queryKey: [`/api/genie/rooms`] });
-          // Force immediate refetch
           queryClient.refetchQueries({ queryKey: [`/api/genie/rooms`] });
+          markStepCompleted('rooms-defined');
           setNewRoomName('');
           setSelectedRoomId('');
           setShowSelectionPanel(false);
           setSelectedNodes([]);
-          // Keep expansion state for better UX
         }
       });
     } else if (selectedRoomId && selectedRoomId !== 'new') {
@@ -688,7 +698,6 @@ function GraphVisualization({ graphBuilt }: { graphBuilt: boolean }) {
           }
         }, {
           onSuccess: (updatedRoom) => {
-            // Store full room data locally
             setFullRoomData((prev: any) => {
               const newData = { ...prev };
               newData[updatedRoom.id] = { id: updatedRoom.id, name: updatedRoom.name, tables: updatedRoom.tables };
@@ -696,12 +705,11 @@ function GraphVisualization({ graphBuilt }: { graphBuilt: boolean }) {
               return newData;
             });
             queryClient.invalidateQueries({ queryKey: [`/api/genie/rooms`] });
-            // Force immediate refetch
             queryClient.refetchQueries({ queryKey: [`/api/genie/rooms`] });
+            markStepCompleted('rooms-defined');
             setSelectedRoomId('');
             setShowSelectionPanel(false);
             setSelectedNodes([]);
-            // Keep expansion state for better UX
           }
         });
       }
@@ -762,6 +770,7 @@ function GraphVisualization({ graphBuilt }: { graphBuilt: boolean }) {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: [`/api/genie/rooms`] });
         queryClient.refetchQueries({ queryKey: [`/api/genie/rooms`] });
+        markStepCompleted('rooms-defined');
       }
     });
   }, [generateFromCommunitiesMutation, queryClient]);

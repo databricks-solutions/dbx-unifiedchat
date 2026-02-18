@@ -3,35 +3,43 @@ import { Suspense, useState, useEffect, useRef } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useGetGraphDataSuspense, useCreateGenieRoom, useListGenieRoomsSuspense, useDeleteGenieRoom, useUpdateGenieRoom } from '@/lib/api';
 import { selector } from '@/lib/selector';
-import { loadState, saveState } from '@/lib/workflow-state';
+import { loadState, saveState, isStepCompleted, markStepCompleted } from '@/lib/workflow-state';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowLeft, X, Database, Sparkles, Plus, Trash2, CheckCircle2, Edit2, Check } from 'lucide-react';
 
 export const Route = createFileRoute('/_sidebar/genie-builder')({
-  component: () => (
-    <div className="relative">
-      {/* Modern Header with Gradient */}
-      <div className="mb-8">
-        <div className="flex items-center gap-3 mb-2">
-          <div className="p-2 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 text-white shadow-lg">
-            <Sparkles className="w-6 h-6" />
+  component: () => {
+    const graphReady = isStepCompleted('graph-built');
+
+    return (
+      <div className="relative">
+        {/* Modern Header with Gradient */}
+        <div className="mb-8">
+          <div className="flex items-center gap-3 mb-2">
+            <div className="p-2 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 text-white shadow-lg">
+              <Sparkles className="w-6 h-6" />
+            </div>
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+              Build Genie Rooms
+            </h1>
           </div>
-          <h1 className="text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
-            Build Genie Rooms
-          </h1>
+          <p className="text-slate-600 dark:text-slate-400 ml-14">
+            Group related tables together to create focused data exploration spaces
+          </p>
         </div>
-        <p className="text-slate-600 dark:text-slate-400 ml-14">
-          Group related tables together to create focused data exploration spaces
-        </p>
+
+        {graphReady ? (
+          <Suspense fallback={<BuilderSkeleton />}>
+            <GenieBuilderView />
+          </Suspense>
+        ) : (
+          <StepNotReady />
+        )}
       </div>
-      
-      <Suspense fallback={<BuilderSkeleton />}>
-        <GenieBuilderView />
-      </Suspense>
-    </div>
-  ),
+    );
+  },
 });
 
 function GenieBuilderView() {
@@ -43,6 +51,7 @@ function GenieBuilderView() {
   const [editingRoomId, setEditingRoomId] = useState<string | null>(null);
   const [editingRoomName, setEditingRoomName] = useState('');
   const isLoadedRef = useRef(false);
+  const graphBuilt = isStepCompleted('graph-built');
 
   // Load state on mount
   useEffect(() => {
@@ -51,7 +60,11 @@ function GenieBuilderView() {
       setRoomName(savedState.roomName);
       setSelectedTableFqns(savedState.selectedTableFqns);
     }
-    isLoadedRef.current = true;
+    // Set isLoadedRef after a short delay to ensure state updates have processed
+    const timer = setTimeout(() => {
+      isLoadedRef.current = true;
+    }, 100);
+    return () => clearTimeout(timer);
   }, []);
 
   // Save state on changes
@@ -103,6 +116,7 @@ function GenieBuilderView() {
       }
     });
 
+    markStepCompleted('rooms-defined');
     setRoomName('');
     setSelectedTableFqns([]);
   };
@@ -215,7 +229,7 @@ function GenieBuilderView() {
             {/* Add Room Button */}
             <Button
               onClick={handleAddRoom}
-              disabled={!roomName || selectedTableFqns.length === 0 || createRoomMutation.isPending}
+              disabled={!roomName || selectedTableFqns.length === 0 || createRoomMutation.isPending || !graphBuilt}
               className="w-full bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700
                        text-white font-semibold py-6 rounded-lg shadow-md hover:shadow-lg
                        transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed
@@ -224,6 +238,11 @@ function GenieBuilderView() {
               <Plus className="w-5 h-5 mr-2" />
               {createRoomMutation.isPending ? 'Adding Room...' : 'Add Room'}
             </Button>
+            {!graphBuilt && (
+              <p className="text-xs text-amber-600 dark:text-amber-400 text-center">
+                Complete step 3 (Explore Graph) first to enable room building.
+              </p>
+            )}
           </CardContent>
         </Card>
 
@@ -354,7 +373,7 @@ function GenieBuilderView() {
         </Button>
         <Button 
           onClick={() => navigate({ to: '/genie-create' })} 
-          disabled={rooms.length === 0}
+          disabled={rooms.length === 0 || !isStepCompleted('rooms-defined')}
           className="px-6 py-5 font-semibold bg-gradient-to-r from-green-600 to-emerald-600 
                    hover:from-green-700 hover:to-emerald-700 text-white
                    disabled:opacity-50 disabled:cursor-not-allowed shadow-md hover:shadow-lg
@@ -364,6 +383,33 @@ function GenieBuilderView() {
           <ArrowLeft size={18} className="ml-2 rotate-180" />
         </Button>
       </div>
+    </div>
+  );
+}
+
+function StepNotReady() {
+  const navigate = useNavigate();
+  return (
+    <div className="space-y-6">
+      <Card className="border-amber-200 dark:border-amber-800">
+        <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+          <div className="w-16 h-16 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center mb-4">
+            <Database className="w-8 h-8 text-amber-500" />
+          </div>
+          <p className="text-lg font-semibold text-slate-700 dark:text-slate-300 mb-2">Graph Not Built Yet</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400 max-w-md">
+            Complete the previous steps first: browse catalogs, enrich tables, and build the graph before creating Genie rooms.
+          </p>
+          <Button
+            variant="outline"
+            className="mt-6"
+            onClick={() => navigate({ to: '/graph-explorer' })}
+          >
+            <ArrowLeft size={16} className="mr-2" />
+            Go to Explore Graph
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   );
 }

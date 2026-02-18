@@ -1,9 +1,10 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
+import { Database, RotateCw } from 'lucide-react';
 import { useState, useEffect, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import customInstance from '@/lib/axios-instance';
 import { useSaveSelection } from '@/lib/api';
-import { loadState, saveState } from '@/lib/workflow-state';
+import { loadState, saveState, markStepCompleted } from '@/lib/workflow-state';
 
 export const Route = createFileRoute('/_sidebar/catalog-browser')({
   component: CatalogBrowser,
@@ -170,12 +171,16 @@ function CatalogBrowser() {
       
       // Convert object back to Map
       const tableMap = new Map<string, Table[]>();
-      Object.entries(savedState.allCatalogTables).forEach(([key, tables]) => {
+      Object.entries(savedState.allCatalogTables || {}).forEach(([key, tables]) => {
         tableMap.set(key, tables);
       });
       setAllCatalogTables(tableMap);
     }
-    isLoadedRef.current = true;
+    // Set isLoadedRef after a short delay to ensure state updates have processed
+    const timer = setTimeout(() => {
+      isLoadedRef.current = true;
+    }, 100);
+    return () => clearTimeout(timer);
   }, []);
 
   // Save state on changes
@@ -252,11 +257,12 @@ function CatalogBrowser() {
   };
 
   // Load catalogs - always
-  const { data: catalogs, isLoading: catalogsLoading, isError: catalogsError, error: catalogsErrorMsg } = useQuery({
+  const { data: catalogs, isLoading: catalogsLoading, isError: catalogsError, error: catalogsErrorMsg, refetch: refetchCatalogs, isRefetching: catalogsRefetching } = useQuery({
     queryKey: ['listCatalogs'],
     queryFn: async () => {
       const response = await customInstance<Catalog[]>({ url: '/api/uc/catalogs', method: 'GET' });
-      return response;
+      // Sort catalogs alphabetically by name
+      return response.sort((a, b) => a.name.localeCompare(b.name));
     },
   });
 
@@ -268,7 +274,8 @@ function CatalogBrowser() {
         url: `/api/uc/catalogs/${selectedCatalog}/schemas`, 
         method: 'GET' 
       });
-      return response;
+      // Sort schemas alphabetically by name
+      return response.sort((a, b) => a.name.localeCompare(b.name));
     },
     enabled: !!selectedCatalog,
   });
@@ -281,11 +288,13 @@ function CatalogBrowser() {
         url: `/api/uc/catalogs/${selectedCatalog}/schemas/${selectedSchema}/tables`, 
         method: 'GET' 
       });
+      // Sort tables alphabetically by name
+      const sortedResponse = response.sort((a, b) => a.name.localeCompare(b.name));
       // Cache the tables
       if (selectedCatalog && selectedSchema) {
-        setAllCatalogTables(prev => new Map(prev).set(`${selectedCatalog}.${selectedSchema}`, response));
+        setAllCatalogTables(prev => new Map(prev).set(`${selectedCatalog}.${selectedSchema}`, sortedResponse));
       }
-      return response;
+      return sortedResponse;
     },
     enabled: !!selectedCatalog && !!selectedSchema,
   });
@@ -462,7 +471,12 @@ function CatalogBrowser() {
     await saveSelectionMutation.mutateAsync({
       data: { table_fqns: Array.from(selectedTables) }
     });
+    markStepCompleted('tables-selected');
     navigate({ to: '/enrichment' });
+  };
+
+  const handleRefresh = () => {
+    refetchCatalogs();
   };
 
   if (catalogsLoading) {
@@ -493,7 +507,18 @@ function CatalogBrowser() {
 
   return (
     <div className="p-8">
-      <h1 className="text-3xl font-bold mb-6">Browse Catalogs</h1>
+      <div className="flex items-center justify-between mb-6">
+        <h1 className="text-3xl font-bold">Browse Catalogs</h1>
+        <button
+          onClick={handleRefresh}
+          disabled={catalogsRefetching}
+          className="flex items-center gap-2 px-4 py-2 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 rounded-md hover:bg-slate-200 dark:hover:bg-slate-700 transition-colors disabled:opacity-50"
+          title="Refresh catalogs from Databricks"
+        >
+          <RotateCw size={16} className={catalogsRefetching ? 'animate-spin' : ''} />
+          <span className="text-sm font-medium">{catalogsRefetching ? 'Refreshing...' : 'Refresh'}</span>
+        </button>
+      </div>
 
       {/* 3-Panel Layout - Dynamic column spans based on selection */}
       <div className="grid grid-cols-12 gap-4 h-[calc(100vh-250px)]">

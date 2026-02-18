@@ -9,7 +9,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ArrowLeft, ExternalLink } from 'lucide-react';
-import { loadState, saveState } from '@/lib/workflow-state';
+import { loadState, saveState, isStepCompleted, markStepCompleted } from '@/lib/workflow-state';
 
 export const Route = createFileRoute('/_sidebar/enrichment')({
   validateSearch: (search: Record<string, unknown>) => {
@@ -40,6 +40,7 @@ function EnrichmentView({ initialJobId }: { initialJobId?: number }) {
   const isLoadedRef = useRef(false);
   const runEnrichmentMutation = useRunEnrichment();
   const navigate = useNavigate();
+  const tablesSelected = isStepCompleted('tables-selected');
 
   // Load state on mount
   useEffect(() => {
@@ -53,7 +54,11 @@ function EnrichmentView({ initialJobId }: { initialJobId?: number }) {
       setChunksTable(savedState.chunksTable);
       setWriteMode(savedState.writeMode);
     }
-    isLoadedRef.current = true;
+    // Set isLoadedRef after a short delay to ensure state updates have processed
+    const timer = setTimeout(() => {
+      isLoadedRef.current = true;
+    }, 100);
+    return () => clearTimeout(timer);
   }, [initialJobId]);
 
   // Save state on changes
@@ -153,9 +158,14 @@ function EnrichmentView({ initialJobId }: { initialJobId?: number }) {
                 </Select>
               </div>
 
-              <Button onClick={handleRunEnrichment} disabled={runEnrichmentMutation.isPending}>
+              <Button onClick={handleRunEnrichment} disabled={runEnrichmentMutation.isPending || !tablesSelected}>
                 {runEnrichmentMutation.isPending ? 'Starting...' : 'Run Enrichment'}
               </Button>
+              {!tablesSelected && (
+                <p className="text-xs text-amber-600 dark:text-amber-400">
+                  Complete step 1 (Browse Catalogs) first to enable enrichment.
+                </p>
+              )}
             </div>
           )}
         </CardContent>
@@ -176,7 +186,7 @@ function EnrichmentView({ initialJobId }: { initialJobId?: number }) {
         <Button variant="outline" onClick={() => navigate({ to: '/catalog-browser' })}>
           <ArrowLeft size={16} /> Back
         </Button>
-        {jobId && (
+        {jobId && isStepCompleted('enrichment-done') && (
           <Button onClick={() => navigate({ to: '/graph-explorer' })}>
             Next: Explore Graph →
           </Button>
@@ -209,6 +219,12 @@ function EnrichmentProgress({
       }
     }
   });
+
+  useEffect(() => {
+    if (status.status === 'completed') {
+      markStepCompleted('enrichment-done');
+    }
+  }, [status.status]);
 
   return (
     <Card>

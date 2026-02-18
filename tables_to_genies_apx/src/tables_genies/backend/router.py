@@ -104,6 +104,30 @@ _genie_creation_status: Optional[GenieCreationStatusOut] = None
 api = APIRouter(prefix="/api")
 
 # ============================================================================
+# WORKFLOW RESET
+# ============================================================================
+
+@api.post("/reset", operation_id="resetWorkflow")
+async def reset_workflow():
+    """Reset all server-side workflow state."""
+    global _selection, _graph_data, _graph_build_logs, _genie_rooms, _genie_creation_status
+    _selection = TableSelectionOut(table_fqns=[], count=0)
+    _graph_data = None
+    _graph_build_logs = []
+    _genie_rooms = []
+    _genie_creation_status = None
+
+    # Remove cached graph data from disk
+    if os.path.exists(GRAPH_DATA_FILE):
+        try:
+            os.remove(GRAPH_DATA_FILE)
+        except Exception as e:
+            logger.warning(f"Failed to remove cached graph data: {e}")
+
+    return {"message": "Workflow state reset"}
+
+
+# ============================================================================
 # UC CATALOG BROWSER ROUTES
 # ============================================================================
 

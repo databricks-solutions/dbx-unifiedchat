@@ -5,18 +5,26 @@ import { selector } from '@/lib/selector';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
-import { ArrowLeft, ExternalLink } from 'lucide-react';
-import { loadState, saveState } from '@/lib/workflow-state';
+import { ArrowLeft, ExternalLink, Boxes } from 'lucide-react';
+import { loadState, saveState, isStepCompleted } from '@/lib/workflow-state';
 
 export const Route = createFileRoute('/_sidebar/genie-create')({
-  component: () => (
-    <div>
-      <h1 className="text-3xl font-bold mb-6">Create Genie Rooms</h1>
-      <Suspense fallback={<CreateSkeleton />}>
-        <GenieCreateView />
-      </Suspense>
-    </div>
-  ),
+  component: () => {
+    const roomsReady = isStepCompleted('rooms-defined');
+
+    return (
+      <div>
+        <h1 className="text-3xl font-bold mb-6">Create Genie Rooms</h1>
+        {roomsReady ? (
+          <Suspense fallback={<CreateSkeleton />}>
+            <GenieCreateView />
+          </Suspense>
+        ) : (
+          <CreateStepNotReady />
+        )}
+      </div>
+    );
+  },
 });
 
 function GenieCreateView() {
@@ -25,6 +33,7 @@ function GenieCreateView() {
   const isLoadedRef = useRef(false);
   const createAllMutation = useCreateAllGenieRooms();
   const navigate = useNavigate();
+  const roomsDefined = isStepCompleted('rooms-defined');
 
   // Load state on mount
   useEffect(() => {
@@ -32,7 +41,11 @@ function GenieCreateView() {
     if (savedState) {
       setCreationStarted(savedState.creationStarted);
     }
-    isLoadedRef.current = true;
+    // Set isLoadedRef after a short delay to ensure state updates have processed
+    const timer = setTimeout(() => {
+      isLoadedRef.current = true;
+    }, 100);
+    return () => clearTimeout(timer);
   }, []);
 
   // Save state on changes
@@ -69,9 +82,16 @@ function GenieCreateView() {
             </div>
 
             {!creationStarted && (
-              <Button onClick={handleCreateAll} disabled={createAllMutation.isPending}>
-                {createAllMutation.isPending ? 'Creating...' : 'Create All Rooms'}
-              </Button>
+              <div className="space-y-2">
+                <Button onClick={handleCreateAll} disabled={createAllMutation.isPending || !roomsDefined}>
+                  {createAllMutation.isPending ? 'Creating...' : 'Create All Rooms'}
+                </Button>
+                {!roomsDefined && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    Complete step 4 (Build Rooms) first to enable room creation.
+                  </p>
+                )}
+              </div>
             )}
           </div>
         </CardContent>
@@ -197,6 +217,33 @@ function CreatedRooms() {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+function CreateStepNotReady() {
+  const navigate = useNavigate();
+  return (
+    <div className="space-y-6">
+      <Card className="border-amber-200 dark:border-amber-800">
+        <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+          <div className="w-16 h-16 rounded-full bg-amber-100 dark:bg-amber-900/30 flex items-center justify-center mb-4">
+            <Boxes className="w-8 h-8 text-amber-500" />
+          </div>
+          <p className="text-lg font-semibold text-slate-700 dark:text-slate-300 mb-2">No Rooms Defined Yet</p>
+          <p className="text-sm text-slate-500 dark:text-slate-400 max-w-md">
+            Complete the previous steps first: browse catalogs, enrich tables, build the graph, and define rooms before creating Genie spaces.
+          </p>
+          <Button
+            variant="outline"
+            className="mt-6"
+            onClick={() => navigate({ to: '/genie-builder' })}
+          >
+            <ArrowLeft size={16} className="mr-2" />
+            Go to Build Rooms
+          </Button>
+        </CardContent>
+      </Card>
+    </div>
   );
 }
 
