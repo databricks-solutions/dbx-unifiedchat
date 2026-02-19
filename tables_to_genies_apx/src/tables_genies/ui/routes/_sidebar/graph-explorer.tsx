@@ -63,6 +63,7 @@ function GraphExplorerContent() {
 
   const persistedState = loadPersistedState();
   const [graphBuilt, setGraphBuilt] = useState(loadGraphBuiltState());
+  const [allowExistingMetadata, setAllowExistingMetadata] = useState(false);
   const buildGraphMutation = useBuildGraph();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -147,14 +148,29 @@ function GraphExplorerContent() {
                 <Button 
                   variant="outline" 
                   onClick={handleBuildGraph} 
-                  disabled={buildGraphMutation.isPending || !enrichmentDone}
+                  disabled={buildGraphMutation.isPending || (!enrichmentDone && !allowExistingMetadata)}
                 >
                   {buildGraphMutation.isPending ? 'Building...' : 'Build Graph'}
                 </Button>
+                
                 {!enrichmentDone && (
-                  <p className="text-xs text-amber-600 dark:text-amber-400">
-                    Complete step 2 (Enrich Tables) first to enable graph building.
-                  </p>
+                  <div className="space-y-3">
+                    <p className="text-xs text-amber-600 dark:text-amber-400">
+                      Complete step 2 (Enrich Tables) first to enable graph building.
+                    </p>
+                    <div className="flex items-center gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50">
+                      <input
+                        type="checkbox"
+                        id="allow-existing-metadata"
+                        checked={allowExistingMetadata}
+                        onChange={(e) => setAllowExistingMetadata(e.target.checked)}
+                        className="w-4 h-4 rounded border-slate-300 dark:border-slate-600 text-blue-600 focus:ring-2 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer"
+                      />
+                      <label htmlFor="allow-existing-metadata" className="text-sm text-slate-700 dark:text-slate-300 cursor-pointer flex-1">
+                        <span className="font-medium">Alternative:</span> Build from existing enriched metadata table content
+                      </label>
+                    </div>
+                  </div>
                 )}
 
             {buildGraphMutation.isPending && (
