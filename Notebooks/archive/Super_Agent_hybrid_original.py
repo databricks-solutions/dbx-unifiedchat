@@ -14,7 +14,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1,Configuration
+# DBTITLE 1,Local dev Configuration
 """
 Configuration loaded from config.py and .env file.
 To update configuration, edit .env file instead of this notebook.
@@ -92,6 +92,68 @@ if not SQL_WAREHOUSE_ID:
 
 # Print configuration summary
 config.print_summary()
+
+# COMMAND ----------
+
+# DBTITLE 1,databricks notebook configuration
+
+from mlflow.models import ModelConfig
+
+# Development configuration (used for local testing)
+# When deployed, this will be overridden by the config passed to log_model()
+development_config = {
+    # Unity Catalog Configuration
+    "catalog_name": "serverless_dbx_unifiedchat_catalog",
+    "schema_name": "multi_agent_genie",
+    
+    # LLM Endpoint Configuration - Diversified by Agent Role
+    "llm_endpoint": "databricks-claude-sonnet-4-5",  # Default/fallback
+    "llm_endpoint_clarification": "databricks-claude-haiku-4-5",
+    "llm_endpoint_planning": "databricks-claude-sonnet-4-5",
+    "llm_endpoint_sql_synthesis_table": "databricks-claude-haiku-4-5",
+    "llm_endpoint_sql_synthesis_genie": "databricks-claude-sonnet-4-5",
+    "llm_endpoint_execution": "databricks-claude-haiku-4-5",
+    "llm_endpoint_summarize": "databricks-claude-haiku-4-5",
+    
+    # Vector Search Configuration
+    "vs_endpoint_name": "genie_multi_agent_vs",
+    "embedding_model": "databricks-gte-large-en",
+    
+    # Lakebase Configuration (for State Management)
+    "lakebase_instance_name": "multi-agent-genie-system-state-db",
+    "lakebase_embedding_endpoint": "databricks-gte-large-en",
+    "lakebase_embedding_dims": 1024,
+    
+    # Genie Space IDs
+    "genie_space_ids": [
+        "01f106e1239d14b28d6ab46f9c15e540",
+        "01f106e121e7173d8cf84bb80e842d6c",
+        "01f106e120b718e084598e92dcf14d4e"
+    ],
+    
+    # SQL Warehouse ID
+    "sql_warehouse_id": "a4ed2ccbda385db9",
+    
+    # Table Metadata Enrichment
+    "sample_size": 20,
+    "max_unique_values": 20,
+}
+
+# Initialize ModelConfig
+# For local development: Uses development_config above
+# For Model Serving: Uses config passed during mlflow.pyfunc.log_model(model_config=...)
+model_config = ModelConfig(development_config=development_config)
+
+
+# Extract configuration values
+CATALOG = model_config.get("catalog_name")
+SCHEMA = model_config.get("schema_name")
+TABLE_NAME = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks"
+
+# Lakebase configuration for state management
+LAKEBASE_INSTANCE_NAME = model_config.get("lakebase_instance_name")
+EMBEDDING_ENDPOINT = model_config.get("lakebase_embedding_endpoint")
+EMBEDDING_DIMS = model_config.get("lakebase_embedding_dims")
 
 # COMMAND ----------
 
@@ -223,224 +285,6 @@ if instance_exists:
 
 # COMMAND ----------
 
-
-
-# COMMAND ----------
-
-# DBTITLE 1,ONE-TIME SETUP: Register Unity Catalog Functions for Metadata Querying
-"""
-Register UC functions that will be used as tools by the SQL Synthesis Agent.
-
-These UC functions query different levels of the enriched genie docs chunks table:
-1. get_space_summary: High-level space information
-2. get_table_overview: Table-level metadata
-3. get_column_detail: Column-level metadata
-4. get_space_details: Complete metadata (last resort - token intensive)
-
-All functions use LANGUAGE SQL for better performance and compatibility.
-"""
-
-print("="*80)
-print("REGISTERING UNITY CATALOG FUNCTIONS")
-print("="*80)
-print(f"Target table: {TABLE_NAME}")
-print(f"Functions will be created in: {CATALOG}.{SCHEMA}")
-print("="*80)
-
-# Optional: Drop existing functions if you need to recreate them
-# Uncomment these lines if you need to drop and recreate the functions
-spark.sql(f'DROP FUNCTION IF EXISTS {CATALOG}.{SCHEMA}.get_space_summary')
-spark.sql(f'DROP FUNCTION IF EXISTS {CATALOG}.{SCHEMA}.get_table_overview')
-spark.sql(f'DROP FUNCTION IF EXISTS {CATALOG}.{SCHEMA}.get_column_detail')
-spark.sql(f'DROP FUNCTION IF EXISTS {CATALOG}.{SCHEMA}.get_space_details')
-
-# UC Function 1: get_space_summary (SQL scalar function)
-spark.sql(f"""
-CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.get_space_summary(
-    space_ids_json STRING DEFAULT 'null' COMMENT 'JSON array of space IDs to query, or "null" to retrieve all spaces. Example: ["space_1", "space_2"] or "null"'
-)
-RETURNS STRING
-LANGUAGE SQL
-COMMENT 'Get high-level summary of Genie spaces. Returns JSON with space summaries including chunk_id, chunk_type, space_title, and content.'
-RETURN
-    SELECT COALESCE(
-        to_json(
-            map_from_entries(
-                collect_list(
-                    struct(
-                        space_id,
-                        named_struct(
-                            'chunk_id', chunk_id,
-                            'chunk_type', chunk_type,
-                            'space_title', space_title,
-                            'content', searchable_content
-                        )
-                    )
-                )
-            )
-        ),
-        '{{}}'
-    ) as result
-    FROM {TABLE_NAME}
-    WHERE chunk_type = 'space_summary'
-    AND (
-        space_ids_json IS NULL 
-        OR TRIM(LOWER(space_ids_json)) IN ('null', 'none', '')
-        OR array_contains(from_json(space_ids_json, 'array<string>'), space_id)
-    )
-""")
-print("✓ Registered: get_space_summary")
-
-# UC Function 2: get_table_overview (SQL scalar function with grouping)
-spark.sql(f"""
-CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.get_table_overview(
-    space_ids_json STRING DEFAULT 'null' COMMENT 'JSON array of space IDs to query (required, prefer single space). Example: ["space_1"]',
-    table_names_json STRING DEFAULT 'null' COMMENT 'JSON array of table names to filter, or "null" for all tables in the specified spaces. Example: ["table1", "table2"] or "null"'
-)
-RETURNS STRING
-LANGUAGE SQL
-COMMENT 'Get table-level metadata for specific Genie spaces. Returns JSON with table metadata including chunk_id, chunk_type, table_name, and content grouped by space.'
-RETURN
-    SELECT COALESCE(
-        to_json(
-            map_from_entries(
-                collect_list(
-                    struct(
-                        space_id,
-                        named_struct(
-                            'space_title', space_title,
-                            'tables', tables
-                        )
-                    )
-                )
-            )
-        ),
-        '{{}}'
-    ) as result
-    FROM (
-        SELECT 
-            space_id,
-            first(space_title) as space_title,
-            collect_list(
-                named_struct(
-                    'chunk_id', chunk_id,
-                    'chunk_type', chunk_type,
-                    'table_name', table_name,
-                    'content', searchable_content
-                )
-            ) as tables
-        FROM {TABLE_NAME}
-        WHERE chunk_type = 'table_overview'
-        AND array_contains(from_json(space_ids_json, 'array<string>'), space_id)
-        AND (
-            table_names_json IS NULL 
-            OR TRIM(LOWER(table_names_json)) IN ('null', 'none', '')
-            OR array_contains(from_json(table_names_json, 'array<string>'), table_name)
-        )
-        GROUP BY space_id
-    )
-""")
-print("✓ Registered: get_table_overview")
-
-# UC Function 3: get_column_detail (SQL scalar function with grouping)
-spark.sql(f"""
-CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.get_column_detail(
-    space_ids_json STRING DEFAULT 'null' COMMENT 'JSON array of space IDs to query (required, prefer single space). Example: ["space_1"]',
-    table_names_json STRING DEFAULT 'null' COMMENT 'JSON array of table names to filter (required, prefer single table). Example: ["table1"]',
-    column_names_json STRING DEFAULT 'null' COMMENT 'JSON array of column names to filter, or "null" for all columns in the specified tables. Example: ["col1", "col2"] or "null"'
-)
-RETURNS STRING
-LANGUAGE SQL
-COMMENT 'Get column-level metadata for specific Genie spaces. Returns JSON with column metadata including chunk_id, chunk_type, table_name, column_name, and content grouped by space.'
-RETURN
-    SELECT COALESCE(
-        to_json(
-            map_from_entries(
-                collect_list(
-                    struct(
-                        space_id,
-                        named_struct(
-                            'space_title', space_title,
-                            'columns', columns
-                        )
-                    )
-                )
-            )
-        ),
-        '{{}}'
-    ) as result
-    FROM (
-        SELECT 
-            space_id,
-            first(space_title) as space_title,
-            collect_list(
-                named_struct(
-                    'chunk_id', chunk_id,
-                    'chunk_type', chunk_type,
-                    'table_name', table_name,
-                    'column_name', column_name,
-                    'content', searchable_content
-                )
-            ) as columns
-        FROM {TABLE_NAME}
-        WHERE chunk_type = 'column_detail'
-        AND array_contains(from_json(space_ids_json, 'array<string>'), space_id)
-        AND array_contains(from_json(table_names_json, 'array<string>'), table_name)
-        AND (
-            column_names_json IS NULL 
-            OR TRIM(LOWER(column_names_json)) IN ('null', 'none', '')
-            OR array_contains(from_json(column_names_json, 'array<string>'), column_name)
-        )
-        GROUP BY space_id
-    )
-""")
-print("✓ Registered: get_column_detail")
-
-# UC Function 4: get_space_details (SQL scalar function - last resort)
-spark.sql(f"""
-CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.get_space_details(
-    space_ids_json STRING DEFAULT 'null' COMMENT 'JSON array of space IDs to query (required). Example: ["space_1", "space_2"]. WARNING: Returns large metadata - use as LAST RESORT.'
-)
-RETURNS STRING
-LANGUAGE SQL
-COMMENT 'Get complete metadata for specific Genie spaces - use as LAST RESORT (token intensive). Returns JSON with complete space metadata including chunk_id, chunk_type, space_title, and all available metadata content.'
-RETURN
-    SELECT COALESCE(
-        to_json(
-            map_from_entries(
-                collect_list(
-                    struct(
-                        space_id,
-                        named_struct(
-                            'chunk_id', chunk_id,
-                            'chunk_type', chunk_type,
-                            'space_title', space_title,
-                            'complete_metadata', searchable_content
-                        )
-                    )
-                )
-            )
-        ),
-        '{{}}'
-    ) as result
-    FROM {TABLE_NAME}
-    WHERE chunk_type = 'space_details'
-    AND array_contains(from_json(space_ids_json, 'array<string>'), space_id)
-""")
-print("✓ Registered: get_space_details")
-
-print("\n" + "="*80)
-print("✅ ALL 4 UC FUNCTIONS REGISTERED SUCCESSFULLY!")
-print("="*80)
-print("Functions available for SQL Synthesis Agent:")
-print(f"  1. {CATALOG}.{SCHEMA}.get_space_summary")
-print(f"  2. {CATALOG}.{SCHEMA}.get_table_overview")
-print(f"  3. {CATALOG}.{SCHEMA}.get_column_detail")
-print(f"  4. {CATALOG}.{SCHEMA}.get_space_details")
-print("="*80)
-
-# COMMAND ----------
-
 # DBTITLE 1,ONE-TIME SETUP: Register Unity Catalog Functions for Metadata Querying
 """
 Register UC functions that will be used as tools by the SQL Synthesis Agent.
@@ -488,5220 +332,5220 @@ result = register_uc_functions(
 # COMMAND ----------
 
 # DBTITLE 1,📝💾%%writefile agent.py
-#%%writefile agent.py
-"""
-Super Agent (Hybrid Architecture) - Multi-Agent System Orchestrator
-
-This notebook implements a hybrid architecture combining:
-- OOP agent classes (from agent.py) for modularity and reusability
-- Explicit state management (from Super_Agent.py) for observability and debugging
-
-Architecture Benefits:
-1. ✅ OOP modularity for agent logic - Easy to test and maintain
-2. ✅ Explicit state for observability - Clear debugging and monitoring
-3. ✅ Best practices from both approaches
-4. ✅ Production-ready with rapid development capabilities
-
-Components:
-1. Clarification Agent - Validates query clarity (OOP class)
-2. Planning Agent - Creates execution plan and identifies relevant spaces (OOP class)
-3. SQL Synthesis Agent (Table Route) - Generates SQL using UC tools (OOP class)
-4. SQL Synthesis Agent (Genie Route) - Generates SQL using Genie agents (OOP class)
-5. SQL Execution Agent - Executes SQL and returns results (OOP class)
-
-The Super Agent uses LangGraph with explicit state tracking for orchestration.
-"""
-
-import json
-from typing import Dict, List, Optional, Any, Annotated, Literal, Generator
-from typing_extensions import TypedDict
-import operator
-from uuid import uuid4
-import re
-from functools import partial
-from databricks_langchain import (
-    ChatDatabricks,
-    VectorSearchRetrieverTool,
-    DatabricksFunctionClient,
-    UCFunctionToolkit,
-    set_uc_function_client,
-    CheckpointSaver,  # For short-term memory (distributed serving)
-    DatabricksStore,  # For long-term memory (user preferences)
-)
-
-# Import conversation management modules
-import sys
-from pathlib import Path
-# NOTE: All TypedDicts and logic are inline (self-contained)
-# This simplifies the agent and makes it self-contained
-from databricks_langchain.genie import GenieAgent
-from langchain.agents import create_agent
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, AIMessageChunk
-from langchain_core.runnables import Runnable, RunnableLambda, RunnableParallel, RunnableConfig
-from langchain_core.tools import tool, StructuredTool
-import mlflow
-import logging
-from pydantic import BaseModel, Field
-import json
-
-
-# LangGraph imports
-from langgraph.graph import StateGraph, END
-from langgraph.graph.state import CompiledStateGraph
-
-# MLflow ResponsesAgent imports
-from mlflow.pyfunc import ResponsesAgent
-from mlflow.types.responses import (
-    ResponsesAgentRequest,
-    ResponsesAgentResponse,
-    ResponsesAgentStreamEvent,
-    output_to_responses_items_stream,
-    to_chat_completions_input,
-)
-
-# Setup logging
-logger = logging.getLogger(__name__)
-
-
-########################################
-# Configuration Loading with ModelConfig
-########################################
-
-from mlflow.models import ModelConfig
-
-# Development configuration (used for local testing)
-# When deployed, this will be overridden by the config passed to log_model()
-development_config = {
-    # Unity Catalog Configuration
-    "catalog_name": "serverless_dbx_unifiedchat_catalog",
-    "schema_name": "multi_agent_genie",
-    
-    # LLM Endpoint Configuration - Diversified by Agent Role
-    "llm_endpoint": "databricks-claude-sonnet-4-5",  # Default/fallback
-    "llm_endpoint_clarification": "databricks-claude-haiku-4-5",
-    "llm_endpoint_planning": "databricks-claude-sonnet-4-5",
-    "llm_endpoint_sql_synthesis_table": "databricks-claude-haiku-4-5",
-    "llm_endpoint_sql_synthesis_genie": "databricks-claude-sonnet-4-5",
-    "llm_endpoint_execution": "databricks-claude-haiku-4-5",
-    "llm_endpoint_summarize": "databricks-claude-haiku-4-5",
-    
-    # Vector Search Configuration
-    "vs_endpoint_name": "genie_multi_agent_vs",
-    "embedding_model": "databricks-gte-large-en",
-    
-    # Lakebase Configuration (for State Management)
-    "lakebase_instance_name": "multi-agent-genie-system-state-db",
-    "lakebase_embedding_endpoint": "databricks-gte-large-en",
-    "lakebase_embedding_dims": 1024,
-    
-    # Genie Space IDs
-    "genie_space_ids": [
-        "01f106e1239d14b28d6ab46f9c15e540",
-        "01f106e121e7173d8cf84bb80e842d6c",
-        "01f106e120b718e084598e92dcf14d4e"
-    ],
-    
-    # SQL Warehouse ID
-    "sql_warehouse_id": "a4ed2ccbda385db9",
-    
-    # Table Metadata Enrichment
-    "sample_size": 20,
-    "max_unique_values": 20,
-}
-
-# Initialize ModelConfig
-# For local development: Uses development_config above
-# For Model Serving: Uses config passed during mlflow.pyfunc.log_model(model_config=...)
-model_config = ModelConfig(development_config=development_config)
-
-logger.info("="*80)
-logger.info("CONFIGURATION LOADED via ModelConfig")
-logger.info("="*80)
-
-# Extract configuration values
-CATALOG = model_config.get("catalog_name")
-SCHEMA = model_config.get("schema_name")
-TABLE_NAME = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks"
-VECTOR_SEARCH_INDEX = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks_vs_index"
-
-# LLM Endpoints - Diversified by Agent Role
-default_endpoint = model_config.get("llm_endpoint")
-LLM_ENDPOINT_CLARIFICATION = model_config.get("llm_endpoint_clarification") or default_endpoint
-LLM_ENDPOINT_PLANNING = model_config.get("llm_endpoint_planning") or default_endpoint
-LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = model_config.get("llm_endpoint_sql_synthesis_table") or default_endpoint
-LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = model_config.get("llm_endpoint_sql_synthesis_genie") or default_endpoint
-LLM_ENDPOINT_EXECUTION = model_config.get("llm_endpoint_execution") or default_endpoint
-LLM_ENDPOINT_SUMMARIZE = model_config.get("llm_endpoint_summarize") or default_endpoint
-
-# Lakebase configuration for state management
-LAKEBASE_INSTANCE_NAME = model_config.get("lakebase_instance_name")
-EMBEDDING_ENDPOINT = model_config.get("lakebase_embedding_endpoint")
-EMBEDDING_DIMS = model_config.get("lakebase_embedding_dims")
-
-# Genie space IDs
-GENIE_SPACE_IDS = model_config.get("genie_space_ids")
-
-# SQL Warehouse ID (required for SQLExecutionAgent)
-SQL_WAREHOUSE_ID = model_config.get("sql_warehouse_id")
-
-# UC Functions
-UC_FUNCTION_NAMES = [
-    f"{CATALOG}.{SCHEMA}.get_space_summary",
-    f"{CATALOG}.{SCHEMA}.get_table_overview",
-    f"{CATALOG}.{SCHEMA}.get_column_detail",
-    f"{CATALOG}.{SCHEMA}.get_space_instructions",
-    f"{CATALOG}.{SCHEMA}.get_space_details",
-]
-
-logger.info(f"Catalog: {CATALOG}, Schema: {SCHEMA}")
-logger.info(f"Lakebase: {LAKEBASE_INSTANCE_NAME}")
-logger.info(f"Genie Spaces: {len(GENIE_SPACE_IDS)} spaces configured")
-logger.info(f"SQL Warehouse ID: {SQL_WAREHOUSE_ID}")
-
-# Validate SQL_WAREHOUSE_ID is configured
-if not SQL_WAREHOUSE_ID:
-    error_msg = (
-        "SQL_WAREHOUSE_ID is not configured! "
-        "Ensure 'sql_warehouse_id' is set in prod_config.yaml or development_config."
-    )
-    logger.error(error_msg)
-    raise ValueError(error_msg)
-
-logger.info("="*80)
-
-# Initialize UC Function Client
-client = DatabricksFunctionClient()
-set_uc_function_client(client)
-
-logger.info(f"Configuration loaded: Catalog={CATALOG}, Schema={SCHEMA}, Lakebase={LAKEBASE_INSTANCE_NAME}")
-
-print("✓ All dependencies imported successfully (including memory support)")
-
-# ==============================================================================
-# PHASE 1 OPTIMIZATION: Caching Infrastructure
-# ==============================================================================
-
-from datetime import timedelta
-
-# Space context cache with TTL (30 minutes)
-_space_context_cache = {"data": None, "timestamp": None, "table_name": None}
-_SPACE_CONTEXT_CACHE_TTL = timedelta(minutes=30)
-
-# Agent instance caches (persistent across requests)
-_agent_cache = {}
-
-# Genie agent pool (lazy initialization)
-_genie_agent_pool = {}
-
-# Phase 2: Vector search result cache (for refinement queries)
-_vector_search_cache = {}  # Format: {thread_id: {"query": str, "results": List, "timestamp": datetime}}
-_VECTOR_SEARCH_CACHE_TTL = timedelta(minutes=10)  # Shorter TTL for conversation-specific cache
-
-# Phase 2: LLM connection pool (avoid repeated connection overhead)
-_llm_connection_pool = {}  # Format: {endpoint_name: ChatDatabricks instance}
-
-def get_pooled_llm(endpoint_name: str, temperature: float = 0.1, max_tokens: int = None):
-    """
-    Get or create a pooled LLM connection.
-    Reuses connections across requests to avoid connection overhead.
-    Expected gain: -500ms cumulative across multiple LLM calls.
-    
-    Args:
-        endpoint_name: Name of the LLM endpoint
-        temperature: Temperature for generation (default 0.1)
-        max_tokens: Maximum tokens to generate (default None)
-    
-    Returns:
-        ChatDatabricks instance from pool
-    """
-    
-    # Create a cache key that includes temperature and max_tokens
-    cache_key = f"{endpoint_name}_{temperature}_{max_tokens}"
-    
-    if cache_key not in _llm_connection_pool:
-        record_cache_miss("llm_pool")
-        print(f"⚡ Creating pooled LLM connection: {endpoint_name} (temperature={temperature})")
-        kwargs = {"endpoint": endpoint_name, "temperature": temperature}
-        if max_tokens is not None:
-            kwargs["max_tokens"] = max_tokens
-        _llm_connection_pool[cache_key] = ChatDatabricks(**kwargs)
-        print(f"✓ LLM connection pooled: {cache_key}")
-    else:
-        record_cache_hit("llm_pool")
-        print(f"♻️ Reusing pooled LLM connection: {cache_key} (-50ms to -200ms)")
-    
-    return _llm_connection_pool[cache_key]
-
-def clear_llm_connection_pool():
-    """Clear LLM connection pool (useful for configuration changes)."""
-    global _llm_connection_pool
-    _llm_connection_pool = {}
-    print("✓ LLM connection pool cleared")
-
-print("✓ Phase 2 LLM connection pooling initialized (-500ms cumulative)")
-
-# ==============================================================================
-# PHASE 3: Performance Monitoring Infrastructure
-# ==============================================================================
-
-import time
-from functools import wraps
-from typing import Callable
-
-# Performance metrics storage
-_performance_metrics = {
-    "node_timings": {},  # {node_name: [execution_times]}
-    "cache_stats": {
-        "space_context_hits": 0,
-        "space_context_misses": 0,
-        "vector_search_hits": 0,
-        "vector_search_misses": 0,
-        "agent_cache_hits": 0,
-        "agent_cache_misses": 0,
-        "llm_pool_hits": 0,
-        "llm_pool_misses": 0
-    },
-    "workflow_metrics": {
-        "ttft_seconds": [],  # Time to first token
-        "ttcl_seconds": [],  # Time to completion
-        "total_requests": 0
-    }
-}
-
-def measure_node_time(node_name: str):
-    """
-    Decorator to measure node execution time.
-    Expected use: Track per-node performance for optimization.
-    """
-    def decorator(func: Callable):
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            start_time = time.time()
-            try:
-                result = func(*args, **kwargs)
-                elapsed = time.time() - start_time
-                
-                # Record timing
-                if node_name not in _performance_metrics["node_timings"]:
-                    _performance_metrics["node_timings"][node_name] = []
-                _performance_metrics["node_timings"][node_name].append(elapsed)
-                
-                # Print timing
-                print(f"⏱️  {node_name}: {elapsed:.3f}s")
-                
-                return result
-            except Exception as e:
-                elapsed = time.time() - start_time
-                print(f"⏱️  {node_name}: {elapsed:.3f}s (FAILED)")
-                raise
-        return wrapper
-    return decorator
-
-def track_agent_model_usage(agent_name: str, model_endpoint: str):
-    """
-    Track which LLM model is used by each agent for monitoring and cost analysis.
-    
-    Args:
-        agent_name: Name of the agent (e.g., "clarification", "planning")
-        model_endpoint: LLM endpoint being used (e.g., "databricks-claude-haiku-4-5")
-    """
-    if "agent_model_usage" not in _performance_metrics:
-        _performance_metrics["agent_model_usage"] = {}
-    
-    if agent_name not in _performance_metrics["agent_model_usage"]:
-        _performance_metrics["agent_model_usage"][agent_name] = {
-            "model": model_endpoint,
-            "invocations": 0
-        }
-    
-    _performance_metrics["agent_model_usage"][agent_name]["invocations"] += 1
-    print(f"📊 Agent '{agent_name}' using model: {model_endpoint}")
-
-def record_cache_hit(cache_type: str):
-    """Record a cache hit for monitoring."""
-    key = f"{cache_type}_hits"
-    if key in _performance_metrics["cache_stats"]:
-        _performance_metrics["cache_stats"][key] += 1
-
-def record_cache_miss(cache_type: str):
-    """Record a cache miss for monitoring."""
-    key = f"{cache_type}_misses"
-    if key in _performance_metrics["cache_stats"]:
-        _performance_metrics["cache_stats"][key] += 1
-
-def get_performance_summary():
-    """
-    Get comprehensive performance summary with averages and cache hit rates.
-    """
-    summary = {
-        "node_averages": {},
-        "cache_hit_rates": {},
-        "workflow_averages": {}
-    }
-    
-    # Calculate node averages
-    for node_name, timings in _performance_metrics["node_timings"].items():
-        if timings:
-            summary["node_averages"][node_name] = {
-                "avg_seconds": sum(timings) / len(timings),
-                "min_seconds": min(timings),
-                "max_seconds": max(timings),
-                "count": len(timings)
-            }
-    
-    # Calculate cache hit rates
-    for cache_type in ["space_context", "vector_search", "agent_cache", "llm_pool"]:
-        hits = _performance_metrics["cache_stats"].get(f"{cache_type}_hits", 0)
-        misses = _performance_metrics["cache_stats"].get(f"{cache_type}_misses", 0)
-        total = hits + misses
-        if total > 0:
-            summary["cache_hit_rates"][cache_type] = {
-                "hit_rate": hits / total,
-                "hits": hits,
-                "misses": misses,
-                "total": total
-            }
-    
-    # Calculate workflow averages
-    ttft_list = _performance_metrics["workflow_metrics"]["ttft_seconds"]
-    ttcl_list = _performance_metrics["workflow_metrics"]["ttcl_seconds"]
-    
-    if ttft_list:
-        summary["workflow_averages"]["ttft_avg"] = sum(ttft_list) / len(ttft_list)
-        summary["workflow_averages"]["ttft_min"] = min(ttft_list)
-        summary["workflow_averages"]["ttft_max"] = max(ttft_list)
-    
-    if ttcl_list:
-        summary["workflow_averages"]["ttcl_avg"] = sum(ttcl_list) / len(ttcl_list)
-        summary["workflow_averages"]["ttcl_min"] = min(ttcl_list)
-        summary["workflow_averages"]["ttcl_max"] = max(ttcl_list)
-    
-    summary["workflow_averages"]["total_requests"] = _performance_metrics["workflow_metrics"]["total_requests"]
-    
-    # Add agent model usage tracking
-    if "agent_model_usage" in _performance_metrics:
-        summary["agent_model_usage"] = _performance_metrics["agent_model_usage"]
-    
-    return summary
-
-def reset_performance_metrics():
-    """Reset all performance metrics (useful for testing)."""
-    global _performance_metrics
-    _performance_metrics = {
-        "node_timings": {},
-        "cache_stats": {
-            "space_context_hits": 0,
-            "space_context_misses": 0,
-            "vector_search_hits": 0,
-            "vector_search_misses": 0,
-            "agent_cache_hits": 0,
-            "agent_cache_misses": 0,
-            "llm_pool_hits": 0,
-            "llm_pool_misses": 0
-        },
-        "workflow_metrics": {
-            "ttft_seconds": [],
-            "ttcl_seconds": [],
-            "total_requests": 0
-        }
-    }
-    print("✓ Performance metrics reset")
-
-def print_agent_model_usage():
-    """Print a summary of which LLM models each agent is using."""
-    print("\n" + "="*80)
-    print("🤖 AGENT LLM MODEL USAGE SUMMARY")
-    print("="*80)
-    
-    if "agent_model_usage" not in _performance_metrics or not _performance_metrics["agent_model_usage"]:
-        print("No agent model usage tracked yet.")
-        return
-    
-    for agent_name, usage_info in sorted(_performance_metrics["agent_model_usage"].items()):
-        model = usage_info.get("model", "unknown")
-        invocations = usage_info.get("invocations", 0)
-        print(f"\n{agent_name.upper()}:")
-        print(f"  Model: {model}")
-        print(f"  Invocations: {invocations}")
-    
-    print("="*80)
-
-print("✓ Phase 3 performance monitoring infrastructure initialized")
-print("  - Node timing decorators")
-print("  - Cache hit/miss tracking")
-print("  - TTFT/TTCL metrics")
-print("  - Performance summary reporting")
-print("  - Agent LLM model usage tracking (NEW)")
-
-def clear_space_context_cache():
-    """Manually clear space context cache (useful for testing or refresh)."""
-    global _space_context_cache
-    _space_context_cache = {"data": None, "timestamp": None, "table_name": None}
-    print("✓ Space context cache cleared")
-
-def clear_agent_caches():
-    """Clear all agent caches (useful for configuration changes)."""
-    global _agent_cache, _genie_agent_pool, _vector_search_cache
-    _agent_cache = {}
-    _genie_agent_pool = {}
-    _vector_search_cache = {}
-    print("✓ Agent caches cleared (including vector search)")
-
-def clear_vector_search_cache(thread_id: str = None):
-    """Clear vector search cache for a specific thread or all threads."""
-    global _vector_search_cache
-    if thread_id:
-        if thread_id in _vector_search_cache:
-            del _vector_search_cache[thread_id]
-            print(f"✓ Vector search cache cleared for thread: {thread_id}")
-    else:
-        _vector_search_cache = {}
-        print("✓ All vector search caches cleared")
-
-def get_cache_stats():
-    """Get cache statistics for monitoring."""
-    stats = {
-        "space_context_cached": _space_context_cache["data"] is not None,
-        "space_context_timestamp": _space_context_cache["timestamp"],
-        "agent_cache_size": len(_agent_cache),
-        "genie_pool_size": len(_genie_agent_pool),
-        "vector_search_cache_size": len(_vector_search_cache),
-        "llm_connection_pool_size": len(_llm_connection_pool),
-        "cached_agents": list(_agent_cache.keys()),
-        "pooled_genie_spaces": list(_genie_agent_pool.keys()),
-        "vector_search_threads": list(_vector_search_cache.keys()),
-        "pooled_llm_connections": list(_llm_connection_pool.keys())
-    }
-    return stats
-
-print("✓ Phase 1 caching infrastructure initialized")
-
-# ==============================================================================
-# PHASE 1 OPTIMIZATION: Cached Agent Getters (Module-Level Singletons)
-# ==============================================================================
-
-def get_cached_planning_agent():
-    """
-    Get or create cached PlanningAgent instance.
-    Expected gain: -500ms to -1s per request
-    """
-    if "planning" not in _agent_cache:
-        record_cache_miss("agent_cache")
-        print("⚡ Creating PlanningAgent (first use)...")
-        llm = get_pooled_llm(LLM_ENDPOINT_PLANNING)
-        # Note: Agent class will be defined later in notebook
-        # This is a forward reference that works because Python resolves at runtime
-        _agent_cache["planning"] = PlanningAgent(llm, VECTOR_SEARCH_INDEX)
-        print("✓ PlanningAgent cached")
-    else:
-        record_cache_hit("agent_cache")
-        print("✓ Using cached PlanningAgent")
-    return _agent_cache["planning"]
-
-def get_cached_sql_table_agent():
-    """
-    Get or create cached SQLSynthesisTableAgent instance.
-    Expected gain: -500ms to -1s per request
-    """
-    if "sql_table" not in _agent_cache:
-        record_cache_miss("agent_cache")
-        print("⚡ Creating SQLSynthesisTableAgent (first use)...")
-        llm = get_pooled_llm(LLM_ENDPOINT_SQL_SYNTHESIS_TABLE)
-        _agent_cache["sql_table"] = SQLSynthesisTableAgent(llm, CATALOG, SCHEMA)
-        print("✓ SQLSynthesisTableAgent cached")
-    else:
-        record_cache_hit("agent_cache")
-        print("✓ Using cached SQLSynthesisTableAgent")
-    return _agent_cache["sql_table"]
-
-def get_cached_summarize_agent():
-    """
-    Get or create cached ResultSummarizeAgent instance.
-    Expected gain: -100ms to -300ms per request
-    """
-    if "summarize" not in _agent_cache:
-        record_cache_miss("agent_cache")
-        print("⚡ Creating ResultSummarizeAgent (first use)...")
-        llm = get_pooled_llm(LLM_ENDPOINT_SUMMARIZE, temperature=0.1, max_tokens=5000)
-        _agent_cache["summarize"] = ResultSummarizeAgent(llm)
-        print("✓ ResultSummarizeAgent cached")
-    else:
-        record_cache_hit("agent_cache")
-        print("✓ Using cached ResultSummarizeAgent")
-    return _agent_cache["summarize"]
-
-print("✓ Agent cache getters defined")
-
-# ==============================================================================
-# PHASE 1 OPTIMIZATION: Genie Agent Pool (Lazy Initialization)
-# ==============================================================================
-
-def get_or_create_genie_agent(space_id: str, space_title: str, description: str):
-    """
-    Get existing Genie agent from pool or create new one if not cached.
-    
-    OPTIMIZATION: Reuses Genie agents across requests to avoid expensive initialization.
-    Expected gain: -1 to -3s on genie route (creating 3-5 agents)
-    
-    Args:
-        space_id: Genie space ID
-        space_title: Space title for agent name
-        description: Space description
-    
-    Returns:
-        Cached or newly created GenieAgent instance
-    """
-    global _genie_agent_pool
-    
-    if space_id not in _genie_agent_pool:
-        from databricks_langchain import GenieAgent
-        
-        print(f"⚡ Creating Genie agent for space: {space_title} (first use)")
-        
-        def enforce_limit(messages, n=5):
-            """Enforce result limit in Genie queries."""
-            last = messages[-1] if messages else {"content": ""}
-            content = last.get("content", "") if isinstance(last, dict) else last.content
-            return f"{content}\n\nPlease limit the result to at most {n} rows."
-        
-        genie_agent = GenieAgent(
-            genie_space_id=space_id,
-            genie_agent_name=f"Genie_{space_title}",
-            description=description,
-            include_context=True,
-            message_processor=lambda msgs: enforce_limit(msgs, n=5)
-        )
-        
-        _genie_agent_pool[space_id] = genie_agent
-        print(f"✓ Genie agent cached for {space_title}")
-    else:
-        print(f"✓ Using cached Genie agent for {space_title}")
-    
-    return _genie_agent_pool[space_id]
-
-print("✓ Genie agent pool initialized")
-
-def query_delta_table(table_name: str, filter_field: str, filter_value: str, select_fields: List[str] = None) -> Any:
-    """
-    Query a delta table with a filter condition.
-    
-    Args:
-        table_name: Full table name (catalog.schema.table)
-        filter_field: Field name to filter on
-        filter_value: Value to filter by
-        select_fields: List of fields to select (None = all fields)
-    
-    Returns:
-        Spark DataFrame with query results
-    """
-    from pyspark.sql import SparkSession
-    spark = SparkSession.builder.getOrCreate()
-
-    if select_fields:
-        fields_str = ", ".join(select_fields)
-    else:
-        fields_str = "*"
-    
-    df = spark.sql(f"""
-        SELECT {fields_str}
-        FROM {table_name}
-        WHERE {filter_field} = '{filter_value}'
-    """)
-    
-    return df
-
-def _load_space_context_uncached(table_name: str) -> Dict[str, str]:
-    """
-    Internal function: Load space context from Delta table without caching.
-    
-    Args:
-        table_name: Full table name (catalog.schema.table)
-        
-    Returns:
-        Dictionary mapping space_id to searchable_content
-    """
-    from pyspark.sql import SparkSession
-    spark = SparkSession.builder.getOrCreate()
-    
-    df = spark.sql(f"""
-        SELECT space_id, searchable_content
-        FROM {table_name}
-        WHERE chunk_type = 'space_summary'
-    """)
-    
-    context = {row["space_id"]: row["searchable_content"] 
-               for row in df.collect()}
-    
-    return context
-
-def load_space_context(table_name: str) -> Dict[str, str]:
-    """
-    Load space context from Delta table with TTL-based caching.
-    
-    OPTIMIZATION: Caches results for 30 minutes to avoid repeated Spark queries.
-    Expected gain: -1 to -2s per request (when cache is hot)
-    
-    Args:
-        table_name: Full table name (catalog.schema.table)
-        
-    Returns:
-        Dictionary mapping space_id to searchable_content
-    """
-    global _space_context_cache
-    
-    now = datetime.now()
-    
-    # Check if cache is valid
-    cache_valid = (
-        _space_context_cache["data"] is not None and
-        _space_context_cache["timestamp"] is not None and
-        _space_context_cache["table_name"] == table_name and
-        now - _space_context_cache["timestamp"] < _SPACE_CONTEXT_CACHE_TTL
-    )
-    
-    if cache_valid:
-        record_cache_hit("space_context")
-        cache_age_seconds = (now - _space_context_cache["timestamp"]).total_seconds()
-        print(f"✓ Using cached space context ({len(_space_context_cache['data'])} spaces, age: {cache_age_seconds:.1f}s)")
-        return _space_context_cache["data"]
-    else:
-        # Cache miss - load from database
-        record_cache_miss("space_context")
-        print(f"⚡ Loading space context from database (cache {'expired' if _space_context_cache['data'] else 'empty'})...")
-        context = _load_space_context_uncached(table_name)
-        
-        # Update cache
-        _space_context_cache["data"] = context
-        _space_context_cache["timestamp"] = now
-        _space_context_cache["table_name"] = table_name
-        
-        print(f"✓ Loaded {len(context)} Genie spaces and cached for {_SPACE_CONTEXT_CACHE_TTL.total_seconds()/60:.0f} minutes")
-        return context
-
-# Note: Context is now loaded dynamically in clarification_node
-# This allows refresh without model redeployment
-# ==============================================================================
-# Inline TypedDicts for Unified Agent (self-contained)
-# ==============================================================================
-
-from typing import TypedDict, Optional, List, Dict, Any, Literal, Annotated, Tuple
-from datetime import datetime
-import operator
-import uuid as uuid_module
-
-class ConversationTurn(TypedDict):
-    """
-    Represents a single conversation turn with all its context.
-    Inline definition for simplified unified agent.
-    """
-    turn_id: str
-    query: str
-    intent_type: Literal["new_question", "refinement", "continuation", "clarification_response"]
-    parent_turn_id: Optional[str]
-    context_summary: Optional[str]
-    timestamp: str  # ISO format datetime string
-    triggered_clarification: Optional[bool]
-    metadata: Optional[Dict[str, Any]]
-
-class ClarificationRequest(TypedDict):
-    """Unified clarification request object."""
-    reason: str
-    options: List[str]
-    turn_id: str
-    timestamp: str
-    best_guess: Optional[str]
-    best_guess_confidence: Optional[float]
-
-class IntentMetadata(TypedDict):
-    """Intent metadata for business logic."""
-    intent_type: Literal["new_question", "refinement", "continuation", "clarification_response"]
-    confidence: float
-    reasoning: str
-    topic_change_score: float
-    domain: Optional[str]
-    operation: Optional[str]
-    complexity: Literal["simple", "moderate", "complex"]
-    parent_turn_id: Optional[str]
-
-class AgentState(TypedDict):
-    """Simplified agent state using turn-based context management."""
-    # Turn Management
-    current_turn: Optional[ConversationTurn]
-    turn_history: Annotated[List[ConversationTurn], operator.add]
-    intent_metadata: Optional[IntentMetadata]
-    
-    # Clarification
-    pending_clarification: Optional[ClarificationRequest]
-    question_clear: bool
-    
-    # Meta-question handling (NEW)
-    is_meta_question: Optional[bool]
-    meta_answer: Optional[str]
-    
-    # Irrelevant question handling (NEW)
-    is_irrelevant: Optional[bool]
-    
-    # Deprecated
-    original_query: Optional[str]
-    
-    # Planning
-    plan: Optional[Dict[str, Any]]
-    sub_questions: Optional[List[str]]
-    requires_multiple_spaces: Optional[bool]
-    relevant_space_ids: Optional[List[str]]
-    relevant_spaces: Optional[List[Dict[str, Any]]]
-    vector_search_relevant_spaces_info: Optional[List[Dict[str, str]]]
-    requires_join: Optional[bool]
-    join_strategy: Optional[str]
-    execution_plan: Optional[str]
-    genie_route_plan: Optional[Dict[str, str]]
-    
-    # SQL Synthesis
-    sql_query: Optional[str]  # Keep for backward compatibility (first query)
-    sql_queries: Optional[List[str]]  # NEW: List of all SQL queries from multi-part questions
-    sql_query_labels: Optional[List[str]]  # NEW: Per-query labels (e.g. "QUERY 1: Most Common Diagnoses")
-    sql_synthesis_explanation: Optional[str]
-    synthesis_error: Optional[str]
-    has_sql: Optional[bool]  # Whether SQL was successfully extracted
-    
-    # Execution
-    execution_result: Optional[Dict[str, Any]]  # Keep for backward compatibility (first result)
-    execution_results: Optional[List[Dict[str, Any]]]  # NEW: List of all execution results
-    execution_error: Optional[str]
-    
-    # Summary
-    final_summary: Optional[str]
-    
-    # Conversation Management
-    user_id: Optional[str]
-    thread_id: Optional[str]
-    user_preferences: Optional[Dict[str, Any]]
-    
-    # Control Flow
-    next_agent: Optional[str]
-    messages: Annotated[List, operator.add]
-
-# Helper functions
-def create_conversation_turn(
-    query: str,
-    intent_type: Literal["new_question", "refinement", "continuation", "clarification_response"],
-    parent_turn_id: Optional[str] = None,
-    context_summary: Optional[str] = None,
-    triggered_clarification: bool = False,
-    metadata: Optional[Dict[str, Any]] = None
-) -> ConversationTurn:
-    """
-    Factory function to create a ConversationTurn with runtime validation.
-    
-    Args:
-        query: User's query string
-        intent_type: Must be one of: "new_question", "refinement", "continuation", "clarification_response"
-        parent_turn_id: Optional parent turn ID for context
-        context_summary: Optional summary of conversation context
-        triggered_clarification: Whether this turn triggered clarification
-        metadata: Optional additional metadata
-        
-    Returns:
-        ConversationTurn with validated intent_type
-        
-    Raises:
-        ValueError: If intent_type is not one of the allowed values
-    """
-    # Runtime validation to enforce type contract
-    valid_intent_types = {"new_question", "refinement", "continuation", "clarification_response"}
-    if intent_type not in valid_intent_types:
-        raise ValueError(
-            f"Invalid intent_type: '{intent_type}'. "
-            f"Must be one of: {valid_intent_types}."
-        )
-    
-    return ConversationTurn(
-        turn_id=str(uuid_module.uuid4()),
-        query=query,
-        intent_type=intent_type,
-        parent_turn_id=parent_turn_id,
-        context_summary=context_summary,
-        timestamp=datetime.utcnow().isoformat(),
-        triggered_clarification=triggered_clarification,
-        metadata=metadata or {}
-    )
-
-def create_clarification_request(
-    reason: str,
-    options: List[str],
-    turn_id: str,
-    best_guess: Optional[str] = None,
-    best_guess_confidence: Optional[float] = None
-) -> ClarificationRequest:
-    """Factory function to create a ClarificationRequest."""
-    return ClarificationRequest(
-        reason=reason,
-        options=options,
-        turn_id=turn_id,
-        timestamp=datetime.utcnow().isoformat(),
-        best_guess=best_guess,
-        best_guess_confidence=best_guess_confidence
-    )
-
-def format_clarification_message(clarification: ClarificationRequest) -> str:
-    """Format a clarification request into a user-friendly message."""
-    message = f"I need clarification: {clarification['reason']}\n\n"
-    message += "Please choose one of the following options or provide your own clarification:\n"
-    for i, option in enumerate(clarification['options'], 1):
-        message += f"{i}. {option}\n"
-    return message
-
-def get_reset_state_template() -> Dict[str, Any]:
-    """Get template for resetting per-query execution fields."""
-    return {
-        "pending_clarification": None,
-        "question_clear": False,
-        "is_meta_question": False,
-        "meta_answer": None,
-        "is_irrelevant": False,
-        "plan": None,
-        "sub_questions": None,
-        "requires_multiple_spaces": None,
-        "relevant_space_ids": None,
-        "relevant_spaces": None,
-        "vector_search_relevant_spaces_info": None,
-        "requires_join": None,
-        "join_strategy": None,
-        "execution_plan": None,
-        "genie_route_plan": None,
-        "sql_query": None,
-        "sql_queries": None,
-        "sql_query_labels": None,
-        "sql_synthesis_explanation": None,
-        "synthesis_error": None,
-        "has_sql": None,
-        "execution_result": None,
-        "execution_results": None,
-        "execution_error": None,
-        "final_summary": None,
-    }
-
-print("✓ Inline TypedDicts defined (self-contained)")
-
-# State Reset Template
-# All per-query execution fields that should be cleared for each new query.
-# This prevents stale data from persisting across queries when using CheckpointSaver.
-# Used by both Model Serving (run_agent) and local testing (invoke_super_agent_hybrid).
-# Use the shared reset state template from conversation_models
-RESET_STATE_TEMPLATE = get_reset_state_template()
-
-# NOTE: Turn-based fields (current_turn, turn_history, intent_metadata) are NOT reset
-# They are managed by unified_intent_context_clarification_node and persist across queries
-
-# For reference, the template includes per-query fields (see conversation_models.get_reset_state_template()):
-# RESET_STATE_TEMPLATE = {
-    # Clarification fields (per-query)
-    # "pending_clarification": None,
-    # "question_clear": False,
-    # "is_meta_question": False,
-    # "meta_answer": None,
-    # "is_irrelevant": False,
-    
-    # Planning fields (per-query)
-    # "plan": None,
-    # "sub_questions": None,
-    # "requires_multiple_spaces": None,
-    # "relevant_space_ids": None,
-    # "relevant_spaces": None,
-    # "vector_search_relevant_spaces_info": None,
-    # "requires_join": None,
-    # "join_strategy": None,
-    # "execution_plan": None,
-    # "genie_route_plan": None,
-    
-    # SQL fields (per-query)
-    # "sql_query": None,
-    # "sql_queries": None,
-    # "sql_query_labels": None,
-    # "sql_synthesis_explanation": None,
-    # "synthesis_error": None,
-    # "has_sql": None,
-    
-    # Execution fields (per-query)
-    # "execution_result": None,
-    # "execution_results": None,
-    # "execution_error": None,
-    
-    # Summary (per-query)
-    # "final_summary": None,
-# }
-
-# Fields intentionally NOT in reset template:
-# 
-# NEW TURN-BASED FIELDS (persist across queries via CheckpointSaver):
-# - current_turn: Set by intent_detection_node for each query
-# - turn_history: Accumulated by reducer with operator.add, persists across conversation
-# - intent_metadata: Set by intent_detection_node for each query
-#
-# DEPRECATED LEGACY FIELDS (removed from AgentState):
-# - clarification_count: Replaced by turn_history with triggered_clarification flag
-# - last_clarified_query: Replaced by turn_history with triggered_clarification flag
-# - combined_query_context: Replaced by current_turn.context_summary (LLM-generated)
-# - clarification_needed (as state field): Replaced by pending_clarification object
-# - clarification_options (as state field): Replaced by pending_clarification object
-#
-# DEPRECATED BUT KEPT FOR BACKWARD COMPATIBILITY:
-# - original_query: Kept in AgentState but deprecated. Use messages array instead.
-#   This field is still set in initial_state for compatibility with legacy code.
-#
-# PERSISTENT FIELDS (never reset):
-# - messages: Managed by operator.add in AgentState, persists across conversation
-# - user_id, thread_id, user_preferences: Identity/context, persists for entire conversation
-# - next_agent: Control flow field, managed by nodes and routing logic (not in reset template)
-
-print("✓ State reset template defined for per-query field clearing")
-
-class PlanningAgent:
-    """
-    Agent responsible for query analysis and execution planning.
-    
-    OOP design with vector search integration.
-    """
-    
-    def __init__(self, llm: Runnable, vector_search_index: str):
-        self.llm = llm
-        self.vector_search_index = vector_search_index
-        self.name = "Planning"
-    
-    def search_relevant_spaces(self, query: str, num_results: int = 5) -> List[Dict[str, Any]]:
-        """
-        Search for relevant Genie spaces using vector search.
-        
-        Args:
-            query: User's question
-            num_results: Number of results to return
-            
-        Returns:
-            List of relevant space dictionaries
-        """
-        vs_tool = VectorSearchRetrieverTool(
-            index_name=self.vector_search_index,
-            num_results=num_results,
-            columns=["space_id", "space_title", "searchable_content"],
-            filters={"chunk_type": "space_summary"},
-            query_type="ANN",
-            include_metadata=True,
-            include_score=True
-        )
-        
-        docs = vs_tool.invoke({"query": query})
-        
-        relevant_spaces = []
-        for doc in docs:
-            print(doc)
-            relevant_spaces.append({
-                "space_id": doc.metadata.get("space_id", ""),
-                "space_title": doc.metadata.get("space_title", ""),
-                "searchable_content": doc.page_content,
-                "score": doc.metadata.get("score", 0.0)
-            })
-        
-        return relevant_spaces
-    
-    def create_execution_plan(
-        self, 
-        query: str, 
-        relevant_spaces: List[Dict[str, Any]],
-        original_query: str = None
-    ) -> Dict[str, Any]:
-        """
-        Create execution plan based on query and relevant spaces.
-        
-        Args:
-            query: User's question (may be context_summary if available)
-            relevant_spaces: List of relevant Genie spaces
-            original_query: Original user query from this turn (before context enrichment)
-            
-        Returns:
-            Dictionary with execution plan
-        """
-        # Use original_query if provided, otherwise use query as original
-        original_query_display = original_query if original_query is not None else query
-        
-        planning_prompt = f"""
-You are a query planning expert. Analyze the following question and create an execution plan.
-
-User original query this turn: {original_query_display}
-
-Question: {query}
-
-Potentially relevant Genie spaces:
-{json.dumps(relevant_spaces, indent=2)}
-
-Break down the question and determine:
-1. What are the sub-questions or analytical components?
-2. How many Genie spaces are needed to answer completely? (List their space_ids)
-3. If multiple spaces are needed, do we need to JOIN data across them? Reasoning whether the sub-questions are totally independent without joining need.
-    - JOIN needed: E.g., "How many active plan members over 50 are on Lexapro?" requires joining member data with pharmacy claims.
-    - No need for JOIN: E.g., "How many active plan members over 50? How much total cost for all Lexapro claims?" - Two independent questions.
-4. If JOIN is needed, what's the best strategy:
-    - "table_route": Directly synthesize SQL across multiple tables
-    - "genie_route": Query each Genie Space Agent separately, then combine SQL queries
-    - If user explicitly asks for "genie_route", use it; otherwise, use "table_route"
-    - always populate the join_strategy field in the JSON output.
-5. Execution plan: A brief description of how to execute the plan.
-    - For genie_route: Return "genie_route_plan": {{'space_id_1':'partial_question_1', 'space_id_2':'partial_question_2'}}
-    - For table_route: Return "genie_route_plan": null
-    - Each partial_question should be similar to original but scoped to that space
-    - Add "Please limit to top 10 rows" to each partial question
-
-Return your analysis as JSON:
-{{
-    "original_query": "{query}",
-    "vector_search_relevant_spaces_info":{[{sp['space_id']: sp['space_title']} for sp in relevant_spaces]},
-    "question_clear": true,
-    "sub_questions": ["sub-question 1", "sub-question 2", ...],
-    "requires_multiple_spaces": true/false,
-    "relevant_space_ids": ["space_id_1", "space_id_2", ...],
-    "requires_join": true/false,
-    "join_strategy": "table_route" or "genie_route",
-    "execution_plan": "Brief description of execution plan",
-    "genie_route_plan": {{'space_id_1':'partial_question_1', 'space_id_2':'partial_question_2'}} or null
-}}
-
-Only return valid JSON, no explanations.
-"""
-        
-        # Stream LLM response for immediate first token emission
-        print("🤖 Streaming planning LLM call...")
-        content = ""
-        for chunk in self.llm.stream(planning_prompt):
-            if chunk.content:
-                content += chunk.content
-        
-        content = content.strip()
-        print(f"✓ Planning stream complete ({len(content)} chars)")
-        
-        # Use regex to extract JSON from markdown code blocks
-        json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
-        if json_match:
-            json_str = json_match.group(1).strip()
-        else:
-            # No code blocks, assume entire content is JSON
-            json_str = content
-        
-        # Remove any trailing commas before ] or }
-        json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
-        
-        try:
-            plan_result = json.loads(json_str)
-            return plan_result
-        except json.JSONDecodeError as e:
-            print(f"❌ Planning JSON parsing error at position {e.pos}: {e.msg}")
-            print(f"Raw content (first 500 chars):\n{content[:500]}")
-            print(f"Cleaned JSON (first 500 chars):\n{json_str[:500]}")
-            
-            # Try one more time with even more aggressive cleaning
-            try:
-                # Remove comments
-                json_str_clean = re.sub(r'//.*$', '', json_str, flags=re.MULTILINE)
-                # Remove trailing commas again
-                json_str_clean = re.sub(r',(\s*[}\]])', r'\1', json_str_clean)
-                plan_result = json.loads(json_str_clean)
-                print("✓ Successfully parsed JSON after aggressive cleaning")
-                return plan_result
-            except:
-                raise e  # Re-raise original error
-    
-    def __call__(self, query: str) -> Dict[str, Any]:
-        """
-        Analyze query and create execution plan.
-        
-        Returns:
-            Complete execution plan with relevant spaces
-        """
-        # Search for relevant spaces
-        relevant_spaces = self.search_relevant_spaces(query)
-        
-        # Create execution plan
-        plan = self.create_execution_plan(query, relevant_spaces)
-        
-        return plan
-
-print("✓ PlanningAgent class defined")
-class SQLSynthesisTableAgent:
-    """
-    Agent responsible for fast SQL synthesis using UC function tools.
-    
-    OOP design with UC toolkit integration.
-    """
-    
-    def __init__(
-        self, 
-        llm: Runnable, 
-        catalog: str, 
-        schema: str
-    ):
-        self.llm = llm
-        self.catalog = catalog
-        self.schema = schema
-        self.name = "SQLSynthesisTable"
-        
-        # Initialize UC Function Client
-        client = DatabricksFunctionClient()
-        set_uc_function_client(client)
-        
-        # Create UC Function Toolkit
-        uc_function_names = [
-            f"{catalog}.{schema}.get_space_summary",
-            f"{catalog}.{schema}.get_table_overview",
-            f"{catalog}.{schema}.get_column_detail",
-            f"{catalog}.{schema}.get_space_instructions",
-            f"{catalog}.{schema}.get_space_details",
-        ]
-        
-        self.uc_toolkit = UCFunctionToolkit(function_names=uc_function_names)
-        self.tools = self.uc_toolkit.tools
-        
-        # Create SQL synthesis agent with tools
-        self.agent = create_agent(
-            model=llm,
-            tools=self.tools,
-            system_prompt=(
-            """
-You are a specialized SQL synthesis agent in a multi-agent system.
-
-ROLE: You receive execution plans from the planning agent and generate SQL queries.
-
-## WORKFLOW:
-1. Review the execution plan and provided metadata
-2. If metadata is sufficient → Generate SQL immediately
-3. If insufficient, call UC function tools in this order to gather metadata:
-   a) get_space_summary for space information
-   b) get_table_overview for table schemas
-   c) get_column_detail for specific columns
-   d) get_space_details ONLY as last resort (token intensive)
-4. If still cannot find enough metadata in relevant spaces, expand searching scope to all spaces
-   mentioned in the execution plan's 'vector_search_relevant_spaces_info' field
-5. Generate complete, executable SQL using the gathered metadata, print out the final SQL
-
-## UC FUNCTION USAGE:
-- Pass arguments as JSON array strings: e.g., '[\"space_id_1\", \"space_id_2\"]' or passing a NULL without any quote
-- Always explicitly passing all required arguments, even it is a NULL
-- Only query spaces from execution plan's relevant_space_ids
-- Use minimal sufficiency: only query what you need
-- OPTIMIZATION: When possible, call multiple UC functions in parallel by returning multiple tool calls
-  Example: If you need table_overview for space_1 AND column_detail for space_2, call both tools at once
-- This enables parallel execution and reduces latency by 1-2 seconds
-
-## SQL FINETUNE INSTRUCTIONS:
-- **Additional SQL Finetune Step** After you already generated the SQL, take a reflection first, and then you are ready to call **get_space_instructions** to extract the space instructions taught by human; only use the most related instruction parts to finetune the SQL if necessary. 
-- This provides essential human-taught SQL patterns and best practices for the specific space.
-
-
-## OUTPUT REQUIREMENTS:
-- Generate complete, executable SQL with:
-  * Proper JOINs based on execution plan
-  * WHERE clauses for filtering
-  * Appropriate aggregations
-  * Clear column aliases
-  * Always use real column names, never make up ones
-
-## MULTI-QUERY STRATEGY:
-- If the question has multiple parts (sub_questions) and you think it's better to report
-  each query and result separately instead of combining into one big complex query:
-  * Generate MULTIPLE separate SQL queries (one per sub-question)
-  * This is preferred when: sub-questions are independent, results are easier to interpret
-    separately, or combining would create overly complex SQL
-- If sub-questions are closely related and naturally combine (e.g., same table, similar filters):
-  * You may generate a single combined SQL query
-
-## OUTPUT FORMAT:
-- Return your response with:
-1. Your explanations; If SQL cannot be generated, explain what metadata is missing
-2. SQL queries formatted as follows:
-   * For SINGLE-part questions: One sql code block with query ending in semicolon
-   * For MULTI-part questions: Use SEPARATE sql code blocks (one per query)
-   * Each query MUST end with a semicolon (;)
-   * Add a leading comment before each query: -- Query N: <brief description>
-   * Example for multi-part:
-     sql
-     -- Query 1: Most common diagnoses
-     SELECT diagnosis_code, COUNT(*) AS freq FROM diagnosis GROUP BY diagnosis_code;
-     
-     sql
-     -- Query 2: Top procedures
-     SELECT procedure_code, COUNT(*) AS count FROM procedures GROUP BY procedure_code;
-     
-"""
-            )
-        )
-    
-    def synthesize_sql(self, plan: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Synthesize SQL query based on execution plan.
-        
-        Args:
-            plan: Execution plan from planning agent
-            
-        Returns:
-            Dictionary with:
-            - sql: str - Extracted SQL query (None if cannot generate)
-            - explanation: str - Agent's explanation/reasoning
-            - has_sql: bool - Whether SQL was successfully extracted
-        """
-        # # Prepare plan summary for agent
-        # plan_summary = {
-        #     "original_query": plan.get("original_query", ""),
-        #     "vector_search_relevant_spaces_info": plan.get("vector_search_relevant_spaces_info", []),
-        #     "relevant_space_ids": plan.get("relevant_space_ids", []),
-        #     "execution_plan": plan.get("execution_plan", ""),
-        #     "requires_join": plan.get("requires_join", False),
-        #     "sub_questions": plan.get("sub_questions", [])
-        # }
-        plan_result = plan
-        # Invoke agent
-        agent_message = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"""
-Generate a SQL query to answer the question according to the Query Plan:
-{json.dumps(plan_result, indent=2)}
-
-Use your available UC function tools to gather metadata intelligently.
-"""
-                }
-            ]
-        }
-        
-        result = self.agent.invoke(agent_message)
-        
-        # Extract SQL and explanation from response
-        if result and "messages" in result:
-            final_content = result["messages"][-1].content
-            original_content = final_content
-            
-            sql_query = None
-            has_sql = False
-            
-            # Try to extract SQL from markdown - use findall to capture ALL code blocks
-            if "```sql" in final_content.lower():
-                # Find all ```sql blocks
-                sql_blocks = re.findall(r'```sql\s*(.*?)\s*```', final_content, re.IGNORECASE | re.DOTALL)
-                if sql_blocks:
-                    # Join all SQL blocks with newlines to preserve multi-query structure
-                    sql_query = '\n\n'.join(block.strip() for block in sql_blocks if block.strip())
-                    has_sql = True
-                    # Remove all SQL blocks from content to get explanation
-                    final_content = re.sub(r'```sql\s*.*?\s*```', '', final_content, flags=re.IGNORECASE | re.DOTALL)
-            elif "```" in final_content:
-                # Find all generic code blocks
-                code_blocks = re.findall(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
-                # Filter for SQL-like blocks
-                sql_blocks = [
-                    block.strip() for block in code_blocks 
-                    if block.strip() and any(keyword in block.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN', 'WITH'])
-                ]
-                if sql_blocks:
-                    # Join all SQL blocks
-                    sql_query = '\n\n'.join(sql_blocks)
-                    has_sql = True
-                    # Remove all code blocks from content to get explanation
-                    final_content = re.sub(r'```\s*.*?\s*```', '', final_content, flags=re.DOTALL)
-            
-            # Clean up explanation
-            explanation = final_content.strip()
-            if not explanation:
-                explanation = original_content if not has_sql else "SQL query generated successfully."
-            
-            return {
-                "sql": sql_query,
-                "explanation": explanation,
-                "has_sql": has_sql
-            }
-        else:
-            raise Exception("No response from agent")
-    
-    def __call__(self, plan: Dict[str, Any]) -> Dict[str, Any]:
-        """Make agent callable."""
-        return self.synthesize_sql(plan)
-
-print("✓ SQLSynthesisTableAgent class defined")
-class SQLSynthesisGenieAgent:
-    """
-    Agent responsible for Genie Route SQL synthesis using Genie agents as tools.
-    
-    EXECUTION MODES:
-    ---------------
-    1. LangGraph Agent Mode (default via synthesize_sql()):
-       - Uses LangGraph agent with tool calling
-       - Supports retries, disaster recovery, and adaptive routing
-       - Agent decides which tools to call and when
-       - Best for complex queries requiring orchestration
-    
-    2. RunnableParallel Mode (via invoke_genie_agents_parallel()):
-       - Uses RunnableParallel for direct parallel execution
-       - Faster for simple parallel queries
-       - No retry logic or adaptive routing
-       - Best for straightforward parallel execution
-    
-    ARCHITECTURE:
-    ------------
-    - Upgraded from RunnableLambda to RunnableParallel pattern
-    - Each Genie agent is wrapped as both a tool and a parallel executor
-    - Supports efficient parallel invocation using LangChain's RunnableParallel
-    - Optimized to only create Genie agents for relevant spaces (not all spaces)
-    """
-    
-    def __init__(self, llm: Runnable, relevant_spaces: List[Dict[str, Any]]):
-        """
-        Initialize SQL Synthesis Genie Agent with tool-calling pattern.
-        
-        Args:
-            llm: Language model for SQL synthesis
-            relevant_spaces: List of relevant spaces from PlanningAgent's Vector Search.
-                            Each dict should have: space_id, space_title, searchable_content
-        """
-        self.llm = llm
-        self.relevant_spaces = relevant_spaces
-        self.name = "SQLSynthesisGenie"
-        
-        # Create Genie agents and their tool representations
-        self.genie_agents = []
-        self.genie_agent_tools = []
-        self._create_genie_agent_tools()
-        
-        # Create SQL synthesis agent with Genie agent tools
-        self.sql_synthesis_agent = self._create_sql_synthesis_agent()
-    
-    def _create_genie_agent_tools(self):
-        """
-        Create Genie agents as tools only for relevant spaces.
-        
-        OPTIMIZED: Uses cached Genie agents from pool to avoid expensive initialization.
-        Expected gain: -1 to -3s on genie route (when agents are already cached)
-        
-        Creates both:
-        1. Individual tool wrappers for LangGraph agent tool calling
-        2. A parallel executor mapping for efficient batch invocation
-        
-        Uses LangChain preferred syntax with Pydantic BaseModel and StructuredTool.
-        """
-        print(f"  Creating Genie agent tools for {len(self.relevant_spaces)} relevant spaces...")
-        
-        for space in self.relevant_spaces:
-            space_id = space.get("space_id")
-            space_title = space.get("space_title", space_id)
-            searchable_content = space.get("searchable_content", "")
-            
-            if not space_id:
-                print(f"  ⚠ Warning: Space missing space_id, skipping: {space}")
-                continue
-            
-            genie_agent_name = f"Genie_{space_title}"
-            description = searchable_content
-            
-            # OPTIMIZATION: Get Genie agent from pool (cached or newly created)
-            genie_agent = get_or_create_genie_agent(space_id, space_title, description)
-            self.genie_agents.append(genie_agent)
-            
-            # Define tool input schema using Pydantic
-            class GenieToolInput(BaseModel):
-                question: str = Field(..., description="Natural-language query to run in the Genie Space")
-                conversation_id: Optional[str] = Field(None, description="Optional Genie conversation for continuity")
-            
-            # Create tool function using factory pattern to capture agent
-            def make_genie_tool_call(agent):
-                """Factory function to capture agent in closure properly"""
-                def _genie_tool_call(question: str, conversation_id: Optional[str] = None):
-                    """
-                    StructuredTool with args_schema expects individual field arguments,
-                    not a single Pydantic object.
-                    """
-                    # GenieAgent expects a LangChain-style message list
-                    result = agent.invoke({
-                        "messages": [{"role": "user", "content": question}],
-                        "conversation_id": conversation_id,
-                    })
-                    # Extract final output + optional context
-                    out = {"conversation_id": result.get("conversation_id")}
-                    msgs = result["messages"]
-                    def _get(name): 
-                        return next((getattr(m, "content", "") for m in msgs if getattr(m, "name", None) == name), None)
-                    out["answer"] = _get("query_result") or ""
-                    reasoning = _get("query_reasoning")
-                    sql = _get("query_sql")
-                    if reasoning: out["reasoning"] = reasoning
-                    if sql: out["sql"] = sql
-                    return out
-                return _genie_tool_call
-            
-            # Create StructuredTool
-            genie_tool = StructuredTool(
-                name=genie_agent_name,
-                description=(
-                    f"Use for governed analytics queries (NL→SQL) in {space_title}. "
-                    f"{description}. "
-                    "Returns an answer and, when available, the generated SQL and reasoning."
-                ),
-                args_schema=GenieToolInput,
-                func=make_genie_tool_call(genie_agent),
-            )
-            self.genie_agent_tools.append(genie_tool)
-            
-            print(f"  ✓ Created Genie agent tool: {genie_agent_name} ({space_id})")
-    
-    def _create_parallel_execution_tool(self):
-        """
-        Create a tool that allows the agent to invoke multiple Genie agents in parallel.
-        
-        This tool gives the agent control over parallel execution with the same
-        disaster recovery capabilities as individual tool calls.
-        
-        Uses RunnableParallel pattern with StructuredTool for type safety.
-        """
-
-        
-        # Define input schema for parallel execution
-        class ParallelGenieInput(BaseModel):
-            genie_route_plan: Dict[str, str] = Field(
-                ..., 
-                description="Dictionary mapping space_id to question. Example: {'space_id_1': 'Get member demographics', 'space_id_2': 'Get benefits'}"
-            )
-        
-        # Merge function to combine outputs from multiple Genie agents
-        def merge_genie_outputs(outputs: Dict[str, Any]) -> Dict[str, Any]:
-            """
-            Merge outputs from multiple Genie agents into a unified result.
-            
-            Args:
-                outputs: Dictionary keyed by space_id, each containing agent results
-            
-            Returns:
-                Unified dictionary with extracted SQL, reasoning, and metadata from all agents
-            """
-            merged_results = {}
-            
-            for space_id, result in outputs.items():
-                extracted = {
-                    "space_id": space_id,
-                    "question": outputs.get(f"{space_id}_question", ""),
-                    "sql": "",
-                    "reasoning": "",
-                    "answer": "",
-                    "conversation_id": "",
-                    "success": False
-                }
-                
-                # Handle direct dict output from StructuredTool
-                if isinstance(result, dict):
-                    extracted["answer"] = result.get("answer", "")
-                    extracted["sql"] = result.get("sql", "")
-                    extracted["reasoning"] = result.get("reasoning", "")
-                    extracted["conversation_id"] = result.get("conversation_id", "")
-                    extracted["success"] = bool(result.get("sql") or result.get("answer"))
-                
-                # Handle message-based output (fallback)
-                elif isinstance(result, dict) and "messages" in result:
-                    messages = result.get("messages", [])
-                    
-                    # Extract reasoning (query_reasoning)
-                    for msg in messages:
-                        if hasattr(msg, 'name') and msg.name == 'query_reasoning':
-                            extracted["reasoning"] = msg.content if hasattr(msg, 'content') else ""
-                            break
-                    
-                    # Extract SQL (query_sql)
-                    for msg in messages:
-                        if hasattr(msg, 'name') and msg.name == 'query_sql':
-                            extracted["sql"] = msg.content if hasattr(msg, 'content') else ""
-                            extracted["success"] = True
-                            break
-                    
-                    # Extract answer (query_result)
-                    for msg in messages:
-                        if hasattr(msg, 'name') and msg.name == 'query_result':
-                            extracted["answer"] = msg.content if hasattr(msg, 'content') else ""
-                            break
-                    
-                    # Extract conversation_id
-                    extracted["conversation_id"] = result.get("conversation_id", "")
-                
-                merged_results[space_id] = extracted
-            
-            return merged_results
-        
-        # Build a mapping from space_id to tool for easy lookup
-        space_id_to_tool = {}
-        for space in self.relevant_spaces:
-            space_id = space.get("space_id")
-            if space_id:
-                # Find the corresponding tool by matching space_id
-                for tool in self.genie_agent_tools:
-                    # Match tool to space by checking if space_title is in tool name
-                    space_title = space.get("space_title", space_id)
-                    if f"Genie_{space_title}" == tool.name:
-                        space_id_to_tool[space_id] = tool
-                        break
-        
-        # Tool function that builds and invokes dynamic parallel execution
-        def invoke_parallel_genie_agents(genie_route_plan: Dict[str, str]) -> Dict[str, Any]:
-            """
-            Invoke multiple Genie agents in parallel for efficient SQL generation.
-            
-            StructuredTool with args_schema expects individual field arguments,
-            not a single Pydantic object.
-            
-            Args:
-                genie_route_plan: Dictionary mapping space_id to question
-            
-            Returns:
-                Dictionary with results from each Genie agent, keyed by space_id.
-                Each result contains the SQL query, reasoning, and answer from that agent.
-            """
-            try:
-                route_plan = genie_route_plan
-                
-                # Validate all requested space_ids exist
-                for space_id in route_plan.keys():
-                    if space_id not in space_id_to_tool:
-                        return {
-                            "error": f"No tool found for space_id: {space_id}",
-                            "available_space_ids": list(space_id_to_tool.keys())
-                        }
-                
-                if not route_plan:
-                    return {"error": "No valid parallel tasks to execute"}
-                
-                # Build dynamic parallel tasks - each task invokes the corresponding tool's func
-                # Call the underlying function directly with individual arguments
-                parallel_tasks = {}
-                for space_id, question in route_plan.items():
-                    tool = space_id_to_tool[space_id]
-                    # Create a lambda that calls the tool's func with individual kwargs
-                    # Use default argument to capture values properly in closure
-                    parallel_tasks[space_id] = RunnableLambda(
-                        lambda inp, sid=space_id, t=tool: t.func(
-                            question=inp[sid], conversation_id=None
-                        )
-                    )
-                
-                # Create parallel runner and compose with merge function
-                parallel = RunnableParallel(**parallel_tasks)
-                composed = parallel | RunnableLambda(merge_genie_outputs)
-                
-                # Invoke the composed chain
-                results = composed.invoke(route_plan)
-                
-                return results
-                
-            except Exception as e:
-                return {"error": f"Parallel execution failed: {str(e)}"}
-        
-        # Create StructuredTool with proper schema
-        parallel_tool = StructuredTool(
-            name="invoke_parallel_genie_agents",
-            description=(
-                "Invoke multiple Genie agents in PARALLEL for fast SQL generation. "
-                "Input: Dictionary mapping space_id to question. "
-                "Example: {'space_01j9t0jhx009k25rvp67y1k7j0': 'Get member demographics', 'space_01j9t0jhx009k25rvp67y1k7j1': 'Get benefit costs'}. "
-                "Returns: Dictionary with SQL, reasoning, and answer from each agent. "
-                "Use this tool when: "
-                "(1) You need to query multiple Genie spaces simultaneously, "
-                "(2) The queries are independent (no dependencies between them), "
-                "(3) You want faster execution than calling each agent sequentially. "
-                "After getting results, check if you have all needed SQL components. If missing information, you can: "
-                "call this tool again with updated questions, or call individual Genie agent tools for specific missing pieces."
-            ),
-            args_schema=ParallelGenieInput,
-            func=invoke_parallel_genie_agents,
-        )
-        
-        return parallel_tool
-    
-    def _create_sql_synthesis_agent(self):
-        """
-        Create LangGraph SQL Synthesis Agent with Genie agent tools.
-        
-        Uses Databricks LangGraph SDK with create_agent pattern.
-        Includes both individual Genie agent tools AND a parallel execution tool.
-        """
-        tools = []
-        tools.extend(self.genie_agent_tools)
-        
-        # Add parallel execution tool
-        parallel_tool = self._create_parallel_execution_tool()
-        tools.append(parallel_tool)
-        
-        print(f"✓ Created SQL Synthesis Agent with {len(self.genie_agent_tools)} Genie agent tools + 1 parallel execution tool")
-        
-        # Create SQL Synthesis Agent (specialized for multi-agent system)
-        sql_synthesis_agent = create_agent(
-            model=self.llm,
-            tools=tools,
-            system_prompt=(
-"""You are a SQL synthesis agent with access to both INDIVIDUAL and PARALLEL Genie agent execution tools.
-
-The Plan given to you is a JSON:
-{
-'original_query': 'The User's Question',
-'vector_search_relevant_spaces_info': [{'space_id': 'space_id_1', 'space_title': 'space_title_1'}, ...],
-"question_clear": true,
-"sub_questions": ["sub-question 1", "sub-question 2", ...],
-"requires_multiple_spaces": true/false,
-"relevant_space_ids": ["space_id_1", "space_id_2", ...],
-"requires_join": true/false,
-"join_strategy": "table_route" or "genie_route" or null,
-"execution_plan": "Brief description of execution plan",
-"genie_route_plan": {'space_id_1':'partial_question_1', 'space_id_2':'partial_question_2', ...} or null,}
-
-## TOOL EXECUTION STRATEGY:
-
-### OPTION 1: PARALLEL EXECUTION (⚡ ALWAYS USE THIS - Saves 1-2 seconds!)
-**DEFAULT STRATEGY**: Use the `invoke_parallel_genie_agents` tool to query ALL Genie spaces simultaneously.
-This tool executes multiple Genie agent calls in parallel using RunnableParallel pattern.
-
-1. Extract the genie_route_plan from the input JSON
-2. Convert it to a JSON string: '{"space_id_1": "question1", "space_id_2": "question2"}'
-3. Call: invoke_parallel_genie_agents(genie_route_plan='{"space_id_1": "question1", ...}')
-4. You'll receive JSON with SQL and thinking from ALL agents at once
-5. Check if you have all needed SQL components
-6. If missing information:
-   - Reframe questions and call invoke_parallel_genie_agents again with updated questions
-   - OR call specific individual Genie agent tools for missing pieces
-
-### OPTION 2: SEQUENTIAL EXECUTION (⚠️ Only for Special Cases)
-**RARE**: Only use individual Genie agent tools sequentially when:
-- One query strictly depends on results from another (rare in practice)
-- Parallel execution failed and you need granular error handling
-- You're doing adaptive refinement based on partial results
-
-**NOTE**: 99% of queries should use OPTION 1 (parallel) for optimal performance.
-
-## DISASTER RECOVERY (DR) - WORKS FOR BOTH PARALLEL AND SEQUENTIAL:
-
-1. **First Attempt**: Try your query AS IS
-2. **If fails**: Analyze the error message
-   - If agent says "I don't have information for X", remove X from the question
-   - If agent returns empty/incomplete SQL, try rephrasing the question
-3. **Retry Once**: Call the same tool with updated question(s)
-4. **If still fails**: Try alternative Genie agents that might have the information
-5. **Final fallback**: Work with what you have and explain limitations
-
-## EXAMPLE PARALLEL EXECUTION WITH DR:
-
-Step 1: Call invoke_parallel_genie_agents with initial questions
-Step 2: Check results - if space_1 succeeded but space_2 failed
-Step 3: Keep space_1 SQL, retry space_2 with reframed question using invoke_parallel_genie_agents
-Step 4: Combine all successful SQL fragments
-
-## SQL SYNTHESIS:
-
-MULTI-QUERY STRATEGY:
-- If the question has multiple parts and you think it's better to report each query
-  and result separately instead of combining into one big complex query:
-  * Generate MULTIPLE separate SQL queries (one per sub-question)
-  * This is preferred when: sub-questions are independent, results are easier to interpret
-    separately, or combining would create overly complex SQL
-- If sub-questions are closely related and naturally combine (e.g., same Genie space, similar context):
-  * You may combine SQL fragments into a single query
-
-OUTPUT REQUIREMENTS:
-- Generate complete, executable SQL with:
-  * Proper JOINs based on execution plan strategy
-  * WHERE clauses for filtering  
-  * Appropriate aggregations
-  * Clear column aliases
-  * Always use real column names from the data
-- Return your response with:
-  1. Your explanation (including which execution strategy you used)
-  2. SQL queries formatted as follows:
-     * For SINGLE-part questions: One ```sql code block with query ending in semicolon
-     * For MULTI-part questions: Use SEPARATE ```sql code blocks (one per query)
-     * Each query MUST end with a semicolon (;)
-     * Add a leading comment before each query: -- Query N: <brief description>
-     * Example for multi-part:
-       ```sql
-       -- Query 1: Most common diagnoses
-       SELECT diagnosis_code, COUNT(*) AS freq FROM diagnosis GROUP BY diagnosis_code;
-       ```
-       ```sql
-       -- Query 2: Top procedures
-       SELECT procedure_code, COUNT(*) AS count FROM procedures GROUP BY procedure_code;
-       ```"""
-            )
-        )
-        
-        return sql_synthesis_agent
-    
-    def invoke_genie_agents_parallel(self, genie_route_plan: Dict[str, str]) -> Dict[str, Any]:
-        """
-        Invoke multiple Genie agents in parallel using RunnableParallel.
-        
-        This method demonstrates the proper use of RunnableParallel for efficient
-        parallel execution of multiple Genie agents simultaneously.
-        
-        Args:
-            genie_route_plan: Dictionary mapping space_id to partial_question
-                Example: {
-                    "space_01j9t0jhx009k25rvp67y1k7j0": "Get member demographics",
-                    "space_01j9t0jhx009k25rvp67y1k7j1": "Get benefit costs"
-                }
-        
-        Returns:
-            Dictionary mapping space_id to agent response
-            Example: {
-                "space_01j9t0jhx009k25rvp67y1k7j0": {...response...},
-                "space_01j9t0jhx009k25rvp67y1k7j1": {...response...}
-            }
-        """
-        if not genie_route_plan:
-            return {}
-        
-        # Build space_id to tool mapping
-        space_id_to_tool = {}
-        for space in self.relevant_spaces:
-            space_id = space.get("space_id")
-            if space_id and space_id in genie_route_plan:
-                # Find the corresponding tool by matching space_id
-                for tool in self.genie_agent_tools:
-                    space_title = space.get("space_title", space_id)
-                    if f"Genie_{space_title}" == tool.name:
-                        space_id_to_tool[space_id] = tool
-                        break
-        
-        # Build parallel tasks that call tool.func() directly with individual arguments
-        parallel_tasks = {}
-        for space_id, question in genie_route_plan.items():
-            if space_id in space_id_to_tool:
-                tool = space_id_to_tool[space_id]
-                parallel_tasks[space_id] = RunnableLambda(
-                    lambda inp, sid=space_id, t=tool: t.func(
-                        question=inp[sid], conversation_id=None
-                    )
-                )
-            else:
-                print(f"  ⚠ Warning: No tool found for space_id: {space_id}")
-        
-        if not parallel_tasks:
-            print("  ⚠ Warning: No valid parallel tasks to execute")
-            return {}
-        
-        # Create RunnableParallel with all tasks
-        parallel_runner = RunnableParallel(**parallel_tasks)
-        
-        print(f"  🚀 Invoking {len(parallel_tasks)} Genie agents in parallel using RunnableParallel...")
-        
-        try:
-            # Invoke all agents in parallel
-            # Now invoke with the actual question mapping
-            results = parallel_runner.invoke(genie_route_plan)
-            
-            print(f"  ✅ Parallel invocation completed for {len(results)} agents")
-            print(results)
-            return results
-            
-        except Exception as e:
-            print(f"  ❌ Parallel invocation failed: {str(e)}")
-            return {}
-    
-    def synthesize_sql(
-        self, 
-        plan: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """
-        Synthesize SQL using Genie agents with intelligent tool selection.
-        
-        The agent has access to:
-        1. invoke_parallel_genie_agents tool - For fast parallel execution
-        2. Individual Genie agent tools - For sequential/dependent queries
-        
-        The agent autonomously decides which strategy to use and handles
-        disaster recovery with retry logic for both parallel and sequential execution
-        
-        Args:
-            plan: Complete plan dictionary from PlanningAgent containing:
-                - original_query: Original user question
-                - execution_plan: Execution plan description
-                - genie_route_plan: Mapping of space_id to partial question
-                - vector_search_relevant_spaces_info: List of relevant spaces
-                - relevant_space_ids: List of relevant space IDs
-                - requires_join: Whether join is needed
-                - join_strategy: Join strategy (table_route/genie_route)
-            
-        Returns:
-            Dictionary with:
-            - sql: str - Combined SQL query (None if cannot generate)
-            - explanation: str - Agent's explanation/reasoning
-            - has_sql: bool - Whether SQL was successfully extracted
-        """
-        # Build the plan result JSON for the agent
-        plan_result = plan
-        
-        print(f"\n{'='*80}")
-        print("🤖 SQL Synthesis Agent - Starting (with parallel execution tool)...")
-        print(f"{'='*80}")
-        print(f"Plan: {json.dumps(plan_result, indent=2)}")
-        print(f"{'='*80}\n")
-        
-        # Create the message for the agent
-        # The agent will autonomously decide whether to use:
-        # 1. invoke_parallel_genie_agents tool (fast parallel execution)
-        # 2. Individual Genie agent tools (sequential execution)
-        # 3. A combination of both strategies
-        agent_message = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"""
-Generate a SQL query to answer the question according to the Query Plan:
-{json.dumps(plan_result, indent=2)}
-
-RECOMMENDED APPROACH:
-If 'genie_route_plan' is provided with multiple spaces, consider using the invoke_parallel_genie_agents tool for faster execution.
-Convert the genie_route_plan to a JSON string and call the tool to get all SQL fragments in parallel.
-Then combine them into a final SQL query.
-"""
-                }
-            ]
-        }
-        
-        try:
-            # MLflow autologging is enabled globally at agent initialization
-            # No need to call it again here to avoid context issues
-            
-            # Invoke the agent
-            result = self.sql_synthesis_agent.invoke(agent_message)
-            
-            # Extract SQL from agent result
-            # The agent returns {"messages": [...]}
-            # Last message contains the final response
-            final_message = result["messages"][-1]
-            final_content = final_message.content.strip()
-            
-            print(f"\n{'='*80}")
-            print("✅ SQL Synthesis Agent completed")
-            print(f"{'='*80}")
-            print(f"Result: {final_content[:500]}...")
-            print(f"{'='*80}\n")
-            
-            # Extract SQL and explanation from the result
-            sql_query = None
-            has_sql = False
-            explanation = final_content
-            
-            # Clean markdown if present and extract SQL - use findall to capture ALL code blocks
-            if "```sql" in final_content.lower():
-                # Find all ```sql blocks
-                sql_blocks = re.findall(r'```sql\s*(.*?)\s*```', final_content, re.IGNORECASE | re.DOTALL)
-                if sql_blocks:
-                    # Join all SQL blocks with newlines to preserve multi-query structure
-                    sql_query = '\n\n'.join(block.strip() for block in sql_blocks if block.strip())
-                    has_sql = True
-                    # Remove all SQL blocks to get explanation
-                    explanation = re.sub(r'```sql\s*.*?\s*```', '', final_content, flags=re.IGNORECASE | re.DOTALL)
-            elif "```" in final_content:
-                # Find all generic code blocks
-                code_blocks = re.findall(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
-                # Filter for SQL-like blocks
-                sql_blocks = [
-                    block.strip() for block in code_blocks 
-                    if block.strip() and any(keyword in block.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN', 'WITH'])
-                ]
-                if sql_blocks:
-                    # Join all SQL blocks
-                    sql_query = '\n\n'.join(sql_blocks)
-                    has_sql = True
-                    # Remove all code blocks to get explanation
-                    explanation = re.sub(r'```\s*.*?\s*```', '', final_content, flags=re.DOTALL)
-            else:
-                # No markdown, check if the entire content is SQL
-                if any(keyword in final_content.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN']):
-                    sql_query = final_content
-                    has_sql = True
-                    explanation = "SQL query generated successfully by Genie agent tools."
-            
-            explanation = explanation.strip()
-            if not explanation:
-                explanation = final_content if not has_sql else "SQL query generated successfully by Genie agent tools."
-            
-            return {
-                "sql": sql_query,
-                "explanation": explanation,
-                "has_sql": has_sql
-            }
-            
-        except Exception as e:
-            print(f"\n{'='*80}")
-            print("❌ SQL Synthesis Agent failed")
-            print(f"{'='*80}")
-            print(f"Error: {str(e)}")
-            print(f"{'='*80}\n")
-            
-            return {
-                "sql": None,
-                "explanation": f"SQL synthesis failed: {str(e)}",
-                "has_sql": False
-            }
-    
-    def __call__(
-        self, 
-        plan: Dict[str, Any]
-    ) -> Dict[str, Any]:
-        """Make agent callable with plan dictionary."""
-        return self.synthesize_sql(plan)
-
-print("✓ SQLSynthesisGenieAgent class defined")
-
-# --------------------------------------------------------------------------
-# Utility Function: Extract Multiple SQL Queries
-# --------------------------------------------------------------------------
-SQL_KEYWORDS = {'SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER', 'MERGE', 'REPLACE'}
-
-def _split_multi_query_block(block: str) -> Tuple[List[str], List[str]]:
-    """
-    Split a single SQL block that may contain multiple semicolon-separated
-    queries into individual queries and their leading-comment labels.
-    
-    Strategy:
-      1. Split the block on ';' (the standard SQL statement terminator).
-      2. For each resulting segment, extract any leading SQL comment lines
-         (lines starting with '--') as the query label / title.
-         The first leading comment line becomes the label text (without '--').
-      3. Only keep segments that contain real SQL keywords.
-    
-    Args:
-        block: A SQL string, possibly containing multiple ';'-separated statements,
-               each optionally preceded by comment-line labels such as:
-                 -- QUERY 1: Most Common Diagnoses
-                 -- Patient counts by year
-                 -- Top procedures
-    
-    Returns:
-        Tuple of (queries, labels) where:
-          - queries:  list of individual SQL query strings (with trailing ';')
-          - labels:   list of label strings aligned by index. Empty string when
-                      no leading comment was found for a query.
-    """
-    raw_segments = block.split(';')
-    
-    queries: List[str] = []
-    labels: List[str] = []
-    
-    for segment in raw_segments:
-        segment = segment.strip()
-        if not segment:
-            continue
-        
-        # Does this segment contain actual SQL?
-        segment_upper = segment.upper()
-        if not any(kw in segment_upper for kw in SQL_KEYWORDS):
-            continue
-        
-        # Walk lines: collect leading comment lines, find where SQL body starts
-        lines = segment.split('\n')
-        leading_comments: List[str] = []
-        sql_start_idx = 0
-        
-        for i, line in enumerate(lines):
-            stripped = line.strip()
-            if stripped.startswith('--'):
-                # Strip the '--' prefix and any surrounding whitespace
-                comment_text = stripped.lstrip('-').strip()
-                if comment_text:
-                    leading_comments.append(comment_text)
-            elif stripped == '':
-                # Skip blank lines between comments and SQL body
-                continue
-            else:
-                # First non-comment, non-blank line → SQL body starts here
-                sql_start_idx = i
-                break
-        else:
-            # Every line was a comment or blank → no actual SQL
-            continue
-        
-        sql_text = '\n'.join(lines[sql_start_idx:]).strip()
-        if not sql_text:
-            continue
-        
-        # Use the first leading comment as the label / title
-        label = leading_comments[0] if leading_comments else ""
-        
-        queries.append(sql_text.rstrip(';').strip() + ';')
-        labels.append(label)
-    
-    return queries, labels
-
-def extract_all_sql_queries(content: str) -> Tuple[List[str], List[str]]:
-    """
-    Extract all SQL queries from content, with support for:
-      - Multiple ```sql code blocks (each treated as a separate query)
-      - A single code block containing multiple ';'-separated queries
-      - Leading comment lines (-- ...) used as query labels / titles
-      - Raw SQL without code fences
-    
-    Args:
-        content: The text content containing SQL (possibly in markdown code blocks)
-        
-    Returns:
-        Tuple of (sql_queries, query_labels) where:
-          - sql_queries:  list of individual SQL query strings
-          - query_labels: list of label strings aligned with queries
-    """
-    raw_blocks: List[str] = []
-    
-    # 1. Find all ```sql blocks (case-insensitive)
-    sql_pattern = r'```sql\s*(.*?)\s*```'
-    matches = re.findall(sql_pattern, content, re.IGNORECASE | re.DOTALL)
-    
-    if matches:
-        raw_blocks.extend([m.strip() for m in matches if m.strip()])
-    else:
-        # 2. Fallback: generic code blocks that look like SQL
-        generic_pattern = r'```\s*(.*?)\s*```'
-        matches = re.findall(generic_pattern, content, re.DOTALL)
-        for match in matches:
-            match = match.strip()
-            if match and any(kw in match.upper() for kw in SQL_KEYWORDS):
-                raw_blocks.append(match)
-    
-    # 3. Last resort: treat the raw content itself as SQL (no code fences)
-    if not raw_blocks and any(kw in content.upper() for kw in ['SELECT', 'FROM']):
-        raw_blocks = [content.strip()]
-    
-    # 4. Split each block on ';' to extract individual queries + labels
-    all_queries: List[str] = []
-    all_labels: List[str] = []
-    for block in raw_blocks:
-        queries, labels = _split_multi_query_block(block)
-        all_queries.extend(queries)
-        all_labels.extend(labels)
-    
-    return all_queries, all_labels
-
-print("✓ extract_all_sql_queries utility function defined")
-
-# --------------------------------------------------------------------------
-# Helper Function: Extract SQL Queries from Agent Result
-# --------------------------------------------------------------------------
-def extract_sql_queries_from_agent_result(
-    result: dict,
-    agent_name: str = "agent"
-) -> Tuple[List[str], List[str]]:
-    """
-    Extract SQL queries and labels from agent result dictionary.
-    
-    This helper provides a simple, robust extraction strategy:
-      1. Try result['sql'] field first (primary source)
-      2. Try result['explanation'] field if sql is empty (fallback)
-      3. Try combined content as last resort
-    
-    Takes first non-empty result, delegating all parsing complexity to
-    extract_all_sql_queries() which handles:
-      - Markdown code fences
-      - Semicolon splitting
-      - Label extraction from comments
-      - Multiple query detection
-    
-    Args:
-        result: Agent result dict with 'sql' and/or 'explanation' fields
-        agent_name: Name for logging (e.g., 'sql_synthesis_table')
-    
-    Returns:
-        Tuple of (queries, labels):
-          - queries: List of individual SQL query strings
-          - labels: List of label strings (from leading comments)
-          Returns ([], []) if extraction fails
-    
-    Example:
-        result = {
-            "sql": "-- Query 1\\nSELECT...; -- Query 2\\nSELECT...;",
-            "explanation": "Here are the queries...",
-            "has_sql": True
-        }
-        queries, labels = extract_sql_queries_from_agent_result(result, "table_agent")
-        # Returns: (["SELECT...", "SELECT..."], ["Query 1", "Query 2"])
-    """
-    sql_query = result.get("sql", "")
-    explanation = result.get("explanation", "")
-    
-    # Attempt 1: Extract from sql field (primary source)
-    if sql_query:
-        queries, labels = extract_all_sql_queries(sql_query)
-        if queries:
-            print(f"✓ [{agent_name}] Extracted {len(queries)} quer{'y' if len(queries) == 1 else 'ies'} from 'sql' field")
-            return queries, labels
-    
-    # Attempt 2: Extract from explanation (fallback)
-    if explanation:
-        queries, labels = extract_all_sql_queries(explanation)
-        if queries:
-            print(f"✓ [{agent_name}] Extracted {len(queries)} quer{'y' if len(queries) == 1 else 'ies'} from 'explanation' field")
-            return queries, labels
-    
-    # Attempt 3: Try combined content (last resort)
-    if sql_query or explanation:
-        combined = f"{explanation}\n\n{sql_query}" if explanation and sql_query else (explanation or sql_query)
-        queries, labels = extract_all_sql_queries(combined)
-        if queries:
-            print(f"✓ [{agent_name}] Extracted {len(queries)} quer{'y' if len(queries) == 1 else 'ies'} from combined content")
-            return queries, labels
-    
-    # No SQL found
-    print(f"⚠ [{agent_name}] No SQL queries extracted from result")
-    return [], []
-
-print("✓ extract_sql_queries_from_agent_result helper function defined")
-
-class SQLExecutionAgent:
-    """
-    Agent responsible for executing SQL queries using Databricks SQL Warehouse.
-    
-    PRODUCTION-READY DESIGN:
-    - Uses databricks-sql-connector with unified authentication (Config + credentials_provider)
-    - Automatically handles OAuth credentials when deployed with registered resources
-    - Supports both development (notebook) and production (Model Serving) environments
-    
-    AUTHENTICATION WITH AUTOMATIC PASSTHROUGH:
-    When you register resources during agent deployment:
-    
-        resources = [
-            DatabricksSQLWarehouse(warehouse_id=SQL_WAREHOUSE_ID),
-            # ... other resources
-        ]
-        mlflow.langchain.log_model(..., resources=resources)
-    
-    Databricks automatically:
-    1. Creates a service principal for your agent
-    2. Manages OAuth token generation and rotation
-    3. Injects credentials into the Model Serving environment
-    
-    The Config() class automatically reads workspace host and injected OAuth credentials,
-    eliminating the need for manual DATABRICKS_HOST/DATABRICKS_TOKEN configuration.
-    
-    Reference: https://docs.databricks.com/generative-ai/agent-framework/agent-authentication
-    
-    LEGACY MANUAL AUTHENTICATION (if not using automatic passthrough):
-    If you're not using resource registration, you can still manually configure:
-    - DATABRICKS_HOST and DATABRICKS_TOKEN via Model Serving environment variables
-    - Config() will still read them from the environment
-    """
-    
-    def __init__(self, warehouse_id: str):
-        """
-        Initialize SQL Execution Agent.
-        
-        Args:
-            warehouse_id: Databricks SQL Warehouse ID for query execution
-        """
-        self.name = "SQLExecution"
-        self.warehouse_id = warehouse_id
-    
-    def execute_sql(
-        self, 
-        sql_query: str, 
-        max_rows: int = 100,
-        return_format: str = "dict"
-    ) -> Dict[str, Any]:
-        """
-        Execute SQL query using Databricks SQL Warehouse and return formatted results.
-        
-        PRODUCTION BEST PRACTICES IMPLEMENTED:
-        1. Context Managers: Uses 'with' statements for automatic resource cleanup
-        2. Connection Resilience: Configures timeouts and retry logic for transient failures
-        3. Proper Error Handling: Categorizes errors for better production debugging
-        4. ANSI SQL Mode: Ensures consistent SQL behavior across environments
-        5. Model Serving Compatible: Works without Spark session via REST API
-        
-        Connection Configuration:
-        - Socket timeout: 900s (balances Model Serving 297s limit with warehouse query time)
-        - HTTP retries: 30 attempts with exponential backoff (1-60s)
-        - Session config: ANSI mode enabled for SQL compliance
-        
-        Args:
-            sql_query: Support two types: 
-                1) The result from invoke the SQL synthesis agent (dict with messages)
-                2) The SQL query string (can be raw SQL or contain markdown code blocks)
-            max_rows: Maximum number of rows to return (default: 100)
-            return_format: Format of the result - "dict", "json", or "markdown"
-            
-        Returns:
-            Dictionary containing:
-            - success: bool - Whether execution was successful
-            - sql: str - The executed SQL query
-            - result: Any - Query results in requested format
-            - row_count: int - Number of rows returned
-            - columns: List[str] - Column names
-            - error: str - Error message if failed (optional)
-            - error_type: str - Exception type for debugging (only on failure)
-            - error_hint: str - Suggested resolution (only on failure)
-        """
-        from databricks import sql
-        from databricks.sdk.core import Config
-        import json
-        
-        # Step 1: Extract SQL from agent result or markdown code blocks if present
-        if sql_query and isinstance(sql_query, dict) and "messages" in sql_query:
-            sql_query = sql_query["messages"][-1].content
-        
-        extracted_sql = sql_query.strip()
-        
-        if "```sql" in extracted_sql.lower():
-            # Extract content between ```sql and ```
-            sql_match = re.search(r'```sql\s*(.*?)\s*```', extracted_sql, re.IGNORECASE | re.DOTALL)
-            if sql_match:
-                extracted_sql = sql_match.group(1).strip()
-        elif "```" in extracted_sql:
-            # Extract any code block
-            sql_match = re.search(r'```\s*(.*?)\s*```', extracted_sql, re.DOTALL)
-            if sql_match:
-                extracted_sql = sql_match.group(1).strip()
-        
-        # Step 2: Enforce LIMIT clause (for safety and token management)
-        # Always enforce max_rows limit, even if query already has LIMIT
-        limit_pattern = re.search(r'\bLIMIT\s+(\d+)\b', extracted_sql, re.IGNORECASE)
-        if limit_pattern:
-            existing_limit = int(limit_pattern.group(1))
-            if existing_limit > max_rows:
-                # Replace existing LIMIT with max_rows if it exceeds the limit
-                extracted_sql = re.sub(
-                    r'\bLIMIT\s+\d+\b', 
-                    f'LIMIT {max_rows}', 
-                    extracted_sql, 
-                    flags=re.IGNORECASE
-                )
-                print(f"⚠️  Reduced LIMIT from {existing_limit} to {max_rows} (max_rows enforcement)")
-        else:
-            # Add LIMIT if not present
-            extracted_sql = f"{extracted_sql.rstrip(';')} LIMIT {max_rows}"
-        
-        try:
-            # Step 3: Initialize Databricks Config for unified authentication
-            # BEST PRACTICE: Config() automatically reads workspace host and OAuth credentials
-            # - In Model Serving with automatic passthrough: reads injected service principal credentials
-            # - In notebooks: reads from notebook context or environment variables
-            # - With manual config: reads DATABRICKS_HOST and DATABRICKS_TOKEN from environment
-            cfg = Config()
-            
-            # Step 4: Execute the SQL query using SQL Warehouse
-            print(f"\n{'='*80}")
-            print("🔍 EXECUTING SQL QUERY (via SQL Warehouse)")
-            print(f"{'='*80}")
-            print(f"Warehouse ID: {self.warehouse_id}")
-            print(f"SQL:\n{extracted_sql}")
-            print(f"{'='*80}\n")
-            
-            # Connect to SQL Warehouse using context manager (production best practice)
-            # Context managers ensure proper cleanup even if exceptions occur
-            # credentials_provider=cfg lets the connector fetch OAuth tokens transparently
-            with sql.connect(
-                server_hostname=cfg.host,
-                http_path=f"/sql/1.0/warehouses/{self.warehouse_id}",
-                credentials_provider=lambda: cfg.authenticate,  # Unified authentication - handles OAuth automatically
-                # Production settings for resilience
-                session_configuration={
-                    "ansi_mode": "true"  # Enable ANSI SQL compliance for consistent behavior
-                },
-                socket_timeout=900,  # 15 minutes - Model Serving has 297s limit, warehouse queries can be longer
-                http_retry_delay_min=1,  # Minimum retry delay in seconds
-                http_retry_delay_max=60,  # Maximum retry delay in seconds
-                http_retry_max_redirects=5,  # Max HTTP redirects
-                http_retry_stop_after_attempts=30,  # Max retry attempts for transient failures
-            ) as connection:
-                
-                # Use nested context manager for cursor (ensures cursor cleanup)
-                with connection.cursor() as cursor:
-                    
-                    # Execute query
-                    cursor.execute(extracted_sql)
-                    
-                    # PHASE 2 OPTIMIZATION: Get row count efficiently
-                    # Try to use cursor.rowcount if available (more efficient than len(fetchall()))
-                    columns = [desc[0] for desc in cursor.description]
-                    
-                    # Fetch results (limited by LIMIT clause already enforced)
-                    results = cursor.fetchall()
-                    
-                    # Use actual result count (fetchall is safe because of LIMIT enforcement)
-                    row_count = len(results)
-                    
-                    print(f"✅ Query executed successfully!")
-                    print(f"📊 Rows returned: {row_count} (LIMIT enforced at {max_rows})")
-                    print(f"📋 Columns: {', '.join(columns)}\n")
-                    print(f"⚡ Optimization: Query has LIMIT {max_rows} - safe to fetch all rows")
-                    
-                    # Step 5: Convert results to list of dicts for compatibility
-                    result_data = [dict(zip(columns, row)) for row in results]
-                    
-                # Cursor automatically closed here by context manager
-            
-            # Connection automatically closed here by context manager
-            
-            # Step 6: Format results based on return_format
-            if return_format == "json":
-                # Convert to JSON strings (matching old spark behavior)
-                result_data = [json.dumps(row) for row in result_data]
-            elif return_format == "markdown":
-                # Create markdown table
-                import pandas as pd
-                pandas_df = pd.DataFrame(result_data)
-                result_data = pandas_df.to_markdown(index=False)
-            # else: dict format (default) - already in correct format
-            
-            # Step 7: Display preview
-            print(f"{'='*80}")
-            print("📄 RESULTS PREVIEW (first 10 rows)")
-            print(f"{'='*80}")
-            # Preview first 10 rows
-            for i, row in enumerate(result_data[:10]):
-                if return_format == "markdown":
-                    break  # Don't print individual rows for markdown
-                print(f"Row {i+1}: {row}")
-            print(f"{'='*80}\n")
-            
-            return {
-                "success": True,
-                "sql": extracted_sql,
-                "result": result_data,
-                "row_count": row_count,
-                "columns": columns,
-            }
-            
-        except Exception as e:
-            # Step 8: Handle errors with specific exception types for better diagnostics
-            error_type = type(e).__name__
-            error_msg = str(e)
-            
-            # Provide production-grade error categorization
-            if "DatabaseError" in error_type or "OperationalError" in error_type:
-                error_category = "SQL Execution Error"
-                error_hint = "Check SQL syntax and table/column permissions"
-            elif "ConnectionError" in error_type or "timeout" in error_msg.lower():
-                error_category = "Connection Error"
-                error_hint = "Verify SQL Warehouse is running and network connectivity"
-            elif "Authentication" in error_msg or "Unauthorized" in error_msg:
-                error_category = "Authentication Error"
-                error_hint = "Verify access token and warehouse permissions"
-            else:
-                error_category = "General Error"
-                error_hint = "Review full error details below"
-            
-            print(f"\n{'='*80}")
-            print(f"❌ SQL EXECUTION FAILED - {error_category}")
-            print(f"{'='*80}")
-            print(f"Error Type: {error_type}")
-            print(f"Error Message: {error_msg}")
-            print(f"Hint: {error_hint}")
-            print(f"Warehouse ID: {self.warehouse_id}")
-            print(f"{'='*80}\n")
-            
-            return {
-                "success": False,
-                "sql": extracted_sql,
-                "result": None,
-                "row_count": 0,
-                "columns": [],
-                "error": f"{error_category}: {error_msg}",
-                "error_type": error_type,
-                "error_hint": error_hint
-            }
-    
-    def execute_sql_parallel(
-        self,
-        sql_queries: List[str],
-        max_rows: int = 100,
-        return_format: str = "dict",
-        max_workers: int = 4
-    ) -> List[Dict[str, Any]]:
-        """
-        Execute multiple SQL queries in parallel using ThreadPoolExecutor.
-        
-        Each query runs in its own thread with an independent sql.connect() connection,
-        so there is no shared state between threads. This is safe because execute_sql()
-        creates and closes its own connection/cursor via context managers per call.
-        
-        ThreadPoolExecutor is used instead of asyncio because databricks-sql-connector
-        is synchronous (no native async API), and the work is I/O-bound (waiting on
-        SQL Warehouse HTTP responses), so the GIL is not a bottleneck.
-        
-        Args:
-            sql_queries: List of SQL query strings to execute
-            max_rows: Maximum rows per query (default: 100)
-            return_format: Result format - "dict", "json", or "markdown"
-            max_workers: Maximum concurrent threads (default: 4, tune to warehouse concurrency)
-        
-        Returns:
-            List of result dicts (same format as execute_sql), ordered to match input queries.
-            Each result includes a "query_number" field (1-indexed).
-        """
-        import concurrent.futures
-        
-        # Fast path: skip threading overhead for single query
-        if len(sql_queries) <= 1:
-            if sql_queries:
-                result = self.execute_sql(sql_queries[0], max_rows, return_format)
-                result["query_number"] = 1
-                return [result]
-            return []
-        
-        print(f"⚡ Executing {len(sql_queries)} queries in parallel (max_workers={min(len(sql_queries), max_workers)})")
-        
-        results = [None] * len(sql_queries)  # Pre-allocate to preserve ordering
-        
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(sql_queries), max_workers)) as executor:
-            future_to_idx = {
-                executor.submit(self.execute_sql, query, max_rows, return_format): idx
-                for idx, query in enumerate(sql_queries)
-            }
-            
-            for future in concurrent.futures.as_completed(future_to_idx):
-                idx = future_to_idx[future]
-                try:
-                    result = future.result()
-                except Exception as e:
-                    # Catch unexpected errors not handled inside execute_sql
-                    result = {
-                        "success": False,
-                        "sql": sql_queries[idx],
-                        "result": None,
-                        "row_count": 0,
-                        "columns": [],
-                        "error": f"Parallel execution error: {type(e).__name__}: {str(e)}"
-                    }
-                result["query_number"] = idx + 1
-                results[idx] = result
-        
-        succeeded = sum(1 for r in results if r["success"])
-        print(f"⚡ Parallel execution complete: {succeeded}/{len(sql_queries)} succeeded")
-        
-        return results
-    
-    def __call__(self, sql_query: str, max_rows: int = 100, return_format: str = "dict") -> Dict[str, Any]:
-        """Make agent callable."""
-        return self.execute_sql(sql_query, max_rows, return_format)
-
-print("✓ SQLExecutionAgent class defined")
-class ResultSummarizeAgent:
-    """
-    Agent responsible for generating a final summary of the workflow execution.
-    
-    Analyzes the entire workflow state and produces a natural language summary
-    of what was accomplished, whether successful or not.
-    
-    OOP design for clean summarization logic.
-    """
-    
-    def __init__(self, llm: Runnable):
-        self.name = "ResultSummarize"
-        self.llm = llm
-    
-    @staticmethod
-    def _safe_json_dumps(obj: Any, indent: int = 2) -> str:
-        """
-        Safely serialize objects to JSON, converting dates/datetime to strings.
-        
-        Args:
-            obj: Object to serialize
-            indent: JSON indentation level
-            
-        Returns:
-            JSON string with date/datetime objects converted to ISO format strings
-        """
-        from datetime import date, datetime
-        from decimal import Decimal
-        
-        def default_handler(o):
-            if isinstance(o, (date, datetime)):
-                return o.isoformat()
-            elif isinstance(o, Decimal):
-                return float(o)
-            else:
-                raise TypeError(f'Object of type {o.__class__.__name__} is not JSON serializable')
-        
-        return json.dumps(obj, indent=indent, default=default_handler)
-    
-    def generate_summary(self, state: AgentState) -> str:
-        """
-        Generate a natural language summary of the workflow execution.
-        
-        Args:
-            state: The complete workflow state
-            
-        Returns:
-            String containing natural language summary
-        """
-        # Build context from state
-        summary_prompt = self._build_summary_prompt(state)
-        
-        # Stream LLM response for immediate first token emission
-        print("🤖 Streaming summary generation...")
-        summary = ""
-        for chunk in self.llm.stream(summary_prompt):
-            if chunk.content:
-                summary += chunk.content
-        
-        summary = summary.strip()
-        print(f"✓ Summary stream complete ({len(summary)} chars)")
-        
-        # Append Option B downloadable tables if query execution was successful
-        # Support multiple results
-        execution_results = state.get('execution_results', [])
-        exec_result = state.get('execution_result', {})
-        
-        if not execution_results and exec_result:
-            execution_results = [exec_result]
-        
-        for idx, result_item in enumerate(execution_results):
-            if result_item and result_item.get('success'):
-                columns = result_item.get('columns', [])
-                result = result_item.get('result', [])
-                
-                if columns and result:
-                    label_suffix = f" (Query {idx + 1})" if len(execution_results) > 1 else ""
-                    option_b_tables = self._format_option_b_tables(columns, result, display_rows=100)
-                    if len(execution_results) > 1:
-                        option_b_tables = option_b_tables.replace("## 📥 Downloadable Results", f"## 📥 Downloadable Results{label_suffix}")
-                    summary += option_b_tables
-                    print(f"✓ Appended Option B downloadable tables{label_suffix} ({len(option_b_tables)} chars)")
-        
-        return summary
-    
-    def _format_option_b_tables(
-        self,
-        columns: List[str],
-        data: List[Dict[str, Any]],
-        display_rows: int = 100
-    ) -> str:
-        """
-        Generate Option B downloadable table formats for Databricks Playground:
-        - Single scrollable markdown table (all rows in one table)
-        - Full JSON export (all rows in collapsible section)
-        
-        Args:
-            columns: List of column names
-            data: List of row dictionaries
-            display_rows: Number of rows to display (default 100)
-            
-        Returns:
-            Formatted markdown string with collapsible sections
-        """
-        if not data or not columns:
-            return ""
-        
-        # Limit to display_rows
-        display_data = data[:display_rows]
-        total_rows = len(data)
-        
-        markdown = "\n\n---\n\n## 📥 Downloadable Results\n\n"
-        
-        # Part 1: Single Scrollable Markdown Table
-        markdown += "### Markdown Table (Scrollable)\n\n"
-        markdown += f"<details>\n<summary>📄 View Full Table ({len(display_data)} rows) - Click to expand</summary>\n\n"
-        
-        # Generate single markdown table with all rows
-        markdown += "| " + " | ".join(columns) + " |\n"
-        markdown += "| " + " | ".join(["---"] * len(columns)) + " |\n"
-        
-        for row in display_data:
-            row_values = [str(row.get(col, "")) for col in columns]
-            markdown += "| " + " | ".join(row_values) + " |\n"
-        
-        markdown += "\n</details>\n\n"
-        
-        # Part 2: Full JSON Export
-        markdown += "### JSON Format (All Rows)\n\n"
-        markdown += "<details>\n<summary>📋 JSON Export (click to expand)</summary>\n\n"
-        markdown += "```json\n"
-        markdown += self._safe_json_dumps({
-            "columns": columns,
-            "data": display_data,
-            "row_count": len(display_data)
-        }, indent=2)
-        markdown += "\n```\n\n"
-        markdown += "</details>\n\n"
-        
-        if total_rows > display_rows:
-            markdown += f"*Note: Showing top {display_rows} of {total_rows} total rows in downloadable format above.*\n"
-        
-        return markdown
-    
-    def _build_summary_prompt(self, state: AgentState) -> str:
-        """Build the prompt for summary generation based on state."""
-        
-        original_query = state.get('original_query', 'N/A')
-        question_clear = state.get('question_clear', False)
-        pending_clarification = state.get('pending_clarification')
-        execution_plan = state.get('execution_plan')
-        join_strategy = state.get('join_strategy')
-        sql_query = state.get('sql_query')
-        sql_explanation = state.get('sql_synthesis_explanation')
-        exec_result = state.get('execution_result', {})
-        synthesis_error = state.get('synthesis_error')
-        execution_error = state.get('execution_error')
-        
-        prompt = f"""You are a result summarization agent. Generate a concise, natural language summary of what this multi-agent workflow accomplished.
-
-**Original User Query:** {original_query}
-
-**Workflow Execution Details:**
-
-"""
-        
-        # Add clarification info
-        if not question_clear and pending_clarification:
-            clarification_reason = pending_clarification.get('reason', 'Query needs clarification')
-            prompt += f"""**Status:** Query needs clarification
-**Clarification Needed:** {clarification_reason}
-**Summary:** The query was too vague or ambiguous. Requested user clarification before proceeding.
-"""
-        else:
-            # Add planning info
-            if execution_plan:
-                prompt += f"""**Planning:** {execution_plan}
-**Strategy:** {join_strategy or 'N/A'}
-
-"""
-            
-            # NEW: Check for multiple SQL queries and results
-            sql_queries = state.get('sql_queries', [])
-            query_labels = state.get('sql_query_labels', [])
-            execution_results = state.get('execution_results', [])
-            
-            # Fallback to single query/result for backward compatibility
-            if not sql_queries and sql_query:
-                sql_queries = [sql_query]
-            if not execution_results and exec_result:
-                execution_results = [exec_result]
-            
-            # Add SQL synthesis info
-            if sql_queries:
-                if len(sql_queries) == 1:
-                    # Single query (original behavior)
-                    label = query_labels[0] if query_labels else ""
-                    label_display = f" — {label}" if label else ""
-                    prompt += f"""**SQL Generation:** ✅ Successful{label_display}
-**SQL Query:** 
-```sql
-{sql_queries[0]}
-```
-
-"""
-                else:
-                    # Multiple queries
-                    prompt += f"""**SQL Generation:** ✅ Successful ({len(sql_queries)} queries for multi-part question)
-
-"""
-                    for i, query in enumerate(sql_queries, 1):
-                        label = query_labels[i-1] if i <= len(query_labels) and query_labels[i-1] else ""
-                        label_display = f" — {label}" if label else ""
-                        prompt += f"""**SQL Query {i}{label_display}:** 
-```sql
-{query}
-```
-
-"""
-                
-                if sql_explanation:
-                    prompt += f"""**SQL Synthesis Explanation:** {sql_explanation[:2000]}{'...' if len(sql_explanation) > 2000 else ''}
-
-"""
-                
-                # TOKEN PROTECTION: Sample results to prevent huge prompts
-                MAX_PREVIEW_ROWS = 20
-                MAX_PREVIEW_COLS = 20
-                MAX_JSON_CHARS = 2000
-                
-                # Add execution info (single or multiple results)
-                if execution_results:
-                    if len(execution_results) == 1:
-                        # Single result (original behavior with token protection)
-                        result = execution_results[0]
-                        if result.get('success'):
-                            row_count = result.get('row_count', 0)
-                            columns = result.get('columns', [])
-                            result_data = result.get('result', [])
-                            
-                            # Sample rows
-                            result_preview = result_data[:MAX_PREVIEW_ROWS] if len(result_data) > MAX_PREVIEW_ROWS else result_data
-                            
-                            # Sample columns (if result has too many columns)
-                            if result_preview and len(columns) > MAX_PREVIEW_COLS:
-                                sampled_cols = columns[:MAX_PREVIEW_COLS]
-                                result_preview = [
-                                    {k: v for k, v in row.items() if k in sampled_cols}
-                                    for row in result_preview
-                                ]
-                                col_display = ', '.join(sampled_cols) + f'... (+{len(columns) - MAX_PREVIEW_COLS} more columns)'
-                            else:
-                                col_display = ', '.join(columns[:10]) + ('...' if len(columns) > 10 else '')
-                            
-                            # Serialize to JSON
-                            result_json = self._safe_json_dumps(result_preview, indent=2)
-                            
-                            # Truncate JSON if too large
-                            if len(result_json) > MAX_JSON_CHARS:
-                                result_json = result_json[:MAX_JSON_CHARS] + f'\n... (truncated, {len(result_json) - MAX_JSON_CHARS} chars omitted)'
-                            
-                            prompt += f"""**Execution:** ✅ Successful
-**Rows:** {row_count} rows returned{f' (showing first {MAX_PREVIEW_ROWS})' if row_count > MAX_PREVIEW_ROWS else ''}
-**Columns:** {col_display}
-
-**Result Preview:** 
-{result_json}
-{f'... and {row_count - MAX_PREVIEW_ROWS} more rows' if row_count > MAX_PREVIEW_ROWS else ''}
-"""
-                        else:
-                            prompt += f"""**Execution:** ❌ Failed
-**Error:** {result.get('error', 'Unknown error')}
-
-"""
-                    else:
-                        # Multiple results
-                        all_successful = all(r.get('success') for r in execution_results)
-                        total_rows = sum(r.get('row_count', 0) for r in execution_results if r.get('success'))
-                        
-                        if all_successful:
-                            prompt += f"""**Execution:** ✅ All {len(execution_results)} queries executed successfully
-**Total Rows Returned:** {total_rows}
-
-"""
-                        else:
-                            failed_count = sum(1 for r in execution_results if not r.get('success'))
-                            prompt += f"""**Execution:** ⚠️ Partial success ({len(execution_results) - failed_count} succeeded, {failed_count} failed)
-
-"""
-                        
-                        # Add details for each result
-                        for i, result in enumerate(execution_results, 1):
-                            if result.get('success'):
-                                row_count = result.get('row_count', 0)
-                                columns = result.get('columns', [])
-                                result_data = result.get('result', [])
-                                
-                                # Token protection per result
-                                result_preview = result_data[:MAX_PREVIEW_ROWS] if len(result_data) > MAX_PREVIEW_ROWS else result_data
-                                
-                                if result_preview and len(columns) > MAX_PREVIEW_COLS:
-                                    sampled_cols = columns[:MAX_PREVIEW_COLS]
-                                    result_preview = [
-                                        {k: v for k, v in row.items() if k in sampled_cols}
-                                        for row in result_preview
-                                    ]
-                                    col_display = ', '.join(sampled_cols) + f'... (+{len(columns) - MAX_PREVIEW_COLS} more columns)'
-                                else:
-                                    col_display = ', '.join(columns[:10]) + ('...' if len(columns) > 10 else '')
-                                
-                                result_json = self._safe_json_dumps(result_preview, indent=2)
-                                if len(result_json) > MAX_JSON_CHARS:
-                                    result_json = result_json[:MAX_JSON_CHARS] + f'\n... (truncated)'
-                                
-                                prompt += f"""**Query {i} Result:**
-- Rows: {row_count}{f' (showing first {MAX_PREVIEW_ROWS})' if row_count > MAX_PREVIEW_ROWS else ''}
-- Columns: {col_display}
-- Data: {result_json}
-
-"""
-                            else:
-                                prompt += f"""**Query {i} Result:**
-- Status: ❌ Failed
-- Error: {result.get('error', 'Unknown error')}
-
-"""
-                elif execution_error:
-                    prompt += f"""**Execution:** ❌ Failed
-**Error:** {execution_error}
-
-"""
-            elif synthesis_error:
-                prompt += f"""**SQL Generation:** ❌ Failed
-**Error:** {synthesis_error}
-**Explanation:** {sql_explanation or 'N/A'}
-
-"""
-        
-        prompt += """
-**Task:** Generate a comprehensive summary in natural language that:
-1. Describes what the user asked for
-2. Explains what the system did (planning, SQL generation, execution)
-3. For multi-part questions with multiple queries:
-   - Explain each sub-question that was addressed
-   - Show each SQL query in its own code block with a clear label
-   - Present each query's results in a clear, readable format (preferably as a markdown table)
-   - Provide insights and analysis for each result
-   - Synthesize an overall conclusion combining insights from all queries
-4. For single queries:
-   - Print out SQL synthesis explanation if any SQL was generated
-   - Print out the SQL query in a code block
-   - Print out the result in a readable format (preferably as a markdown table)
-   - Provide insights and analysis for the result
-5. **Code Annotation for Human Readability:**
-   - For each result table, scan the columns for raw codes (e.g., diagnosis_code, procedure_code, ICD codes, CPT codes, not limited to medical domain)
-   - If you find columns containing raw codes WITHOUT corresponding human-readable description columns:
-     * Add a new column with a descriptive name like "{code_column}_description" 
-     * Populate it with human-readable descriptions/meanings of those codes
-     * Use your knowledge base to translate common codes (ICD-10, CPT, etc.) into plain language
-     * Example: diagnosis_code "I10" → diagnosis_code_description "Essential (primary) hypertension"
-     * Example: procedure_code "99213" → procedure_code_description "Office visit, established patient, 20-29 minutes"
-   - Present the enhanced table with both the original codes and the new description columns
-   - This makes the results more interpretable for non-technical users
-6. States the outcome (success with X rows, error, needs clarification, etc.)
-
-Use markdown formatting for readability. Keep it clear and user-friendly. 
-"""
-        
-        return prompt
-    
-    def __call__(self, state: AgentState) -> str:
-        """Make agent callable."""
-        return self.generate_summary(state)
-
-print("✓ ResultSummarizeAgent class defined")
-
-# ==============================================================================
-# DEPRECATED FUNCTIONS (Replaced by Intent Detection Service)
-# ==============================================================================
-# The following functions have been replaced by the IntentDetectionAgent:
-# - find_most_recent_clarification_context() → Intent detection handles this
-# - is_new_question() → Intent detection provides intent_type classification
-#
-# These have been removed to simplify the codebase.
-# See src/multi_agent/utils/intent_detection_service.py for the replacement
-# See src/multi_agent/core/state.py for the data models
-# ==============================================================================
-
-# ==============================================================================
-# State Extraction Helpers (Token Optimization)
-# ==============================================================================
-"""
-Minimal state extraction helpers to reduce token usage.
-
-Instead of passing the entire AgentState (25+ fields) to each agent,
-these helpers extract only the fields each node actually needs.
-
-Expected savings: 60-70% token reduction per node
-"""
-
-def extract_intent_detection_context(state: AgentState) -> dict:
-    """
-    Extract minimal context for intent detection.
-    
-    OPTIMIZED: Applies message and turn history truncation
-    """
-    messages = state.get("messages", [])
-    turn_history = state.get("turn_history", [])
-    
-    return {
-        "messages": truncate_message_history(messages, max_turns=5),
-        "turn_history": truncate_turn_history(turn_history, max_turns=10),
-        "user_id": state.get("user_id"),
-        "thread_id": state.get("thread_id"),
-        # For logging: track original sizes
-        "_original_message_count": len(messages),
-        "_original_turn_count": len(turn_history)
-    }
-
-def extract_clarification_context(state: AgentState) -> dict:
-    """
-    Extract minimal context for clarification.
-    
-    OPTIMIZED: Applies message and turn history truncation
-    """
-    messages = state.get("messages", [])
-    turn_history = state.get("turn_history", [])
-    
-    return {
-        "current_turn": state.get("current_turn"),
-        "turn_history": truncate_turn_history(turn_history, max_turns=10),
-        "intent_metadata": state.get("intent_metadata"),
-        "messages": truncate_message_history(messages, max_turns=5),
-        # For logging: track original sizes
-        "_original_message_count": len(messages),
-        "_original_turn_count": len(turn_history)
-    }
-
-def extract_planning_context(state: AgentState) -> dict:
-    """Extract minimal context for planning."""
-    return {
-        "current_turn": state.get("current_turn"),
-        "intent_metadata": state.get("intent_metadata"),
-        "original_query": state.get("original_query")  # Backward compat
-    }
-
-def extract_synthesis_table_context(state: AgentState) -> dict:
-    """Extract minimal context for table-based SQL synthesis."""
-    return {
-        "plan": state.get("plan", {}),
-        "relevant_space_ids": state.get("relevant_space_ids", [])
-    }
-
-def extract_synthesis_genie_context(state: AgentState) -> dict:
-    """Extract minimal context for genie-based SQL synthesis."""
-    return {
-        "plan": state.get("plan", {}),
-        "relevant_spaces": state.get("relevant_spaces", []),
-        "genie_route_plan": state.get("genie_route_plan")
-    }
-
-def extract_execution_context(state: AgentState) -> dict:
-    """Extract minimal context for SQL execution."""
-    return {
-        "sql_query": state.get("sql_query"),
-        "sql_queries": state.get("sql_queries", []),
-        "sql_query_labels": state.get("sql_query_labels", [])
-    }
-
-def extract_summarize_context(state: AgentState) -> dict:
-    """
-    Extract minimal context for result summarization.
-    
-    OPTIMIZED: Applies message history truncation
-    """
-    messages = state.get("messages", [])
-    
-    return {
-        "messages": truncate_message_history(messages, max_turns=5),
-        "sql_query": state.get("sql_query"),
-        "sql_queries": state.get("sql_queries", []),
-        "sql_query_labels": state.get("sql_query_labels", []),
-        "execution_result": state.get("execution_result"),
-        "execution_results": state.get("execution_results", []),
-        "execution_error": state.get("execution_error"),
-        "sql_synthesis_explanation": state.get("sql_synthesis_explanation"),
-        "synthesis_error": state.get("synthesis_error"),
-        # For logging: track original size
-        "_original_message_count": len(messages)
-    }
-
-print("✓ State extraction helpers defined (for token optimization)")
-
-# ==============================================================================
-# Message History Truncation (Token Optimization - Priority 3)
-# ==============================================================================
-"""
-Smart message history truncation to keep only recent turns.
-
-Reduces token usage in long conversations by keeping only:
-- All SystemMessage instances (prompts)
-- Last N HumanMessage/AIMessage pairs
-
-Example: After 10 turns (20 messages):
-- Before: 18K tokens
-- After: 6K tokens (67% reduction)
-"""
-
-def truncate_message_history(
-    messages: List, 
-    max_turns: int = 5,
-    keep_system: bool = True
-) -> List:
-    """
-    Keep only recent turns + system messages.
-    
-    Args:
-        messages: Full message history
-        max_turns: Number of recent turns to keep (default 5)
-        keep_system: Whether to preserve all SystemMessage instances
-        
-    Returns:
-        Truncated message list
-    """
-    if not messages:
-        return []
-    
-    # Separate system messages from conversation
-    system_msgs = []
-    conversation_msgs = []
-    
-    for msg in messages:
-        if isinstance(msg, SystemMessage) and keep_system:
-            system_msgs.append(msg)
-        else:
-            conversation_msgs.append(msg)
-    
-    # Keep only last N turns (each turn = HumanMessage + AIMessage pair)
-    recent_msgs = conversation_msgs[-(max_turns * 2):] if len(conversation_msgs) > max_turns * 2 else conversation_msgs
-    
-    return system_msgs + recent_msgs
-
-
-def truncate_turn_history(
-    turn_history: List, 
-    max_turns: int = 10
-) -> List:
-    """
-    Keep only recent turns in turn_history.
-    
-    Args:
-        turn_history: Full turn history
-        max_turns: Number of recent turns to keep (default 10)
-        
-    Returns:
-        Truncated turn history list
-    """
-    if not turn_history:
-        return []
-    
-    # Keep only last N turns
-    return turn_history[-max_turns:] if len(turn_history) > max_turns else turn_history
-
-
-print("✓ Message truncation functions defined (keeps last 5 message turns, 10 turn_history)")
-
-# ==============================================================================
-# Unified Intent, Context, and Clarification Node (Simplified - self-contained)
-# ==============================================================================
-
-def check_clarification_rate_limit(turn_history: List[ConversationTurn], window_size: int = 5) -> bool:
-    """
-    Check if clarification was triggered in the last N turns (sliding window).
-    OPTIMIZED: Fast-path checks for common cases.
-    
-    Args:
-        turn_history: List of conversation turns
-        window_size: Number of recent turns to check (default: 5)
-    
-    Returns:
-        True if rate limited (skip clarification), False if ok to clarify
-    """
-    # PHASE 3 OPTIMIZATION: Fast-path for empty history
-    if not turn_history:
-        return False  # No history = no rate limit
-    
-    # PHASE 3 OPTIMIZATION: Fast-path check most recent turn first (most likely)
-    if turn_history[-1].get("triggered_clarification", False):
-        return True  # Rate limited (most recent turn had clarification)
-    
-    # PHASE 3 OPTIMIZATION: Fast-path for short history
-    if len(turn_history) < 2:
-        return False  # Only 1 turn and it doesn't have clarification
-    
-    # Look at remaining recent turns (skip last one, already checked)
-    recent_turns = turn_history[max(0, len(turn_history) - window_size):-1]
-    
-    # Check remaining turns
-    for turn in recent_turns:
-        if turn.get("triggered_clarification", False):
-            return True  # Rate limited
-    
-    return False  # OK to clarify
-
-print("✓ Clarification rate limit function optimized with fast-path checks (-100 to -200ms)")
-
-
-@measure_node_time("unified_intent_context_clarification")
-def unified_intent_context_clarification_node(state: AgentState) -> dict:
-    """
-    Unified node that combines intent detection, context generation, and clarity check.
-    
-    Uses STREAMING LLM call with HYBRID OUTPUT FORMAT for immediate user feedback:
-    - For meta-questions: Markdown answer streamed FIRST, then JSON metadata parsed
-    - For clarifications: Markdown request streamed FIRST, then JSON metadata parsed
-    - For regular queries: JSON ONLY (no markdown streaming needed)
-    
-    Single LLM call for:
-    1. Intent classification (new_question, refinement, continuation, clarification_response)
-    2. Context summary generation
-    3. Clarity assessment with rate limiting (max 1 per 5 turns)
-    4. Meta-question detection and direct answering
-    
-    Streaming behavior:
-    - Markdown content is streamed to UI as LLM generates it (better TTFT)
-    - JSON metadata is parsed after streaming completes for routing decisions
-    
-    Returns: Dictionary with state updates
-    """
-    from langgraph.config import get_stream_writer
-    
-    writer = get_stream_writer()
-    
-    def stream_markdown_response(content: str, label: str = "Response"):
-        """
-        DEPRECATED: For local/notebook testing only.
-        In production, use writer() events instead for UI display.
-        This function only prints to console/logs, not to model serving UI.
-        """
-        print(f"\n✨ {label}:")
-        print("-" * 80)
-        
-        # Print content immediately without character-by-character delay
-        print(content)
-        
-        print("-" * 80)
-    
-    def format_clarification_markdown(reason: str, options: list = None) -> str:
-        """
-        Format clarification reason and options as professional markdown.
-        
-        Args:
-            reason: The clarification reason text
-            options: List of clarification options
-            
-        Returns:
-            Formatted markdown string
-        """
-        # Start with heading and reason
-        markdown = f"### Clarification Needed\n\n{reason}\n\n"
-        
-        # Add options if provided
-        if options and len(options) > 0:
-            markdown += "**Please choose from the following options:**\n\n"
-            for i, option in enumerate(options, 1):
-                markdown += f"{i}. {option}\n\n"
-        
-        return markdown.strip()
-    
-    def format_meta_answer_markdown(answer: str) -> str:
-        """
-        Format meta-answer as professional markdown if not already formatted.
-        
-        Args:
-            answer: The meta answer text
-            
-        Returns:
-            Formatted markdown string
-        """
-        # Check if already formatted (has markdown headings)
-        if answer.startswith("#") or "**" in answer:
-            return answer  # Already formatted
-        
-        # Add basic formatting
-        markdown = f"## Available Capabilities\n\n{answer}"
-        return markdown
-    
-    print("\n" + "="*80)
-    print("🎯 UNIFIED INTENT, CONTEXT & CLARIFICATION AGENT")
-    print("="*80)
-    
-    # Get current query from messages
-    messages = state.get("messages", [])
-    turn_history = state.get("turn_history", [])
-    
-    human_messages = [m for m in messages if isinstance(m, HumanMessage)]
-    current_query = human_messages[-1].content if human_messages else ""
-    
-    writer({"type": "agent_start", "agent": "unified_intent_context_clarification", "query": current_query})
-    
-    print(f"Query: {current_query}")
-    print(f"Turn history: {len(turn_history)} turns")
-    
-    # Analyze query with full LLM (intent + context + clarity + meta-question detection)
-    print("🔄 Analyzing query with LLM (intent + context + clarity + meta-question detection)")
-    
-    # Format conversation context
-    conversation_context = ""
-    if turn_history:
-        conversation_context = "Previous conversation:\n"
-        for i, turn in enumerate(turn_history[-5:], 1):  # Last 5 turns
-            intent_label = turn['intent_type'].replace('_', ' ').title()
-            conversation_context += f"{i}. [{intent_label}] {turn['query']}\n"
-            if turn.get('context_summary'):
-                conversation_context += f"   Context: {turn['context_summary']}...\n"
-    else:
-        conversation_context = "No previous conversation (first query)."
-    
-    # Load space context for clarity check
-    space_context = load_space_context(TABLE_NAME)
-    
-    # Single unified prompt for intent + context + clarity + meta-question detection
-    unified_prompt = f"""Analyze the user's query in the context of the conversation history.
-
-Current Query: {current_query}
-
-Conversation History:
-{conversation_context}
-
-Available Data Sources:
-{json.dumps(space_context, indent=2)}
-
-## Task 0: Detect Irrelevant Questions (NEW)
-FIRST, determine if this is an IRRELEVANT question completely unrelated to data analytics:
-- Greetings, small talk, casual conversation (e.g., "Hello", "How are you?", "What's up?")
-- Questions about weather, sports, politics, entertainment, current events
-- Personal questions about the AI/system itself (e.g., "Who created you?", "Are you sentient?")
-- Jokes, riddles, creative writing requests, role-playing
-- Questions about topics outside of data analysis and business intelligence
-- Programming help, homework, recipes, travel advice, etc.
-
-Examples of irrelevant questions (all should set is_irrelevant=true):
-- "What's the weather like today?"
-- "Tell me a joke"
-- "Who won the Super Bowl?"
-- "How do I make pasta?"
-- "What are your thoughts on politics?"
-
-If it's irrelevant, you MUST:
-1. Set "is_irrelevant": true
-2. Provide a polite refusal explaining you're a data analytics assistant
-3. Redirect the user to ask questions about the available data sources
-
-NOTE: If a question mentions data but in an irrelevant context (e.g., "What's the weather like in my data?"), treat it as irrelevant.
-
-## Task 1: Detect Meta-Questions
-Next, determine if this is a META-QUESTION about the system itself:
-- Questions about available tables, data sources, spaces, schemas
-- Questions about system capabilities, what data is available
-- Questions about the structure or organization of data
-
-If it's a meta-question, you MUST:
-1. Set "is_meta_question": true
-2. Generate a direct answer using the Available Data Sources above
-3. Provide a clear, informative response about what's available
-
-## Task 2: Classify Intent
-Classify the query into ONE of these categories:
-1. **new_question**: A completely different topic/domain from previous queries
-2. **refinement**: Narrowing/filtering/modifying the previous query on same topic
-3. **continuation**: Follow-up exploring same topic from different angle
-4. **clarification_response**: User is providing the clarification response to the clarification request
-
-## Task 3: Generate Context Summary
-Create a 2-3 sentence summary that:
-- Synthesizes the conversation history
-- States clearly what the user wants
-- Is actionable for SQL query planning
-
-## Task 4: Check Clarity
-Determine if the query is clear enough to generate SQL:
-- Is the question clear and answerable as-is? (BE LENIENT - default to TRUE)
-- ONLY mark as unclear if CRITICAL information is missing
-- If unclear, provide 2-3 specific clarification options
-- Never mark as unclear if the question is a clarification response to a previous clarification request
-- Meta-questions should always be marked as clear
-
-## OUTPUT FORMAT (HYBRID - IMPORTANT!)
-
-Your response format depends on the situation:
-
-**CASE 0: Irrelevant Question** (is_irrelevant=true)
-Output polite refusal markdown FIRST, then JSON metadata:
-
-I'm a data analytics assistant focused on helping you analyze and query the available data sources.
-
-I can help you with questions about the data domains available in the system. To see what data is available, you can ask:
-- "What data sources are available?"
-- "What tables can I query?"
-- "Show me example questions I can ask"
-
-Could you rephrase your question to focus on analyzing the available data?
-
-```json
-{{{{
-  "is_irrelevant": true,
-  "is_meta_question": false,
-  "meta_answer": null,
-  "intent_type": "new_question",
-  "confidence": 0.95,
-  "context_summary": "User asked an irrelevant question unrelated to data analytics",
-  "question_clear": true,
-  "clarification_reason": null,
-  "clarification_options": null,
-  "metadata": {{{{"domain": "irrelevant", "complexity": "simple", "topic_change_score": 1.0}}}}
-}}}}
-```
-
-**CASE 1: Meta-Question** (is_meta_question=true)
-Output markdown answer FIRST, then JSON metadata:
-
-## Available Data Sources
-
-[Your detailed markdown answer here with headings, bullets, bold keywords]
-
-```json
-{{
-  "is_irrelevant": false,
-  "is_meta_question": true,
-  "meta_answer": null,
-  "intent_type": "new_question",
-  "confidence": 0.95,
-  "context_summary": "User asking about available data sources",
-  "question_clear": true,
-  "clarification_reason": null,
-  "clarification_options": null,
-  "metadata": {{"domain": "system", "complexity": "simple", "topic_change_score": 0.5}}
-}}
-```
-
-**CASE 2: Unclear Query** (question_clear=false)
-Output clarification markdown FIRST, then JSON metadata:
-
-### Clarification Needed
-
-[Explain what's unclear with headings, bullets, and numbered options]
-
-```json
-{{
-  "is_irrelevant": false,
-  "is_meta_question": false,
-  "meta_answer": null,
-  "intent_type": "new_question",
-  "confidence": 0.85,
-  "context_summary": "2-3 sentence summary",
-  "question_clear": false,
-  "clarification_reason": null,
-  "clarification_options": ["Option 1", "Option 2", "Option 3"],
-  "metadata": {{"domain": "...", "complexity": "...", "topic_change_score": 0.8}}
-}}
-```
-
-**CASE 3: Clear Regular Query** (question_clear=true, is_meta_question=false)
-Output ONLY JSON (no markdown prefix):
-
-```json
-{{
-  "is_irrelevant": false,
-  "is_meta_question": false,
-  "meta_answer": null,
-  "intent_type": "new_question" | "refinement" | "continuation" | "clarification_response",
-  "confidence": 0.95,
-  "context_summary": "2-3 sentence summary for planning agent",
-  "question_clear": true,
-  "clarification_reason": null,
-  "clarification_options": null,
-  "metadata": {{
-    "domain": "patients | claims | providers | medications | ...",
-    "complexity": "simple | moderate | complex",
-    "topic_change_score": 0.8
-  }}
-}}
-```
-
-CRITICAL: 
-- For irrelevant questions, meta-questions, and clarifications: markdown FIRST (will be streamed to user), then JSON
-- For regular clear queries: JSON ONLY (no markdown needed)
-- Always use proper markdown formatting with ##/### headings, **bold**, bullet lists
-- Use professional but friendly tone for data analytics
-"""
-    
-    # Call LLM with stream for immediate markdown output (using pooled connection)
-    llm = get_pooled_llm(LLM_ENDPOINT_CLARIFICATION)
-    track_agent_model_usage("clarification", LLM_ENDPOINT_CLARIFICATION)
-    
-    # Emit minimal logging message
-    writer({"type": "agent_thinking", "agent": "unified", "content": "Analyzing query context..."})
-    
-    try:
-        print("🤖 Streaming unified LLM response for immediate markdown display...")
-        
-        # Use stream for immediate user feedback on markdown content
-        # Hybrid format: markdown FIRST (streamed), then JSON (parsed)
-        accumulated_content = ""
-        markdown_section = ""
-        in_json_block = False
-        streamed_markdown = False
-        
-        for chunk in llm.stream(unified_prompt):
-            if chunk.content:
-                accumulated_content += chunk.content
-                
-                # Detect if we've hit the JSON block
-                if "```json" in accumulated_content and not in_json_block:
-                    in_json_block = True
-                    # Extract and stream any remaining markdown before JSON block
-                    if not streamed_markdown:
-                        parts = accumulated_content.split("```json")
-                        markdown_section = parts[0].strip()
-                        if markdown_section:
-                            # Stream the markdown we've accumulated
-                            # Note: This will be picked up by ResponseAgent's "messages" stream mode
-                            print(f"  📄 Streaming markdown section ({len(markdown_section)} chars)...")
-                            streamed_markdown = True
-                
-                # Stream markdown chunks if we haven't hit JSON yet
-                if not in_json_block and chunk.content.strip():
-                    markdown_section += chunk.content
-                    # Emit as AIMessageChunk for ResponseAgent to stream
-                    # The ResponseAgent's predict_stream already handles AIMessageChunk via "messages" mode
-        
-        content = accumulated_content  # Full content for JSON parsing
-        
-        print(f"✓ Stream complete ({len(content)} chars total)")
-        if streamed_markdown:
-            print(f"  ✓ Streamed {len(markdown_section)} chars of markdown to UI")
-        
-        # Parse JSON response from hybrid format
-        # Extract JSON from code block after markdown (if present)
-        if "```json" in content:
-            # Split markdown and JSON sections
-            parts = content.split("```json")
-            markdown_section = parts[0].strip()  # Markdown prefix (if any)
-            json_section = parts[1].split("```")[0].strip()  # JSON content
-        elif "```" in content:
-            # Fallback for generic code block
-            json_section = content.split("```")[1].split("```")[0].strip()
-        else:
-            # Pure JSON (regular clear queries with no markdown)
-            json_section = content.strip()
-        
-        result = json.loads(json_section)
-        
-        # Extract results
-        is_irrelevant = result.get("is_irrelevant", False)
-        is_meta_question = result.get("is_meta_question", False)
-        meta_answer = result.get("meta_answer")
-        intent_type = result["intent_type"].lower()
-        confidence = result["confidence"]
-        context_summary = result["context_summary"]
-        question_clear = result["question_clear"]
-        clarification_reason = result.get("clarification_reason")
-        clarification_options = result.get("clarification_options", [])
-        metadata = result.get("metadata", {})
-        
-        print(f"✓ Intent: {intent_type} (confidence: {confidence:.2f})")
-        print(f"  Context: {context_summary[:100]}...")
-        print(f"  Question clear: {question_clear}")
-        print(f"  Irrelevant: {is_irrelevant}")
-        print(f"  Meta-question: {is_meta_question}")
-        
-        # Create conversation turn
-        turn = create_conversation_turn(
-            query=current_query,
-            intent_type=intent_type,
-            parent_turn_id=None,  # Could extract from history if needed
-            context_summary=context_summary,
-            triggered_clarification=False,  # Will be updated if clarification triggered
-            metadata=metadata
-        )
-        
-        # Create intent metadata
-        intent_metadata = IntentMetadata(
-            intent_type=intent_type,
-            confidence=confidence,
-            reasoning=f"Unified analysis: {intent_type}",
-            topic_change_score=metadata.get("topic_change_score", 0.5),
-            domain=metadata.get("domain"),
-            operation=None,
-            complexity=metadata.get("complexity", "moderate"),
-            parent_turn_id=None
-        )
-        
-        # Emit events
-        writer({
-            "type": "intent_detected",
-            "intent_type": intent_type,
-            "confidence": confidence,
-            "complexity": metadata.get("complexity", "moderate")
-        })
-        
-        # NEW: Check if this is an irrelevant question - handle immediately
-        if is_irrelevant:
-            print("🚫 Irrelevant question detected - providing polite refusal")
-            
-            # Create turn for irrelevant question
-            turn["metadata"]["is_irrelevant"] = True
-            
-            # Emit metadata event (markdown was already streamed during LLM call)
-            writer({
-                "type": "irrelevant_question_detected",
-                "note": "Irrelevant refusal markdown already streamed to UI"
-            })
-            
-            # Use the markdown section that was streamed (from hybrid output)
-            # If no markdown section (edge case), format a simple response
-            if markdown_section and markdown_section.strip():
-                irrelevant_display = markdown_section
-            else:
-                irrelevant_display = """I'm a data analytics assistant focused on helping you analyze and query the available data sources.
-
-I can help you with questions about the data domains available in the system. To see what data is available, you can ask:
-- "What data sources are available?"
-- "What tables can I query?"
-- "Show me example questions I can ask"
-
-Could you rephrase your question to focus on analyzing the available data?"""
-            
-            # Return with irrelevant flag to skip SQL generation
-            return {
-                "current_turn": turn,
-                "turn_history": [turn],
-                "intent_metadata": IntentMetadata(
-                    intent_type=intent_type,
-                    confidence=confidence,
-                    reasoning=f"Irrelevant question: {intent_type}",
-                    topic_change_score=1.0,
-                    domain="irrelevant",
-                    operation=None,
-                    complexity=metadata.get("complexity", "simple"),
-                    parent_turn_id=None
-                ),
-                "question_clear": True,  # Set to True so it doesn't trigger clarification
-                "is_irrelevant": True,  # Flag for routing
-                "is_meta_question": False,
-                "pending_clarification": None,
-                "messages": [
-                    AIMessage(content=irrelevant_display),
-                    SystemMessage(content="Irrelevant question detected, skipping SQL generation")
-                ]
-            }
-        
-        # NEW: Check if this is a meta-question - handle immediately
-        if is_meta_question:
-            print("🔍 Meta-question detected - answering directly without SQL")
-            
-            # Create turn for meta-question
-            turn["metadata"]["is_meta_question"] = True
-            
-            # Emit metadata event (markdown was already streamed during LLM call)
-            writer({
-                "type": "meta_question_detected",
-                "note": "Meta-answer markdown already streamed to UI"
-            })
-            
-            # Use the markdown section that was streamed (from hybrid output)
-            # If no markdown section (edge case), format a simple response
-            if markdown_section and markdown_section.strip():
-                meta_answer_display = markdown_section
-            else:
-                meta_answer_display = format_meta_answer_markdown(
-                    "Meta-question detected. The answer was provided above."
-                )
-            
-            # Return with meta-answer and flag to skip SQL generation
-            return {
-                "current_turn": turn,
-                "turn_history": [turn],
-                "intent_metadata": IntentMetadata(
-                    intent_type=intent_type,
-                    confidence=confidence,
-                    reasoning=f"Meta-question: {intent_type}",
-                    topic_change_score=metadata.get("topic_change_score", 0.5),
-                    domain=metadata.get("domain"),
-                    operation=None,
-                    complexity=metadata.get("complexity", "simple"),
-                    parent_turn_id=None
-                ),
-                "question_clear": True,
-                "is_meta_question": True,  # Flag for routing
-                "meta_answer": markdown_section,  # The streamed markdown
-                "pending_clarification": None,
-                "messages": [
-                    AIMessage(content=meta_answer_display),
-                    SystemMessage(content="Meta-question answered directly, skipping SQL generation")
-                ]
-            }
-        
-        # Check if clarification needed
-        if not question_clear:
-            print(f"⚠ Query unclear: {clarification_reason}")
-            
-            # Check rate limit
-            is_rate_limited = check_clarification_rate_limit(turn_history, window_size=5)
-            
-            if is_rate_limited:
-                print("⚠ Clarification rate limit reached (1 per 5 turns)")
-                print("  Proceeding with best-effort interpretation")
-                
-                writer({"type": "clarification_skipped", "reason": "Rate limited (1 per 5 turns)"})
-                
-                # Force proceed to planning
-                return {
-                    "current_turn": turn,
-                    "turn_history": [turn],
-                    "intent_metadata": intent_metadata,
-                    "question_clear": True,  # Force clear
-                    "pending_clarification": None,
-                    "messages": [
-                        SystemMessage(content=f"Clarification rate limited. Proceeding with: {context_summary}")
-                    ]
-                }
-            else:
-                # OK to clarify
-                print("✓ Requesting clarification from user")
-                
-                # Create clarification request
-                clarification_request = create_clarification_request(
-                    reason=clarification_reason or "Query needs more specificity",
-                    options=clarification_options,
-                    turn_id=turn["turn_id"],
-                    best_guess=context_summary,
-                    best_guess_confidence=confidence
-                )
-                
-                # Mark turn as triggering clarification
-                turn["triggered_clarification"] = True
-                
-                # Emit metadata event (markdown was already streamed during LLM call)
-                writer({
-                    "type": "clarification_requested", 
-                    "note": "Clarification markdown already streamed to UI"
-                })
-                
-                # Use the markdown section that was streamed (from hybrid output)
-                # If no markdown section (edge case), format a simple response
-                if markdown_section and markdown_section.strip():
-                    clarification_display = markdown_section
-                else:
-                    # Fallback: format clarification with options as markdown
-                    clarification_display = format_clarification_markdown(
-                        reason=clarification_reason or "Query needs more specificity",
-                        options=clarification_options
-                    )
-                
-                return {
-                    "current_turn": turn,
-                    "turn_history": [turn],
-                    "intent_metadata": intent_metadata,
-                    "question_clear": False,
-                    "pending_clarification": clarification_request,
-                    "messages": [
-                        AIMessage(content=clarification_display),
-                        SystemMessage(content=f"Clarification requested for turn {turn['turn_id']}")
-                    ]
-                }
-        else:
-            # Question is clear, proceed to planning
-            print("✓ Query is clear - proceeding to planning")
-            
-            writer({"type": "clarity_analysis", "clear": True, "reasoning": "Query is clear and answerable"})
-            
-            return {
-                "current_turn": turn,
-                "turn_history": [turn],
-                "intent_metadata": intent_metadata,
-                "question_clear": True,
-                "pending_clarification": None,
-                "messages": [
-                    SystemMessage(content=f"Intent: {intent_type}, proceeding to planning")
-                ]
-            }
-        
-    except Exception as e:
-        print(f"❌ Unified agent error: {e}")
-        import traceback
-        traceback.print_exc()
-        
-        # Fallback: create minimal turn and proceed
-        turn = create_conversation_turn(
-            query=current_query,
-            intent_type="new_question",
-            context_summary=f"Query: {current_query}",
-            triggered_clarification=False,
-            metadata={}
-        )
-        
-        intent_metadata = IntentMetadata(
-            intent_type="new_question",
-            confidence=0.5,
-            reasoning=f"Error fallback: {str(e)}",
-            topic_change_score=1.0,
-            domain=None,
-            operation=None,
-            complexity="moderate",
-            parent_turn_id=None
-        )
-        
-        return {
-            "current_turn": turn,
-            "turn_history": [turn],
-            "intent_metadata": intent_metadata,
-            "question_clear": True,  # Proceed despite error
-            "pending_clarification": None,
-            "messages": [
-                SystemMessage(content=f"Unified agent error (proceeding anyway): {str(e)}")
-            ]
-        }
-
-print("✓ Unified intent, context, and clarification node defined")
-
-@measure_node_time("planning")
-def planning_node(state: AgentState) -> dict:
-    """
-    Planning node wrapping PlanningAgent class using turn-based context.
-    
-    IMPROVEMENTS:
-    - Uses current_turn.context_summary (LLM-generated) instead of manual combined_query_context
-    - Intent-aware planning (different strategies for refinements vs new questions)
-    - Clean separation from clarification logic
-    
-    OPTIMIZED: Uses minimal state extraction to reduce token usage
-    
-    Returns: Dictionary with only the state updates (for clean MLflow traces)
-    """
-    from langgraph.config import get_stream_writer
-    
-    writer = get_stream_writer()
-    
-    print("\n" + "="*80)
-    print("📋 PLANNING AGENT (Token Optimized)")
-    print("="*80)
-    
-    # OPTIMIZATION: Extract only minimal context needed for planning
-    context = extract_planning_context(state)
-    print(f"📊 State optimization: Using {len(context)} fields (vs {len([k for k in state.keys() if state.get(k) is not None])} in full state)")
-    
-    # Get current turn and intent from state
-    current_turn = context.get("current_turn")
-    if not current_turn:
-        # Fallback for backward compatibility
-        print("⚠ No current_turn found, falling back to legacy behavior")
-        query = context.get("original_query", "")
-        intent_type = "new_question"
-        context_summary = None
-    else:
-        query = current_turn["query"]
-        intent_type = current_turn.get("intent_type", "new_question")
-        context_summary = current_turn.get("context_summary")
-    
-    # Use context_summary if available (LLM-generated from intent detection)
-    # This replaces the manual combined_query_context template
-    planning_query = context_summary or query
-    
-    # Emit agent start event
-    writer({"type": "agent_start", "agent": "planning", "query": planning_query[:100]})
-    
-    print(f"Query: {query}")
-    print(f"Intent: {intent_type}")
-    if context_summary:
-        print(f"✓ Using context summary from intent detection")
-        print(f"  Summary: {context_summary[:200]}...")
-    else:
-        print(f"✓ Using query directly (no context needed)")
-    
-    # OPTIMIZATION: Use cached agent instance
-    planning_agent = get_cached_planning_agent()
-    track_agent_model_usage("planning", LLM_ENDPOINT_PLANNING)
-    
-    # PHASE 2 OPTIMIZATION: Vector search result caching for refinements
-    thread_id = state.get("thread_id", "default")
-    intent_metadata = state.get("intent_metadata", {})
-    can_reuse_cache = intent_type in ["refinement", "clarification_response", "continuation"]
-    
-    relevant_spaces_full = None
-    cache_hit = False
-    
-    if can_reuse_cache and thread_id in _vector_search_cache:
-        cache_entry = _vector_search_cache[thread_id]
-        cache_age = datetime.now() - cache_entry["timestamp"]
-        
-        if cache_age < _VECTOR_SEARCH_CACHE_TTL:
-            record_cache_hit("vector_search")
-            relevant_spaces_full = cache_entry["results"]
-            cache_hit = True
-            print(f"🚀 VECTOR SEARCH CACHE HIT (thread: {thread_id}, age: {cache_age.seconds}s)")
-            print(f"   Reusing {len(relevant_spaces_full)} spaces for {intent_type} query")
-            print(f"   Expected gain: -300 to -800ms")
-            
-            writer({
-                "type": "vector_search_cache_hit",
-                "thread_id": thread_id,
-                "intent_type": intent_type,
-                "space_count": len(relevant_spaces_full)
-            })
-        else:
-            print(f"⚠️ Vector search cache expired (age: {cache_age.seconds}s > {_VECTOR_SEARCH_CACHE_TTL.seconds}s)")
-    
-    # If no cache hit, perform vector search
-    if relevant_spaces_full is None:
-        record_cache_miss("vector_search")
-        # Emit vector search start event
-        writer({"type": "vector_search_start", "index": VECTOR_SEARCH_INDEX})
-        
-        # Get relevant spaces with full metadata (for Genie agents)
-        # Use planning_query which includes context_summary if available
-        print(f"🔍 Performing vector search (cache miss or new question)...")
-        relevant_spaces_full = planning_agent.search_relevant_spaces(planning_query)
-        
-        # Cache results for future refinements
-        _vector_search_cache[thread_id] = {
-            "query": planning_query,
-            "results": relevant_spaces_full,
-            "timestamp": datetime.now()
-        }
-        print(f"✓ Cached vector search results for thread: {thread_id}")
-    
-    # Emit vector search results
-    writer({"type": "vector_search_results", "spaces": relevant_spaces_full, "count": len(relevant_spaces_full)})
-    
-    # Emit plan formulation start
-    writer({"type": "agent_thinking", "agent": "planning", "content": "Creating execution plan..."})
-    
-    # Create execution plan
-    # IMPORTANT: Use planning_query (with context_summary) not just query
-    # Pass original_query so it can be shown in the prompt before context_summary
-    plan = planning_agent.create_execution_plan(planning_query, relevant_spaces_full, original_query=query)
-    
-    # Extract plan components
-    join_strategy = plan.get("join_strategy")
-    
-    # Emit plan formulation result
-    writer({"type": "plan_formulation", "strategy": join_strategy, "requires_join": plan.get("requires_join", False)})
-    
-    # Determine next agent
-    if join_strategy == "genie_route":
-        print("✓ Plan complete - using GENIE ROUTE (Genie agents)")
-        next_agent = "sql_synthesis_genie"
-    else:
-        print("✓ Plan complete - using TABLE ROUTE (direct SQL synthesis)")
-        next_agent = "sql_synthesis_table"
-    
-    # Return only updates (no in-place modifications)
-    return {
-        "plan": plan,
-        "sub_questions": plan.get("sub_questions", []),
-        "requires_multiple_spaces": plan.get("requires_multiple_spaces", False),
-        "relevant_space_ids": plan.get("relevant_space_ids", []),
-        "requires_join": plan.get("requires_join", False),
-        "join_strategy": join_strategy,
-        "execution_plan": plan.get("execution_plan", ""),
-        "genie_route_plan": plan.get("genie_route_plan"),
-        "vector_search_relevant_spaces_info": plan.get("vector_search_relevant_spaces_info", []),
-        "relevant_spaces": relevant_spaces_full,
-        "next_agent": next_agent,
-        "messages": [
-            SystemMessage(content=f"Execution plan: {json.dumps(plan, indent=2)}")
-        ]
-    }
-
-
-@measure_node_time("sql_synthesis_table")
-def sql_synthesis_table_node(state: AgentState) -> dict:
-    """
-    Fast SQL synthesis node wrapping SQLSynthesisTableAgent class.
-    Combines OOP modularity with explicit state management.
-    
-    OPTIMIZED: Uses minimal state extraction to reduce token usage
-    
-    Returns: Dictionary with only the state updates (for clean MLflow traces)
-    """
-    from langgraph.config import get_stream_writer
-    
-    writer = get_stream_writer()
-    
-    print("\n" + "="*80)
-    print("⚡ SQL SYNTHESIS AGENT - TABLE ROUTE (Token Optimized)")
-    print("="*80)
-    
-    # OPTIMIZATION: Extract only minimal context needed for table-based synthesis
-    context = extract_synthesis_table_context(state)
-    print(f"📊 State optimization: Using {len(context)} fields (vs {len([k for k in state.keys() if state.get(k) is not None])} in full state)")
-    
-    plan = context.get("plan", {})
-    relevant_space_ids = context.get("relevant_space_ids", [])
-    
-    # Emit synthesis start event
-    writer({"type": "sql_synthesis_start", "route": "table", "spaces": relevant_space_ids})
-    
-    # OPTIMIZATION: Use cached agent instance
-    sql_agent = get_cached_sql_table_agent()
-    track_agent_model_usage("sql_synthesis_table", LLM_ENDPOINT_SQL_SYNTHESIS_TABLE)
-    
-    print("plan loaded from state is:", plan)
-    print(json.dumps(plan, indent=2))
-    
-    try:
-        print("🤖 Invoking SQL synthesis agent...")
-        
-        # Emit detailed start event
-        writer({"type": "agent_thinking", "agent": "sql_synthesis_table", "content": "🧠 Starting SQL synthesis using UC function tools..."})
-        writer({"type": "agent_step", "agent": "sql_synthesis_table", "step": "analyzing_plan", "content": f"📋 Analyzing execution plan for {len(relevant_space_ids)} relevant spaces"})
-        
-        # Emit tool preparation event
-        uc_functions = ["get_space_summary", "get_table_overview", "get_column_detail", "get_space_instructions", "get_space_details"]
-        writer({"type": "tools_available", "agent": "sql_synthesis_table", "tools": uc_functions, "content": f"🔧 Available UC functions: {', '.join(uc_functions)}"})
-        
-        # Emit query strategy
-        writer({"type": "agent_thinking", "agent": "sql_synthesis_table", "content": f"🎯 Strategy: Query metadata for spaces {relevant_space_ids} then synthesize SQL"})
-        
-        # Call the agent
-        result = sql_agent(plan)
-        
-        # Emit tool completion event
-        writer({"type": "agent_step", "agent": "sql_synthesis_table", "step": "metadata_gathered", "content": "✅ Metadata collection complete, synthesizing SQL query..."})
-        
-        # Extract SQL and explanation
-        sql_query = result.get("sql")
-        explanation = result.get("explanation", "")
-        has_sql = result.get("has_sql", False)
-        
-        # Extract all SQL queries using helper function
-        sql_queries, query_labels = extract_sql_queries_from_agent_result(result, "sql_synthesis_table")
-        
-        if sql_queries:
-            # Multi-query support
-            print(f"✓ Extracted {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
-            for i, query in enumerate(sql_queries, 1):
-                label_info = f" [{query_labels[i-1]}]" if i <= len(query_labels) and query_labels[i-1] else ""
-                print(f"  Query {i}{label_info} preview: {query[:100]}...")
-            
-            if explanation:
-                print(f"Agent Explanation: {explanation[:200]}...")
-            
-            # Emit detailed success events
-            writer({"type": "sql_generated", "agent": "sql_synthesis_table", "query_preview": sql_queries[0][:200], "content": f"💻 {len(sql_queries)} SQL Quer{'y' if len(sql_queries) == 1 else 'ies'} Generated"})
-            writer({"type": "agent_result", "agent": "sql_synthesis_table", "result": "success", "content": f"✅ SQL synthesis complete: {explanation[:150]}..."})
-            
-            # Return updates for successful synthesis
-            return {
-                "sql_queries": sql_queries,
-                "sql_query_labels": query_labels,
-                "sql_query": sql_queries[0],  # For backward compatibility
-                "has_sql": True,
-                "sql_synthesis_explanation": explanation,
-                "next_agent": "sql_execution",
-                "messages": [
-                    AIMessage(content=f"SQL Synthesis (Table Route):\n{explanation}")
-                ]
-            }
-        else:
-            print("⚠ No SQL generated - agent explanation:")
-            print(f"  {explanation}")
-            
-            # Emit failure event
-            writer({"type": "agent_result", "agent": "sql_synthesis_table", "result": "no_sql", "content": f"⚠️ Could not generate SQL: {explanation[:150]}..."})
-            
-            # Return updates for failed synthesis
-            return {
-                "synthesis_error": "Cannot generate SQL query",
-                "sql_synthesis_explanation": explanation,
-                "next_agent": "summarize",
-                "messages": [
-                    AIMessage(content=f"SQL Synthesis Failed (Table Route):\n{explanation}")
-                ]
-            }
-        
-    except Exception as e:
-        print(f"❌ SQL synthesis failed: {e}")
-        error_msg = str(e)
-        # Return updates for exception
-        return {
-            "synthesis_error": error_msg,
-            "sql_synthesis_explanation": error_msg,
-            "messages": [
-                AIMessage(content=f"SQL Synthesis Failed (Table Route):\n{error_msg}")
-            ]
-        }
-
-
-@measure_node_time("sql_synthesis_genie")
-def sql_synthesis_genie_node(state: AgentState) -> dict:
-    """
-    Slow SQL synthesis node wrapping SQLSynthesisGenieAgent class.
-    Combines OOP modularity with explicit state management.
-    
-    Uses relevant_spaces from PlanningAgent (no need to re-query all spaces).
-    
-    OPTIMIZED: Uses minimal state extraction to reduce token usage
-    
-    Returns: Dictionary with only the state updates (for clean MLflow traces)
-    """
-    from langgraph.config import get_stream_writer
-    
-    writer = get_stream_writer()
-    
-    print("\n" + "="*80)
-    print("🐢 SQL SYNTHESIS AGENT - GENIE ROUTE (Token Optimized)")
-    print("="*80)
-    
-    # OPTIMIZATION: Extract only minimal context needed for genie-based synthesis
-    context = extract_synthesis_genie_context(state)
-    print(f"📊 State optimization: Using {len(context)} fields (vs {len([k for k in state.keys() if state.get(k) is not None])} in full state)")
-    
-    # Get relevant spaces from state (already discovered by PlanningAgent)
-    relevant_spaces = context.get("relevant_spaces", [])
-    relevant_space_ids = [s.get("space_id") for s in relevant_spaces if s.get("space_id")]
-    
-    # Emit synthesis start event
-    writer({"type": "sql_synthesis_start", "route": "genie", "spaces": relevant_space_ids})
-    
-    # Use dedicated SQL_SYNTHESIS_GENIE endpoint for orchestrating multiple Genie agents
-    # This agent requires stronger reasoning for complex coordination
-    llm = get_pooled_llm(LLM_ENDPOINT_SQL_SYNTHESIS_GENIE, temperature=0.1)
-    
-    if not relevant_spaces:
-        print("❌ No relevant_spaces found in state")
-        # Return error update
-        return {
-            "synthesis_error": "No relevant spaces available for genie route"
-        }
-    
-    # Use OOP agent - only creates Genie agents for relevant spaces
-    sql_agent = SQLSynthesisGenieAgent(llm, relevant_spaces)
-    track_agent_model_usage("sql_synthesis_genie", LLM_ENDPOINT_SQL_SYNTHESIS_GENIE)
-    
-    # Use minimal context (already extracted)
-    plan = context.get("plan", {})
-    genie_route_plan = context.get("genie_route_plan") or plan.get("genie_route_plan", {})
-    
-    if not genie_route_plan:
-        print("❌ No genie_route_plan found in plan")
-        # Return error update
-        return {
-            "synthesis_error": "No routing plan available for genie route"
-        }
-    
-    try:
-        print(f"🤖 Querying {len(genie_route_plan)} Genie agents...")
-        
-        # Emit detailed start event
-        writer({"type": "agent_thinking", "agent": "sql_synthesis_genie", "content": f"🧠 Starting SQL synthesis using {len(genie_route_plan)} Genie agents..."})
-        writer({"type": "agent_step", "agent": "sql_synthesis_genie", "step": "preparing_genie_calls", "content": f"📋 Preparing to query {len(genie_route_plan)} Genie spaces"})
-        
-        # Emit detailed events for each Genie agent call with full context
-        for idx, (space_id, query) in enumerate(genie_route_plan.items(), 1):
-            space_title = next((s.get("space_title", space_id) for s in relevant_spaces if s.get("space_id") == space_id), space_id)
-            writer({
-                "type": "genie_agent_call", 
-                "agent": "sql_synthesis_genie",
-                "space_id": space_id, 
-                "space_title": space_title,
-                "query": query,
-                "content": f"🤖 [{idx}/{len(genie_route_plan)}] Calling Genie agent '{space_title}' with query: {query[:100]}{'...' if len(query) > 100 else ''}"
-            })
-        
-        # Emit execution strategy
-        writer({"type": "agent_thinking", "agent": "sql_synthesis_genie", "content": "⚡ Executing Genie agents in parallel for optimal performance..."})
-        
-        # Call the agent
-        result = sql_agent(plan)
-        
-        # Emit completion event
-        writer({"type": "agent_step", "agent": "sql_synthesis_genie", "step": "combining_results", "content": "🔄 All Genie agents responded, combining SQL fragments..."})
-        
-        # Extract SQL and explanation
-        sql_query = result.get("sql")
-        explanation = result.get("explanation", "")
-        has_sql = result.get("has_sql", False)
-        
-        # Extract all SQL queries using helper function
-        sql_queries, query_labels = extract_sql_queries_from_agent_result(result, "sql_synthesis_genie")
-        
-        if sql_queries:
-            # Multi-query support
-            print(f"✓ Extracted {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
-            for i, query in enumerate(sql_queries, 1):
-                label_info = f" [{query_labels[i-1]}]" if i <= len(query_labels) and query_labels[i-1] else ""
-                print(f"  Query {i}{label_info} preview: {query[:100]}...")
-            
-            if explanation:
-                print(f"Agent Explanation: {explanation[:200]}...")
-            
-            # Emit detailed success events
-            writer({"type": "sql_generated", "agent": "sql_synthesis_genie", "query_preview": sql_queries[0][:200], "content": f"💻 {len(sql_queries)} SQL Quer{'y' if len(sql_queries) == 1 else 'ies'} Generated"})
-            writer({"type": "agent_result", "agent": "sql_synthesis_genie", "result": "success", "content": f"✅ SQL synthesis complete: {explanation[:150]}..."})
-            writer({"type": "agent_thinking", "agent": "sql_synthesis_genie", "content": f"🎯 Successfully extracted {len(sql_queries)} SQL queries from {len(genie_route_plan)} Genie agents"})
-            
-            # Return updates for successful synthesis
-            return {
-                "sql_queries": sql_queries,
-                "sql_query_labels": query_labels,
-                "sql_query": sql_queries[0],  # For backward compatibility
-                "has_sql": True,
-                "sql_synthesis_explanation": explanation,
-                "next_agent": "sql_execution",
-                "messages": [
-                    AIMessage(content=f"SQL Synthesis (Genie Route):\n{explanation}")
-                ]
-            }
-        else:
-            print("⚠ No SQL generated - agent explanation:")
-            print(f"  {explanation}")
-            
-            # Emit detailed failure event
-            writer({"type": "agent_result", "agent": "sql_synthesis_genie", "result": "no_sql", "content": f"⚠️ Could not generate SQL from Genie agents: {explanation[:150]}..."})
-            
-            # Return updates for failed synthesis
-            return {
-                "synthesis_error": "Cannot generate SQL query from Genie agent fragments",
-                "sql_synthesis_explanation": explanation,
-                "next_agent": "summarize",
-                "messages": [
-                    AIMessage(content=f"SQL Synthesis Failed (Genie Route):\n{explanation}")
-                ]
-            }
-        
-    except Exception as e:
-        print(f"❌ SQL synthesis failed: {e}")
-        error_msg = str(e)
-        # Return updates for exception
-        return {
-            "synthesis_error": error_msg,
-            "sql_synthesis_explanation": error_msg,
-            "messages": [
-                AIMessage(content=f"SQL Synthesis Failed (Genie Route):\n{error_msg}")
-            ]
-        }
-
-
-@measure_node_time("sql_execution")
-def sql_execution_node(state: AgentState) -> dict:
-    """
-    SQL execution node wrapping SQLExecutionAgent class.
-    Supports executing multiple SQL queries for multi-part questions.
-    Combines OOP modularity with explicit state management.
-    
-    OPTIMIZED: Uses minimal state extraction to reduce token usage
-    
-    Returns: Dictionary with only the state updates (for clean MLflow traces)
-    """
-    from langgraph.config import get_stream_writer
-    
-    writer = get_stream_writer()
-    
-    print("\n" + "="*80)
-    print("🚀 SQL EXECUTION AGENT (Token Optimized)")
-    print("="*80)
-    
-    # NEW: Support multiple queries
-    sql_queries = state.get("sql_queries", [])
-    
-    # Fallback to single query for backward compatibility
-    if not sql_queries:
-        single_query = state.get("sql_query")
-        if single_query:
-            sql_queries = [single_query]
-    
-    if not sql_queries:
-        print("❌ No SQL queries to execute")
-        # Return error update
-        return {
-            "execution_error": "No SQL queries provided",
-            "next_agent": "summarize"
-        }
-    
-    print(f"📊 Executing {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
-    
-    # Use OOP agent with SQL Warehouse
-    execution_agent = SQLExecutionAgent(warehouse_id=SQL_WAREHOUSE_ID)
-    
-    # Emit start events before parallel execution
-    for i, query in enumerate(sql_queries, 1):
-        writer({"type": "sql_validation_start", "query": query[:200], "query_number": i})
-        writer({"type": "sql_execution_start", "estimated_complexity": "standard", "query_number": i})
-    
-    # Execute queries in parallel (ThreadPoolExecutor inside the class)
-    execution_results = execution_agent.execute_sql_parallel(sql_queries)
-    all_successful = all(r["success"] for r in execution_results)
-    
-    # Emit completion events after parallel execution (writer is not thread-safe)
-    for result in execution_results:
-        i = result["query_number"]
-        if result["success"]:
-            print(f"✓ Query {i} succeeded: {result['row_count']} rows")
-            writer({"type": "sql_execution_complete", "rows": result['row_count'], "columns": result['columns'], "query_number": i})
-        else:
-            print(f"❌ Query {i} failed: {result.get('error')}")
-    
-    # Prepare updates (both single and multiple for backward compatibility)
-    updates = {
-        "execution_results": execution_results,
-        "execution_result": execution_results[0],  # For backward compatibility
-        "next_agent": "summarize",
-        "messages": []
-    }
-    
-    if all_successful:
-        total_rows = sum(r["row_count"] for r in execution_results)
-        success_msg = f"Executed {len(sql_queries)} quer{'y' if len(sql_queries) == 1 else 'ies'} successfully. Total rows: {total_rows}"
-        print(f"\n✅ {success_msg}")
-        
-        updates["messages"].append(
-            SystemMessage(content=success_msg)
-        )
-    else:
-        failed_count = sum(1 for r in execution_results if not r["success"])
-        success_count = len(sql_queries) - failed_count
-        error_msg = f"{failed_count} of {len(sql_queries)} queries failed"
-        
-        print(f"\n⚠️ Partial success: {success_count} succeeded, {failed_count} failed")
-        
-        updates["execution_error"] = error_msg
-        updates["messages"].append(
-            SystemMessage(content=f"{success_count} queries succeeded, {failed_count} failed")
-        )
-    
-    return updates
-
-
-@measure_node_time("summarize")
-def summarize_node(state: AgentState) -> dict:
-    """
-    Result summarize node wrapping ResultSummarizeAgent class.
-    
-    This is the final node that all workflow paths go through.
-    Generates a natural language summary AND preserves all workflow data.
-    
-    OPTIMIZED: Uses minimal state extraction to reduce token usage
-    
-    Returns: Dictionary with only the state updates (for clean MLflow traces)
-    """
-    from langgraph.config import get_stream_writer
-    
-    writer = get_stream_writer()
-    
-    print("\n" + "="*80)
-    print("📝 RESULT SUMMARIZE AGENT (Token Optimized)")
-    print("="*80)
-    
-    # OPTIMIZATION: Extract only minimal context needed for summarization
-    context = extract_summarize_context(state)
-    print(f"📊 State optimization: Using {len(context)} fields (vs {len([k for k in state.keys() if state.get(k) is not None])} in full state)")
-    
-    # Emit summary start event
-    writer({"type": "summary_start", "content": "Generating comprehensive summary..."})
-    
-    # OPTIMIZATION: Use cached agent instance
-    summarize_agent = get_cached_summarize_agent()
-    track_agent_model_usage("summarize", LLM_ENDPOINT_SUMMARIZE)
-    summary = summarize_agent(context)
-    
-    # Display what's being returned
-    print(f"\n📦 State Fields Being Returned:")
-    print(f"  ✓ final_summary: {len(summary)} chars")
-    if context.get("sql_query"):
-        print(f"  ✓ sql_query: {len(context['sql_query'])} chars")
-    if context.get("execution_result"):
-        exec_result = context["execution_result"]
-        if exec_result.get("success"):
-            print(f"  ✓ execution_result: {exec_result.get('row_count', 0)} rows")
-        else:
-            print(f"  ✓ execution_result: Failed - {exec_result.get('error', 'Unknown')[:50]}...")
-    if context.get("sql_synthesis_explanation"):
-        print(f"  ✓ sql_synthesis_explanation: {len(context['sql_synthesis_explanation'])} chars")
-    if state.get("execution_plan"):
-        print(f"  ✓ execution_plan: {state['execution_plan'][:80]}...")
-    if state.get("synthesis_error"):
-        print(f"  ⚠ synthesis_error: {state['synthesis_error'][:50]}...")
-    if state.get("execution_error"):
-        print(f"  ⚠ execution_error: {state['execution_error'][:50]}...")
-    
-    print("="*80)
-    
-    # Emit summary completion event
-    writer({"type": "summary_complete", "content": f"✅ Summary generated ({len(summary)} chars)"})
-    
-    # Build a concise final message for AIMessage (avoid duplication with final_summary)
-    # Only include execution results and errors (summary goes to final_summary field)
-    final_message_parts = []
-    
-    # 1. Execution Results (if available)
-    exec_result = state.get("execution_result")
-    if exec_result and exec_result.get("success"):
-        results = exec_result.get("result", [])
-        if results:
-            try:
-                import pandas as pd
-                df = pd.DataFrame(results)
-                
-                # Display DataFrame in notebook
-                print("\n" + "="*80)
-                print("📊 QUERY RESULTS (Pandas DataFrame)")
-                print("="*80)
-                try:
-                    display(df)  # Use Databricks display() for interactive view
-                except:
-                    print(df.to_string())  # Fallback to string representation
-                print("="*80 + "\n")
-                
-                # Add compact results info to message
-                final_message_parts.append(f"\n📊 **Query Results:** {df.shape[0]} rows × {df.shape[1]} columns")
-                
-                # Show top 100 rows in markdown table format
-                display_rows = min(100, df.shape[0])
-                df_preview = df.head(display_rows)
-                
-                # Convert to markdown table
-                markdown_table = df_preview.to_markdown(index=False)
-                
-                final_message_parts.append(f"\n### Results Table (Top {display_rows} rows)\n\n{markdown_table}")
-                
-                # Add note if more rows exist
-                if df.shape[0] > display_rows:
-                    final_message_parts.append(f"\n*Showing {display_rows} of {df.shape[0]} total rows*")
-                
-            except Exception as e:
-                final_message_parts.append(f"\n⚠️ Could not format results: {e}")
-                final_message_parts.append(f"Raw results (first 3): {results[:3]}")
-    
-    # 2. Error messages (if any) 
-    if state.get("synthesis_error"):
-        final_message_parts.append(f"\n❌ **SQL Synthesis Error:** {state['synthesis_error']}")
-    if state.get("execution_error"):
-        final_message_parts.append(f"\n❌ **Execution Error:** {state['execution_error']}")
-    
-    # Combine into final message (results/errors only - summary in final_summary field)
-    # If no results or errors, use a simple completion message
-    final_message = "\n".join(final_message_parts) if final_message_parts else "✅ Execution complete"
-    
-    print(f"\n✅ AIMessage created with results/errors ({len(final_message)} chars)")
-    print(f"✅ Summary stored in final_summary field ({len(summary)} chars)")
-    
-    # Route to END via fixed edge (summarize → END)
-    # Return: final_summary (displayed once) + AIMessage (results/errors only)
-    return {
-        "final_summary": summary,
-        "messages": [
-            AIMessage(content=final_message)
-        ]
-    }
-
-print("✓ All node wrappers defined (including summarize)")
-
-# ==============================================================================
-# Business Logic Integration Hooks (NEW)
-# ==============================================================================
-
-class BusinessLogicIntegration:
-    """
-    Example integration points for business logic using intent metadata.
-    
-    This demonstrates how to use the intent_metadata from intent detection
-    for billing, analytics, routing, and personalization.
-    """
-    
-    @staticmethod
-    def calculate_usage_cost(state: AgentState) -> Dict[str, Any]:
-        """Calculate usage cost based on intent type and complexity."""
-        intent_metadata = state.get("intent_metadata", {})
-        intent_type = intent_metadata.get("intent_type", "new_question")
-        complexity = intent_metadata.get("complexity", "moderate")
-        
-        base_rates = {
-            "new_question": 0.10,
-            "refinement": 0.05,
-            "continuation": 0.07,
-            "clarification_response": 0.00
-        }
-        complexity_multipliers = {"simple": 1.0, "moderate": 1.5, "complex": 2.0}
-        
-        base_cost = base_rates.get(intent_type, 0.10)
-        multiplier = complexity_multipliers.get(complexity, 1.5)
-        
-        return {
-            "total_cost": base_cost * multiplier,
-            "intent_type": intent_type,
-            "complexity": complexity
-        }
-    
-    @staticmethod
-    def log_analytics_event(state: AgentState) -> Dict[str, Any]:
-        """Log analytics event for conversation analysis."""
-        intent_metadata = state.get("intent_metadata", {})
-        current_turn = state.get("current_turn", {})
-        turn_history = state.get("turn_history", [])
-        
-        event = {
-            "event_type": "query_processed",
-            "intent_type": intent_metadata.get("intent_type"),
-            "complexity": intent_metadata.get("complexity"),
-            "turn_count": len(turn_history),
-            "clarification_requested": state.get("pending_clarification") is not None
-        }
-        print(f"📊 Analytics: {event['intent_type']} | {event['complexity']}")
-        return event
-
-print("✓ Business logic integration hooks defined")
-
-def create_super_agent_hybrid():
-    """
-    Create the Hybrid Super Agent LangGraph workflow.
-    
-    Combines:
-    - OOP agent classes for modularity
-    - Explicit state management for observability
-    """
-    print("\n" + "="*80)
-    print("🏗️ BUILDING HYBRID SUPER AGENT WORKFLOW")
-    print("="*80)
-    
-    # Create the graph with explicit state
-    workflow = StateGraph(AgentState)
-    
-    # Add nodes - SIMPLIFIED with unified node
-    workflow.add_node("unified_intent_context_clarification", unified_intent_context_clarification_node)  # NEW: Unified node
-    workflow.add_node("planning", planning_node)
-    workflow.add_node("sql_synthesis_table", sql_synthesis_table_node)
-    workflow.add_node("sql_synthesis_genie", sql_synthesis_genie_node)
-    workflow.add_node("sql_execution", sql_execution_node)
-    workflow.add_node("summarize", summarize_node)  # Final summarization node
-    
-    # Define routing logic based on explicit state
-    def route_after_unified(state: AgentState) -> str:
-        """Route after unified node: planning or END (clarification/meta-question/irrelevant)"""
-        # Check if irrelevant question - go directly to END with refusal
-        if state.get("is_irrelevant", False):
-            return END
-        
-        # Check if meta-question - go directly to END with answer
-        if state.get("is_meta_question", False):
-            return END
-        
-        # Check if question is clear - proceed to planning
-        if state.get("question_clear", False):
-            return "planning"
-        
-        # Otherwise, end for clarification
-        return END
-    
-    def route_after_planning(state: AgentState) -> str:
-        next_agent = state.get("next_agent", "summarize")
-        if next_agent == "sql_synthesis_table":
-            return "sql_synthesis_table"
-        elif next_agent == "sql_synthesis_genie":
-            return "sql_synthesis_genie"
-        return "summarize"
-    
-    def route_after_synthesis(state: AgentState) -> str:
-        next_agent = state.get("next_agent", "summarize")
-        if next_agent == "sql_execution":
-            return "sql_execution"
-        return "summarize"  # Summarize if synthesis error
-    
-    # Add edges with conditional routing
-    # NEW: Entry point is now unified node
-    workflow.set_entry_point("unified_intent_context_clarification")
-    
-    # Route from unified node to planning or END (clarification)
-    workflow.add_conditional_edges(
-        "unified_intent_context_clarification",
-        route_after_unified,
-        {
-            "planning": "planning",
-            END: END
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "planning",
-        route_after_planning,
-        {
-            "sql_synthesis_table": "sql_synthesis_table",
-            "sql_synthesis_genie": "sql_synthesis_genie",
-            "summarize": "summarize"
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "sql_synthesis_table",
-        route_after_synthesis,
-        {
-            "sql_execution": "sql_execution",
-            "summarize": "summarize"
-        }
-    )
-    
-    workflow.add_conditional_edges(
-        "sql_synthesis_genie",
-        route_after_synthesis,
-        {
-            "sql_execution": "sql_execution",
-            "summarize": "summarize"
-        }
-    )
-    
-    # SQL execution always goes to summarize
-    workflow.add_edge("sql_execution", "summarize")
-    
-    # Summarize is the final node before END
-    workflow.add_edge("summarize", END)
-    
-    # NOTE: Workflow compiled WITHOUT checkpointer here
-    # Checkpointer will be added at runtime in SuperAgentHybridResponsesAgent
-    # This allows distributed Model Serving with CheckpointSaver
-    app_graph = workflow
-    
-    print("✓ Workflow nodes added:")
-    print("  1. Unified Intent+Context+Clarification Node (SIMPLIFIED - self-contained)")
-    print("  2. Planning Agent (OOP)")
-    print("  3. SQL Synthesis Agent - Table Route (OOP)")
-    print("  4. SQL Synthesis Agent - Genie Route (OOP)")
-    print("  5. SQL Execution Agent (OOP)")
-    print("  6. Result Summarize Agent (OOP) - FINAL NODE")
-    print("\n✓ Single LLM call for intent + context + clarity (faster, cheaper)")
-    print("✓ Smart clarification rate limiting (1 per 5 turns, sliding window)")
-    print("✓ Self-contained implementation (no external imports)")
-    print("✓ Conditional routing configured")
-    print("✓ All paths route to summarize node before END")
-    print("✓ Checkpointer will be added at runtime (distributed serving)")
-    print("\n✅ Simplified Hybrid Super Agent workflow created successfully!")
-    print("="*80)
-    
-    return app_graph
-
-# Create the Hybrid Super Agent
-super_agent_hybrid = create_super_agent_hybrid()
-class SuperAgentHybridResponsesAgent(ResponsesAgent):
-    """
-    Enhanced ResponsesAgent with both short-term and long-term memory for distributed Model Serving.
-    
-    Features:
-    - Short-term memory (CheckpointSaver): Multi-turn conversations within a session
-    - Long-term memory (DatabricksStore): User preferences across sessions with semantic search
-    - Connection pooling and automatic credential rotation
-    - Works seamlessly in distributed Model Serving (multiple instances)
-    
-    Memory Architecture:
-    - Short-term: Stored per thread_id in Lakebase checkpoints table
-    - Long-term: Stored per user_id in Lakebase store table with vector embeddings
-    """
-    
-    def __init__(self, workflow: StateGraph):
-        """
-        Initialize the ResponsesAgent wrapper.
-        
-        Args:
-            workflow: The uncompiled LangGraph StateGraph workflow
-        """
-        self.workflow = workflow
-        self.lakebase_instance_name = LAKEBASE_INSTANCE_NAME
-        self._store = None
-        self._memory_tools = None
-        print("✓ SuperAgentHybridResponsesAgent initialized with memory support")
-    
-    @property
-    def store(self):
-        """Lazy initialization of DatabricksStore for long-term memory."""
-        if self._store is None:
-            logger.info(f"Initializing DatabricksStore with instance: {self.lakebase_instance_name}")
-            self._store = DatabricksStore(
-                instance_name=self.lakebase_instance_name,
-                embedding_endpoint=EMBEDDING_ENDPOINT,
-                embedding_dims=EMBEDDING_DIMS,
-            )
-            self._store.setup()  # Creates store table if not exists
-            logger.info("✓ DatabricksStore initialized")
-        return self._store
-    
-    @property
-    def memory_tools(self):
-        """Create memory tools for long-term memory access."""
-        if self._memory_tools is None:
-            logger.info("Creating memory tools for long-term memory")
-            
-            @tool
-            def get_user_memory(query: str, config: RunnableConfig) -> str:
-                """Search for relevant user information using semantic search.
-                
-                Use this tool to retrieve previously saved information about the user,
-                such as their preferences, facts they've shared, or other personal details.
-                
-                Args:
-                    query: The search query to find relevant memories
-                    config: Runtime configuration containing user_id
-                """
-                user_id = config.get("configurable", {}).get("user_id")
-                if not user_id:
-                    return "Memory not available - no user_id provided."
-                
-                namespace = ("user_memories", user_id.replace(".", "-"))
-                results = self.store.search(namespace, query=query, limit=5)
-                
-                if not results:
-                    return "No memories found for this user."
-                
-                memory_items = [f"- [{item.key}]: {json.dumps(item.value)}" for item in results]
-                return f"Found {len(results)} relevant memories (ranked by similarity):\n" + "\n".join(memory_items)
-            
-            @tool
-            def save_user_memory(memory_key: str, memory_data_json: str, config: RunnableConfig) -> str:
-                """Save information about the user to long-term memory.
-                
-                Use this tool to remember important information the user shares,
-                such as preferences, facts, or other personal details.
-                
-                Args:
-                    memory_key: A descriptive key for this memory (e.g., "preferences", "favorite_visualization")
-                    memory_data_json: JSON string with the information to remember. 
-                        Example: '{"preferred_chart_type": "bar", "default_spaces": ["patient_data"]}'
-                    config: Runtime configuration containing user_id
-                """
-                user_id = config.get("configurable", {}).get("user_id")
-                if not user_id:
-                    return "Cannot save memory - no user_id provided."
-                
-                namespace = ("user_memories", user_id.replace(".", "-"))
-                
-                try:
-                    memory_data = json.loads(memory_data_json)
-                    if not isinstance(memory_data, dict):
-                        return f"Failed: memory_data must be a JSON object, not {type(memory_data).__name__}"
-                    self.store.put(namespace, memory_key, memory_data)
-                    return f"Successfully saved memory with key '{memory_key}' for user"
-                except json.JSONDecodeError as e:
-                    return f"Failed to save memory: Invalid JSON format - {str(e)}"
-            
-            @tool
-            def delete_user_memory(memory_key: str, config: RunnableConfig) -> str:
-                """Delete a specific memory from the user's long-term memory.
-                
-                Use this when the user asks you to forget something or remove
-                a piece of information from their memory.
-                
-                Args:
-                    memory_key: The key of the memory to delete
-                    config: Runtime configuration containing user_id
-                """
-                user_id = config.get("configurable", {}).get("user_id")
-                if not user_id:
-                    return "Cannot delete memory - no user_id provided."
-                
-                namespace = ("user_memories", user_id.replace(".", "-"))
-                self.store.delete(namespace, memory_key)
-                return f"Successfully deleted memory with key '{memory_key}' for user"
-            
-            self._memory_tools = [get_user_memory, save_user_memory, delete_user_memory]
-            logger.info(f"✓ Created {len(self._memory_tools)} memory tools")
-        
-        return self._memory_tools
-    
-    def _get_or_create_thread_id(self, request: ResponsesAgentRequest) -> str:
-        """Get thread_id from request or create a new one.
-        
-        Priority:
-        1. Use thread_id from custom_inputs if present
-        2. Use conversation_id from chat context if available
-        3. Generate a new UUID
-        """
-        ci = dict(request.custom_inputs or {})
-        
-        if "thread_id" in ci:
-            return ci["thread_id"]
-        
-        # Use conversation_id from ChatContext as thread_id
-        if request.context and getattr(request.context, "conversation_id", None):
-            return request.context.conversation_id
-        
-        # Generate new thread_id
-        return str(uuid4())
-    
-    def _get_user_id(self, request: ResponsesAgentRequest) -> Optional[str]:
-        """Extract user_id from request context.
-        
-        Priority:
-        1. Use user_id from chat context (preferred for Model Serving)
-        2. Use user_id from custom_inputs
-        """
-        if request.context and getattr(request.context, "user_id", None):
-            return request.context.user_id
-        
-        if request.custom_inputs and "user_id" in request.custom_inputs:
-            return request.custom_inputs["user_id"]
-        
-        return None
-    
-    def make_json_serializable(self, obj):
-        """
-        Convert LangChain objects and other non-serializable objects to JSON-serializable format.
-        
-        Args:
-            obj: Object to convert
-            
-        Returns:
-            JSON-serializable version of the object
-        """
-        from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, SystemMessage, ToolMessage, AIMessageChunk
-        from uuid import UUID
-        
-        # Handle None
-        if obj is None:
-            return None
-        
-        # Handle UUID objects
-        if isinstance(obj, UUID):
-            return str(obj)
-        
-        # Handle bytes
-        if isinstance(obj, bytes):
-            try:
-                return obj.decode('utf-8', errors='ignore')
-            except:
-                return f"<bytes:{len(obj)}>"
-        
-        # Handle set
-        if isinstance(obj, set):
-            return [self.make_json_serializable(item) for item in obj]
-        
-        # Handle LangChain message objects
-        if isinstance(obj, BaseMessage):
-            msg_dict = {
-                "type": obj.__class__.__name__,
-                "content": str(obj.content) if obj.content else ""
-            }
-            if hasattr(obj, 'id') and obj.id:
-                msg_dict["id"] = str(obj.id)
-            if hasattr(obj, 'name') and obj.name:
-                msg_dict["name"] = obj.name
-            if hasattr(obj, 'tool_calls') and obj.tool_calls:
-                # Recursively serialize tool calls
-                msg_dict["tool_calls"] = [
-                    self.make_json_serializable(tc) for tc in obj.tool_calls[:2]
-                ]  # Limit to 2 for brevity
-            return msg_dict
-        
-        # Handle dictionaries recursively
-        if isinstance(obj, dict):
-            return {str(k): self.make_json_serializable(v) for k, v in obj.items()}
-        
-        # Handle lists and tuples recursively
-        if isinstance(obj, (list, tuple)):
-            return [self.make_json_serializable(item) for item in obj]
-        
-        # Handle primitives
-        if isinstance(obj, (str, int, float, bool)):
-            return obj
-        
-        # For anything else, convert to string representation
-        try:
-            return str(obj)
-        except Exception:
-            return f"<{type(obj).__name__}>"
-    
-    def format_custom_event(self, custom_data: dict) -> str:
-        """
-        Format custom streaming events for user-friendly display.
-        
-        Args:
-            custom_data: Dictionary containing custom event data with 'type' key
-            
-        Returns:
-            Formatted string with emoji and readable event description
-        """
-        event_type = custom_data.get("type", "unknown")
-        
-        formatters = {
-            # Existing formatters
-            "agent_thinking": lambda d: f"💭 {d['agent'].upper()}: {d['content']}",
-            "agent_start": lambda d: f"🚀 Starting {d['agent']} agent for: {d.get('query', '')[:50]}...",
-            "intent_detection": lambda d: f"🎯 Intent: {d['result']} - {d.get('reasoning', '')}",
-            "clarity_analysis": lambda d: f"✓ Query {'clear' if d['clear'] else 'unclear'}: {d.get('reasoning', '')}",
-            "vector_search_start": lambda d: f"🔍 Searching vector index: {d['index']}",
-            "vector_search_results": lambda d: f"📊 Found {d['count']} relevant spaces: {[s.get('space_id', 'unknown') for s in d.get('spaces', [])]}",
-            "plan_formulation": lambda d: f"📋 Execution plan: {d.get('strategy', 'unknown')} strategy",
-            "uc_function_call": lambda d: f"🔧 Calling UC function: {d['function']}",
-            "sql_generated": lambda d: f"📝 SQL generated: {d.get('query_preview', '')}...",
-            "sql_validation_start": lambda d: f"✅ Validating SQL query...",
-            "sql_execution_start": lambda d: f"⚡ Executing SQL query...",
-            "sql_execution_complete": lambda d: f"✓ Query complete: {d.get('rows', 0)} rows, {len(d.get('columns', []))} columns",
-            "summary_start": lambda d: f"📄 Generating summary...",
-            "genie_agent_call": lambda d: f"🤖 Calling Genie agent for space: {d.get('space_id', 'unknown')}",
-            
-            # New clean streaming formatters
-            "llm_streaming_start": lambda d: f"🤖 Streaming response from {d.get('agent', 'LLM')}...",
-            "llm_token": lambda d: d.get('content', ''),  # Just the token content, no decoration
-            "intent_detected": lambda d: f"\n🎯 Intent: {d.get('intent_type', 'unknown')} (confidence: {d.get('confidence', 0):.0%})",
-            "meta_question_detected": lambda d: f"\n💡 Meta-question detected",
-            "clarification_requested": lambda d: f"\n❓ Clarification needed: {d.get('reason', 'unknown')}",
-            "clarification_skipped": lambda d: f"\n⏭️ Clarification skipped: {d.get('reason', 'unknown')}",
-            "agent_step": lambda d: f"\n📍 {d.get('agent', 'agent').upper()}: {d.get('content', d.get('step', 'processing'))}",
-            "agent_result": lambda d: f"\n✅ {d.get('agent', 'agent').upper()}: {d.get('result', 'completed')} - {d.get('content', '')}",
-            "sql_synthesis_start": lambda d: f"\n🔧 Starting SQL synthesis via {d.get('route', 'unknown')} route for {len(d.get('spaces', []))} space(s)",
-            "tools_available": lambda d: f"\n🛠️ Tools ready: {', '.join(d.get('tools', []))}",
-            "summary_complete": lambda d: f"\n✅ Summary complete",
-            
-            # Markdown content formatters - return content directly for UI display
-            "meta_answer_content": lambda d: f"\n\n{d.get('content', '')}",
-            "clarification_content": lambda d: f"\n\n{d.get('content', '')}",
-        }
-        
-        # Bulletproof JSON fallback handler
-        def json_fallback(obj):
-            """Final fallback for json.dumps() - converts anything to string."""
-            try:
-                return str(obj)
-            except:
-                return f"<{type(obj).__name__}>"
-        
-        # Fallback formatter now uses make_json_serializable with json_fallback
-        formatter = formatters.get(
-            event_type,
-            lambda d: f"ℹ️ {event_type}: {json.dumps(self.make_json_serializable(d), indent=2, default=json_fallback)}"
-        )
-        
-        try:
-            return formatter(custom_data)
-        except Exception as e:
-            logger.warning(f"Error formatting custom event {event_type}: {e}")
-            # Enhanced error handling with serialization fallback
-            try:
-                serialized = self.make_json_serializable(custom_data)
-                return f"ℹ️ {event_type}: {json.dumps(serialized, indent=2, default=json_fallback)}"
-            except Exception as e2:
-                logger.warning(f"Error serializing custom event {event_type}: {e2}")
-                return f"ℹ️ {event_type}: {str(custom_data)}"
-    
-    def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
-        """
-        Make a prediction (non-streaming).
-        
-        Args:
-            request: The request containing input messages
-            
-        Returns:
-            ResponsesAgentResponse with output items
-        """
-        outputs = [
-            event.item
-            for event in self.predict_stream(request)
-            if event.type == "response.output_item.done"
-        ]
-        return ResponsesAgentResponse(output=outputs, custom_outputs=request.custom_inputs)
-    
-    def predict_stream(
-        self,
-        request: ResponsesAgentRequest,
-    ) -> Generator[ResponsesAgentStreamEvent, None, None]:
-        """
-        Make a streaming prediction with both short-term and long-term memory.
-        
-        SIMPLIFIED API: All conversation turns use the same simple format.
-        The agent auto-detects clarification responses and follow-ups from message history.
-        
-        Memory Systems:
-        - Short-term (CheckpointSaver): Preserves conversation state across distributed instances
-        - Long-term (DatabricksStore): User preferences accessible via memory tools
-        
-        Args:
-            request: The request containing:
-                - input: List of messages (user query is the last message)
-                - context.conversation_id: Used as thread_id (preferred)
-                - context.user_id: Used for long-term memory (preferred)
-                - custom_inputs: Dict with optional keys:
-                    - thread_id (str): Thread identifier override
-                    - user_id (str): User identifier override
-            
-        Yields:
-            ResponsesAgentStreamEvent for each step in the workflow
-            
-        Usage in Model Serving (ALL scenarios use same format):
-            # First query in a conversation
-            POST /invocations
-            {
-                "messages": [{"role": "user", "content": "Show me patient data"}],
-                "context": {
-                    "conversation_id": "session_001",
-                    "user_id": "user@example.com"
-                }
-            }
-            
-            # Clarification response (SIMPLIFIED - auto-detected!)
-            POST /invocations
-            {
-                "messages": [{"role": "user", "content": "Patient count by age group"}],
-                "context": {
-                    "conversation_id": "session_001",  # Same thread_id
-                    "user_id": "user@example.com"
-                }
-            }
-            
-            # Follow-up query (agent remembers context automatically)
-            POST /invocations
-            {
-                "messages": [{"role": "user", "content": "Now show by gender"}],
-                "context": {
-                    "conversation_id": "session_001",  # Same thread_id
-                    "user_id": "user@example.com"
-                }
-            }
-        """
-        # Get identifiers
-        thread_id = self._get_or_create_thread_id(request)
-        user_id = self._get_user_id(request)
-        
-        # Update custom_inputs with resolved identifiers
-        ci = dict(request.custom_inputs or {})
-        ci["thread_id"] = thread_id
-        if user_id:
-            ci["user_id"] = user_id
-        request.custom_inputs = ci
-        
-        logger.info(f"Processing request - thread_id: {thread_id}, user_id: {user_id}")
-        
-        # PHASE 3 OPTIMIZATION: Track workflow timing (TTFT and TTCL)
-        workflow_start_time = time.time()
-        first_token_time = None
-        _performance_metrics["workflow_metrics"]["total_requests"] += 1
-        
-        # Ensure MLflow tracing doesn't cause issues in streaming context
-        # This safeguard prevents NonRecordingSpan context attribute errors
-        try:
-            import mlflow.tracing
-            # Verify tracing is properly initialized, otherwise disable to prevent errors
-            if not hasattr(mlflow.tracing, '_is_enabled') or not mlflow.tracing._is_enabled():
-                logger.debug("MLflow tracing not enabled, continuing without tracing")
-        except Exception as e:
-            logger.debug(f"MLflow tracing check skipped: {e}")
-        
-        # Convert request input to chat completions format
-        cc_msgs = to_chat_completions_input([i.model_dump() for i in request.input])
-        
-        # Get the latest user message
-        latest_query = cc_msgs[-1]["content"] if cc_msgs else ""
-        
-        # Configure runtime with thread_id and user_id
-        run_config = {"configurable": {"thread_id": thread_id}}
-        if user_id:
-            run_config["configurable"]["user_id"] = user_id
-        
-        # SIMPLIFIED: Unified state initialization for all scenarios
-        # CheckpointSaver will restore previous conversation context automatically
-        # The intent_detection_node runs first and creates current_turn
-        initial_state = {
-            **RESET_STATE_TEMPLATE,  # Reset all per-query execution fields
-            "original_query": latest_query,
-            "messages": [
-                SystemMessage(content="""You are a multi-agent Q&A analysis system.
-Your role is to help users query and analyze cross-domain data.
-
-Guidelines:
-- Always explain your reasoning and execution plan
-- Validate SQL queries before execution
-- Provide clear, comprehensive summaries
-- If information is missing, ask for clarification (max once)
-- Use UC functions and Genie agents to generate accurate SQL
-- Return results with proper context and explanations"""),
-                HumanMessage(content=latest_query)
-            ]
-            # NOTE: current_turn, intent_metadata, turn_history are NOT in RESET_STATE_TEMPLATE
-            # They are managed by unified_intent_context_clarification_node and persist via CheckpointSaver
-        }
-        
-        # Add user_id to state for long-term memory access
-        if user_id:
-            initial_state["user_id"] = user_id
-            initial_state["thread_id"] = thread_id
-        
-        first_message = True
-        seen_ids = set()
-        
-        # Execute workflow with CheckpointSaver for distributed serving
-        # CRITICAL: CheckpointSaver as context manager ensures all instances share state
-        with CheckpointSaver(instance_name=self.lakebase_instance_name) as checkpointer:
-            # Compile graph with checkpointer at runtime
-            # This allows distributed Model Serving to access shared state
-            app = self.workflow.compile(checkpointer=checkpointer)
-            
-            logger.info(f"Executing workflow with checkpointer (thread: {thread_id})")
-            
-            # Stream the workflow execution with enhanced visibility modes
-            # CheckpointSaver will:
-            # 1. Restore previous state from thread_id (if exists) from Lakebase
-            # 2. Merge with initial_state (initial_state takes precedence)
-            # 3. Preserve conversation history across distributed instances
-            # Stream modes:
-            # - updates: State changes after each node
-            # - messages: LLM token-by-token streaming
-            # - custom: Agent-specific events (thinking, decisions, progress)
-            # - tasks: Task lifecycle events (start, finish, errors) for node execution tracking
-            for event in app.stream(initial_state, run_config, stream_mode=["updates", "messages", "custom", "tasks"]):
-                event_type = event[0]
-                event_data = event[1]
-                
-                # Handle streaming text deltas (messages mode)
-                if event_type == "messages":
-                    try:
-                        # Extract the message chunk
-                        chunk = event_data[0] if isinstance(event_data, (list, tuple)) else event_data
-                        
-                        # Stream text content as deltas for real-time visibility in Playground
-                        if isinstance(chunk, AIMessageChunk) and (content := chunk.content):
-                            # PHASE 3: Track TTFT (Time To First Token)
-                            if first_token_time is None:
-                                first_token_time = time.time()
-                                ttft = first_token_time - workflow_start_time
-                                _performance_metrics["workflow_metrics"]["ttft_seconds"].append(ttft)
-                                logger.info(f"⚡ TTFT: {ttft:.3f}s")
-                            
-                            yield ResponsesAgentStreamEvent(
-                                **self.create_text_delta(delta=content, item_id=chunk.id),
-                            )
-                    except Exception as e:
-                        logger.warning(f"Error processing message chunk: {e}")
-                
-                # Handle node updates (updates mode)
-                elif event_type == "updates":
-                    events = event_data
-                    new_msgs = [
-                        msg
-                        for v in events.values()
-                        for msg in v.get("messages", [])
-                        if hasattr(msg, 'id') and msg.id not in seen_ids
-                    ]
-                    
-                    if first_message:
-                        seen_ids.update(msg.id for msg in new_msgs[: len(cc_msgs)])
-                        new_msgs = new_msgs[len(cc_msgs) :]
-                        first_message = False
-                    else:
-                        seen_ids.update(msg.id for msg in new_msgs)
-                        # Emit node name as a step indicator with enhanced details
-                        if events:
-                            node_name = tuple(events.keys())[0]
-                            node_update = events[node_name]
-                            updated_keys = [k for k in node_update.keys() if k != "messages"]
-                            
-                            # Enhanced step indicator with state keys
-                            step_text = f"🔹 Step: {node_name}"
-                            if updated_keys:
-                                step_text += f" | Keys updated: {', '.join(updated_keys)}"
-                            
-                            yield ResponsesAgentStreamEvent(
-                                type="response.output_item.done",
-                                item=self.create_text_output_item(
-                                    text=step_text, id=str(uuid4())
-                                ),
-                            )
-                            
-                            # Emit routing decision if next_agent changed
-                            if "next_agent" in node_update:
-                                next_agent = node_update["next_agent"]
-                                yield ResponsesAgentStreamEvent(
-                                    type="response.output_item.done",
-                                    item=self.create_text_output_item(
-                                        text=f"🔀 Routing decision: Next agent = {next_agent}",
-                                        id=str(uuid4())
-                                    ),
-                                )
-                    
-                    # Process messages for tool calls, tool results, and final text
-                    for msg in new_msgs:
-                        # Check if message has tool calls
-                        if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                            # Emit function call items for tool invocations
-                            for tool_call in msg.tool_calls:
-                                try:
-                                    yield ResponsesAgentStreamEvent(
-                                        type="response.output_item.done",
-                                        item=self.create_function_call_item(
-                                            id=str(uuid4()),
-                                            call_id=tool_call.get("id", str(uuid4())),
-                                            name=tool_call.get("name", "unknown"),
-                                            arguments=json.dumps(tool_call.get("args", {})),
-                                        ),
-                                    )
-                                except Exception as e:
-                                    logger.warning(f"Error emitting tool call: {e}")
-                        # Handle ToolMessage for tool results
-                        elif hasattr(msg, '__class__') and msg.__class__.__name__ == 'ToolMessage':
-                            try:
-                                tool_name = getattr(msg, 'name', 'unknown')
-                                tool_content = str(msg.content)[:200] if msg.content else "No content"
-                                yield ResponsesAgentStreamEvent(
-                                    type="response.output_item.done",
-                                    item=self.create_text_output_item(
-                                        text=f"🔨 Tool result ({tool_name}): {tool_content}...",
-                                        id=str(uuid4())
-                                    ),
-                                )
-                            except Exception as e:
-                                logger.warning(f"Error emitting tool result: {e}")
-                        else:
-                            # Emit regular message content
-                            yield from output_to_responses_items_stream([msg])
-                
-                # Handle custom mode (agent-specific events)
-                elif event_type == "custom":
-                    try:
-                        custom_data = event_data
-                        formatted_text = self.format_custom_event(custom_data)
-                        yield ResponsesAgentStreamEvent(
-                            type="response.output_item.done",
-                            item=self.create_text_output_item(
-                                text=formatted_text,
-                                id=str(uuid4())
-                            ),
-                        )
-                    except Exception as e:
-                        logger.warning(f"Error processing custom event: {e}")
-                
-                # Handle tasks mode (node lifecycle events)
-                elif event_type == "tasks":
-                    try:
-                        task_event = event_data
-                        # Task events include: 'event' (start/finish/error), 'name', 'node', 'timestamp', etc.
-                        event_name = task_event.get("event", "unknown")
-                        node_name = task_event.get("name", "unknown")
-                        
-                        if event_name == "start":
-                            # Task started
-                            logger.debug(f"⏳ Task started: {node_name}")
-                            # Optionally emit to UI:
-                            # yield ResponsesAgentStreamEvent(
-                            #     type="response.output_item.done",
-                            #     item=self.create_text_output_item(
-                            #         text=f"⏳ Starting: {node_name}",
-                            #         id=str(uuid4())
-                            #     ),
-                            # )
-                        
-                        elif event_name == "end":
-                            # Task completed successfully
-                            duration = task_event.get("duration")
-                            if duration:
-                                logger.info(f"✅ Task completed: {node_name} ({duration:.3f}s)")
-                                # Track node execution times for performance metrics
-                                if "node_timings" not in _performance_metrics["workflow_metrics"]:
-                                    _performance_metrics["workflow_metrics"]["node_timings"] = {}
-                                _performance_metrics["workflow_metrics"]["node_timings"][node_name] = duration
-                            else:
-                                logger.info(f"✅ Task completed: {node_name}")
-                        
-                        elif event_name == "error":
-                            # Task failed with error
-                            error = task_event.get("error", "Unknown error")
-                            logger.error(f"❌ Task failed: {node_name} - {error}")
-                            # Emit error to UI
-                            yield ResponsesAgentStreamEvent(
-                                type="response.output_item.done",
-                                item=self.create_text_output_item(
-                                    text=f"❌ Error in {node_name}: {error}",
-                                    id=str(uuid4())
-                                ),
-                            )
-                    
-                    except Exception as e:
-                        logger.warning(f"Error processing task event: {e}")
-        
-        # PHASE 3: Track TTCL (Time To Completion)
-        workflow_end_time = time.time()
-        ttcl = workflow_end_time - workflow_start_time
-        _performance_metrics["workflow_metrics"]["ttcl_seconds"].append(ttcl)
-        
-        logger.info(f"Workflow execution completed (thread: {thread_id})")
-        logger.info(f"⏱️  Performance: TTFT={first_token_time - workflow_start_time if first_token_time else 'N/A'}s, TTCL={ttcl:.3f}s")
-
-
-# Create the deployable agent
-AGENT = SuperAgentHybridResponsesAgent(super_agent_hybrid)
-
-print("\n" + "="*80)
-print("✅ HYBRID SUPER AGENT RESPONSES AGENT CREATED")
-print("="*80)
-print("Architecture: OOP Agents + Explicit State Management")
-print("Benefits:")
-print("  ✓ Modular and testable agent classes")
-print("  ✓ Full state observability for debugging")
-print("  ✓ Production-ready with development-friendly design")
-print("\nThis agent is now ready for:")
-print("  1. Local testing with AGENT.predict()")
-print("  2. Logging with mlflow.pyfunc.log_model()")
-print("  3. Deployment to Databricks Model Serving")
-print("\nMemory Features:")
-print("  ✓ Short-term memory: Multi-turn conversations (CheckpointSaver)")
-print("  ✓ Long-term memory: User preferences (DatabricksStore)")
-print("  ✓ Works in distributed Model Serving (shared state via Lakebase)")
-print("="*80)
-print("\n🎉 Enhanced Granular Streaming Features:")
-print("  ✓ Agent thinking and reasoning visibility")
-print("  ✓ Intent detection (new question vs follow-up)")
-print("  ✓ Clarity analysis with reasoning")
-print("  ✓ Vector search progress and results")
-print("  ✓ Execution plan formulation")
-print("  ✓ UC function calls and Genie agent invocations")
-print("  ✓ SQL generation progress")
-print("  ✓ SQL validation and execution progress")
-print("  ✓ Tool calls and tool results")
-print("  ✓ Routing decisions between agents")
-print("  ✓ Summary generation progress")
-print("  ✓ Custom events for detailed execution tracking")
-print("  ✓ Task lifecycle monitoring (start/finish/errors)")
-print("  ✓ Per-node execution timing for performance analysis")
-print("="*80)
-
-# Set the agent for MLflow tracking
-# Enable autologging with run_tracer_inline for proper async context propagation
-try:
-    mlflow.langchain.autolog(run_tracer_inline=True)
-    logger.info("✓ MLflow LangChain autologging enabled with async context support")
-except Exception as e:
-    logger.warning(f"⚠️ MLflow autolog initialization failed: {e}")
-    logger.warning("Continuing without MLflow tracing...")
-
-mlflow.models.set_model(AGENT)
+# MAGIC %%writefile agent.py
+# MAGIC """
+# MAGIC Super Agent (Hybrid Architecture) - Multi-Agent System Orchestrator
+# MAGIC
+# MAGIC This notebook implements a hybrid architecture combining:
+# MAGIC - OOP agent classes (from agent.py) for modularity and reusability
+# MAGIC - Explicit state management (from Super_Agent.py) for observability and debugging
+# MAGIC
+# MAGIC Architecture Benefits:
+# MAGIC 1. ✅ OOP modularity for agent logic - Easy to test and maintain
+# MAGIC 2. ✅ Explicit state for observability - Clear debugging and monitoring
+# MAGIC 3. ✅ Best practices from both approaches
+# MAGIC 4. ✅ Production-ready with rapid development capabilities
+# MAGIC
+# MAGIC Components:
+# MAGIC 1. Clarification Agent - Validates query clarity (OOP class)
+# MAGIC 2. Planning Agent - Creates execution plan and identifies relevant spaces (OOP class)
+# MAGIC 3. SQL Synthesis Agent (Table Route) - Generates SQL using UC tools (OOP class)
+# MAGIC 4. SQL Synthesis Agent (Genie Route) - Generates SQL using Genie agents (OOP class)
+# MAGIC 5. SQL Execution Agent - Executes SQL and returns results (OOP class)
+# MAGIC
+# MAGIC The Super Agent uses LangGraph with explicit state tracking for orchestration.
+# MAGIC """
+# MAGIC
+# MAGIC import json
+# MAGIC from typing import Dict, List, Optional, Any, Annotated, Literal, Generator
+# MAGIC from typing_extensions import TypedDict
+# MAGIC import operator
+# MAGIC from uuid import uuid4
+# MAGIC import re
+# MAGIC from functools import partial
+# MAGIC from databricks_langchain import (
+# MAGIC     ChatDatabricks,
+# MAGIC     VectorSearchRetrieverTool,
+# MAGIC     DatabricksFunctionClient,
+# MAGIC     UCFunctionToolkit,
+# MAGIC     set_uc_function_client,
+# MAGIC     CheckpointSaver,  # For short-term memory (distributed serving)
+# MAGIC     DatabricksStore,  # For long-term memory (user preferences)
+# MAGIC )
+# MAGIC
+# MAGIC # Import conversation management modules
+# MAGIC import sys
+# MAGIC from pathlib import Path
+# MAGIC # NOTE: All TypedDicts and logic are inline (self-contained)
+# MAGIC # This simplifies the agent and makes it self-contained
+# MAGIC from databricks_langchain.genie import GenieAgent
+# MAGIC from langchain.agents import create_agent
+# MAGIC from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, AIMessageChunk
+# MAGIC from langchain_core.runnables import Runnable, RunnableLambda, RunnableParallel, RunnableConfig
+# MAGIC from langchain_core.tools import tool, StructuredTool
+# MAGIC import mlflow
+# MAGIC import logging
+# MAGIC from pydantic import BaseModel, Field
+# MAGIC import json
+# MAGIC
+# MAGIC
+# MAGIC # LangGraph imports
+# MAGIC from langgraph.graph import StateGraph, END
+# MAGIC from langgraph.graph.state import CompiledStateGraph
+# MAGIC
+# MAGIC # MLflow ResponsesAgent imports
+# MAGIC from mlflow.pyfunc import ResponsesAgent
+# MAGIC from mlflow.types.responses import (
+# MAGIC     ResponsesAgentRequest,
+# MAGIC     ResponsesAgentResponse,
+# MAGIC     ResponsesAgentStreamEvent,
+# MAGIC     output_to_responses_items_stream,
+# MAGIC     to_chat_completions_input,
+# MAGIC )
+# MAGIC
+# MAGIC # Setup logging
+# MAGIC logger = logging.getLogger(__name__)
+# MAGIC
+# MAGIC
+# MAGIC ########################################
+# MAGIC # Configuration Loading with ModelConfig
+# MAGIC ########################################
+# MAGIC
+# MAGIC from mlflow.models import ModelConfig
+# MAGIC
+# MAGIC # Development configuration (used for local testing)
+# MAGIC # When deployed, this will be overridden by the config passed to log_model()
+# MAGIC development_config = {
+# MAGIC     # Unity Catalog Configuration
+# MAGIC     "catalog_name": "serverless_dbx_unifiedchat_catalog",
+# MAGIC     "schema_name": "multi_agent_genie",
+# MAGIC     
+# MAGIC     # LLM Endpoint Configuration - Diversified by Agent Role
+# MAGIC     "llm_endpoint": "databricks-claude-sonnet-4-5",  # Default/fallback
+# MAGIC     "llm_endpoint_clarification": "databricks-claude-haiku-4-5",
+# MAGIC     "llm_endpoint_planning": "databricks-claude-sonnet-4-5",
+# MAGIC     "llm_endpoint_sql_synthesis_table": "databricks-claude-haiku-4-5",
+# MAGIC     "llm_endpoint_sql_synthesis_genie": "databricks-claude-sonnet-4-5",
+# MAGIC     "llm_endpoint_execution": "databricks-claude-haiku-4-5",
+# MAGIC     "llm_endpoint_summarize": "databricks-claude-haiku-4-5",
+# MAGIC     
+# MAGIC     # Vector Search Configuration
+# MAGIC     "vs_endpoint_name": "genie_multi_agent_vs",
+# MAGIC     "embedding_model": "databricks-gte-large-en",
+# MAGIC     
+# MAGIC     # Lakebase Configuration (for State Management)
+# MAGIC     "lakebase_instance_name": "multi-agent-genie-system-state-db",
+# MAGIC     "lakebase_embedding_endpoint": "databricks-gte-large-en",
+# MAGIC     "lakebase_embedding_dims": 1024,
+# MAGIC     
+# MAGIC     # Genie Space IDs
+# MAGIC     "genie_space_ids": [
+# MAGIC         "01f106e1239d14b28d6ab46f9c15e540",
+# MAGIC         "01f106e121e7173d8cf84bb80e842d6c",
+# MAGIC         "01f106e120b718e084598e92dcf14d4e"
+# MAGIC     ],
+# MAGIC     
+# MAGIC     # SQL Warehouse ID
+# MAGIC     "sql_warehouse_id": "a4ed2ccbda385db9",
+# MAGIC     
+# MAGIC     # Table Metadata Enrichment
+# MAGIC     "sample_size": 20,
+# MAGIC     "max_unique_values": 20,
+# MAGIC }
+# MAGIC
+# MAGIC # Initialize ModelConfig
+# MAGIC # For local development: Uses development_config above
+# MAGIC # For Model Serving: Uses config passed during mlflow.pyfunc.log_model(model_config=...)
+# MAGIC model_config = ModelConfig(development_config=development_config)
+# MAGIC
+# MAGIC logger.info("="*80)
+# MAGIC logger.info("CONFIGURATION LOADED via ModelConfig")
+# MAGIC logger.info("="*80)
+# MAGIC
+# MAGIC # Extract configuration values
+# MAGIC CATALOG = model_config.get("catalog_name")
+# MAGIC SCHEMA = model_config.get("schema_name")
+# MAGIC TABLE_NAME = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks"
+# MAGIC VECTOR_SEARCH_INDEX = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks_vs_index"
+# MAGIC
+# MAGIC # LLM Endpoints - Diversified by Agent Role
+# MAGIC default_endpoint = model_config.get("llm_endpoint")
+# MAGIC LLM_ENDPOINT_CLARIFICATION = model_config.get("llm_endpoint_clarification") or default_endpoint
+# MAGIC LLM_ENDPOINT_PLANNING = model_config.get("llm_endpoint_planning") or default_endpoint
+# MAGIC LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = model_config.get("llm_endpoint_sql_synthesis_table") or default_endpoint
+# MAGIC LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = model_config.get("llm_endpoint_sql_synthesis_genie") or default_endpoint
+# MAGIC LLM_ENDPOINT_EXECUTION = model_config.get("llm_endpoint_execution") or default_endpoint
+# MAGIC LLM_ENDPOINT_SUMMARIZE = model_config.get("llm_endpoint_summarize") or default_endpoint
+# MAGIC
+# MAGIC # Lakebase configuration for state management
+# MAGIC LAKEBASE_INSTANCE_NAME = model_config.get("lakebase_instance_name")
+# MAGIC EMBEDDING_ENDPOINT = model_config.get("lakebase_embedding_endpoint")
+# MAGIC EMBEDDING_DIMS = model_config.get("lakebase_embedding_dims")
+# MAGIC
+# MAGIC # Genie space IDs
+# MAGIC GENIE_SPACE_IDS = model_config.get("genie_space_ids")
+# MAGIC
+# MAGIC # SQL Warehouse ID (required for SQLExecutionAgent)
+# MAGIC SQL_WAREHOUSE_ID = model_config.get("sql_warehouse_id")
+# MAGIC
+# MAGIC # UC Functions
+# MAGIC UC_FUNCTION_NAMES = [
+# MAGIC     f"{CATALOG}.{SCHEMA}.get_space_summary",
+# MAGIC     f"{CATALOG}.{SCHEMA}.get_table_overview",
+# MAGIC     f"{CATALOG}.{SCHEMA}.get_column_detail",
+# MAGIC     f"{CATALOG}.{SCHEMA}.get_space_instructions",
+# MAGIC     f"{CATALOG}.{SCHEMA}.get_space_details",
+# MAGIC ]
+# MAGIC
+# MAGIC logger.info(f"Catalog: {CATALOG}, Schema: {SCHEMA}")
+# MAGIC logger.info(f"Lakebase: {LAKEBASE_INSTANCE_NAME}")
+# MAGIC logger.info(f"Genie Spaces: {len(GENIE_SPACE_IDS)} spaces configured")
+# MAGIC logger.info(f"SQL Warehouse ID: {SQL_WAREHOUSE_ID}")
+# MAGIC
+# MAGIC # Validate SQL_WAREHOUSE_ID is configured
+# MAGIC if not SQL_WAREHOUSE_ID:
+# MAGIC     error_msg = (
+# MAGIC         "SQL_WAREHOUSE_ID is not configured! "
+# MAGIC         "Ensure 'sql_warehouse_id' is set in prod_config.yaml or development_config."
+# MAGIC     )
+# MAGIC     logger.error(error_msg)
+# MAGIC     raise ValueError(error_msg)
+# MAGIC
+# MAGIC logger.info("="*80)
+# MAGIC
+# MAGIC # Initialize UC Function Client
+# MAGIC client = DatabricksFunctionClient()
+# MAGIC set_uc_function_client(client)
+# MAGIC
+# MAGIC logger.info(f"Configuration loaded: Catalog={CATALOG}, Schema={SCHEMA}, Lakebase={LAKEBASE_INSTANCE_NAME}")
+# MAGIC
+# MAGIC print("✓ All dependencies imported successfully (including memory support)")
+# MAGIC
+# MAGIC # ==============================================================================
+# MAGIC # PHASE 1 OPTIMIZATION: Caching Infrastructure
+# MAGIC # ==============================================================================
+# MAGIC
+# MAGIC from datetime import timedelta
+# MAGIC
+# MAGIC # Space context cache with TTL (30 minutes)
+# MAGIC _space_context_cache = {"data": None, "timestamp": None, "table_name": None}
+# MAGIC _SPACE_CONTEXT_CACHE_TTL = timedelta(minutes=30)
+# MAGIC
+# MAGIC # Agent instance caches (persistent across requests)
+# MAGIC _agent_cache = {}
+# MAGIC
+# MAGIC # Genie agent pool (lazy initialization)
+# MAGIC _genie_agent_pool = {}
+# MAGIC
+# MAGIC # Phase 2: Vector search result cache (for refinement queries)
+# MAGIC _vector_search_cache = {}  # Format: {thread_id: {"query": str, "results": List, "timestamp": datetime}}
+# MAGIC _VECTOR_SEARCH_CACHE_TTL = timedelta(minutes=10)  # Shorter TTL for conversation-specific cache
+# MAGIC
+# MAGIC # Phase 2: LLM connection pool (avoid repeated connection overhead)
+# MAGIC _llm_connection_pool = {}  # Format: {endpoint_name: ChatDatabricks instance}
+# MAGIC
+# MAGIC def get_pooled_llm(endpoint_name: str, temperature: float = 0.1, max_tokens: int = None):
+# MAGIC     """
+# MAGIC     Get or create a pooled LLM connection.
+# MAGIC     Reuses connections across requests to avoid connection overhead.
+# MAGIC     Expected gain: -500ms cumulative across multiple LLM calls.
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         endpoint_name: Name of the LLM endpoint
+# MAGIC         temperature: Temperature for generation (default 0.1)
+# MAGIC         max_tokens: Maximum tokens to generate (default None)
+# MAGIC     
+# MAGIC     Returns:
+# MAGIC         ChatDatabricks instance from pool
+# MAGIC     """
+# MAGIC     
+# MAGIC     # Create a cache key that includes temperature and max_tokens
+# MAGIC     cache_key = f"{endpoint_name}_{temperature}_{max_tokens}"
+# MAGIC     
+# MAGIC     if cache_key not in _llm_connection_pool:
+# MAGIC         record_cache_miss("llm_pool")
+# MAGIC         print(f"⚡ Creating pooled LLM connection: {endpoint_name} (temperature={temperature})")
+# MAGIC         kwargs = {"endpoint": endpoint_name, "temperature": temperature}
+# MAGIC         if max_tokens is not None:
+# MAGIC             kwargs["max_tokens"] = max_tokens
+# MAGIC         _llm_connection_pool[cache_key] = ChatDatabricks(**kwargs)
+# MAGIC         print(f"✓ LLM connection pooled: {cache_key}")
+# MAGIC     else:
+# MAGIC         record_cache_hit("llm_pool")
+# MAGIC         print(f"♻️ Reusing pooled LLM connection: {cache_key} (-50ms to -200ms)")
+# MAGIC     
+# MAGIC     return _llm_connection_pool[cache_key]
+# MAGIC
+# MAGIC def clear_llm_connection_pool():
+# MAGIC     """Clear LLM connection pool (useful for configuration changes)."""
+# MAGIC     global _llm_connection_pool
+# MAGIC     _llm_connection_pool = {}
+# MAGIC     print("✓ LLM connection pool cleared")
+# MAGIC
+# MAGIC print("✓ Phase 2 LLM connection pooling initialized (-500ms cumulative)")
+# MAGIC
+# MAGIC # ==============================================================================
+# MAGIC # PHASE 3: Performance Monitoring Infrastructure
+# MAGIC # ==============================================================================
+# MAGIC
+# MAGIC import time
+# MAGIC from functools import wraps
+# MAGIC from typing import Callable
+# MAGIC
+# MAGIC # Performance metrics storage
+# MAGIC _performance_metrics = {
+# MAGIC     "node_timings": {},  # {node_name: [execution_times]}
+# MAGIC     "cache_stats": {
+# MAGIC         "space_context_hits": 0,
+# MAGIC         "space_context_misses": 0,
+# MAGIC         "vector_search_hits": 0,
+# MAGIC         "vector_search_misses": 0,
+# MAGIC         "agent_cache_hits": 0,
+# MAGIC         "agent_cache_misses": 0,
+# MAGIC         "llm_pool_hits": 0,
+# MAGIC         "llm_pool_misses": 0
+# MAGIC     },
+# MAGIC     "workflow_metrics": {
+# MAGIC         "ttft_seconds": [],  # Time to first token
+# MAGIC         "ttcl_seconds": [],  # Time to completion
+# MAGIC         "total_requests": 0
+# MAGIC     }
+# MAGIC }
+# MAGIC
+# MAGIC def measure_node_time(node_name: str):
+# MAGIC     """
+# MAGIC     Decorator to measure node execution time.
+# MAGIC     Expected use: Track per-node performance for optimization.
+# MAGIC     """
+# MAGIC     def decorator(func: Callable):
+# MAGIC         @wraps(func)
+# MAGIC         def wrapper(*args, **kwargs):
+# MAGIC             start_time = time.time()
+# MAGIC             try:
+# MAGIC                 result = func(*args, **kwargs)
+# MAGIC                 elapsed = time.time() - start_time
+# MAGIC                 
+# MAGIC                 # Record timing
+# MAGIC                 if node_name not in _performance_metrics["node_timings"]:
+# MAGIC                     _performance_metrics["node_timings"][node_name] = []
+# MAGIC                 _performance_metrics["node_timings"][node_name].append(elapsed)
+# MAGIC                 
+# MAGIC                 # Print timing
+# MAGIC                 print(f"⏱️  {node_name}: {elapsed:.3f}s")
+# MAGIC                 
+# MAGIC                 return result
+# MAGIC             except Exception as e:
+# MAGIC                 elapsed = time.time() - start_time
+# MAGIC                 print(f"⏱️  {node_name}: {elapsed:.3f}s (FAILED)")
+# MAGIC                 raise
+# MAGIC         return wrapper
+# MAGIC     return decorator
+# MAGIC
+# MAGIC def track_agent_model_usage(agent_name: str, model_endpoint: str):
+# MAGIC     """
+# MAGIC     Track which LLM model is used by each agent for monitoring and cost analysis.
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         agent_name: Name of the agent (e.g., "clarification", "planning")
+# MAGIC         model_endpoint: LLM endpoint being used (e.g., "databricks-claude-haiku-4-5")
+# MAGIC     """
+# MAGIC     if "agent_model_usage" not in _performance_metrics:
+# MAGIC         _performance_metrics["agent_model_usage"] = {}
+# MAGIC     
+# MAGIC     if agent_name not in _performance_metrics["agent_model_usage"]:
+# MAGIC         _performance_metrics["agent_model_usage"][agent_name] = {
+# MAGIC             "model": model_endpoint,
+# MAGIC             "invocations": 0
+# MAGIC         }
+# MAGIC     
+# MAGIC     _performance_metrics["agent_model_usage"][agent_name]["invocations"] += 1
+# MAGIC     print(f"📊 Agent '{agent_name}' using model: {model_endpoint}")
+# MAGIC
+# MAGIC def record_cache_hit(cache_type: str):
+# MAGIC     """Record a cache hit for monitoring."""
+# MAGIC     key = f"{cache_type}_hits"
+# MAGIC     if key in _performance_metrics["cache_stats"]:
+# MAGIC         _performance_metrics["cache_stats"][key] += 1
+# MAGIC
+# MAGIC def record_cache_miss(cache_type: str):
+# MAGIC     """Record a cache miss for monitoring."""
+# MAGIC     key = f"{cache_type}_misses"
+# MAGIC     if key in _performance_metrics["cache_stats"]:
+# MAGIC         _performance_metrics["cache_stats"][key] += 1
+# MAGIC
+# MAGIC def get_performance_summary():
+# MAGIC     """
+# MAGIC     Get comprehensive performance summary with averages and cache hit rates.
+# MAGIC     """
+# MAGIC     summary = {
+# MAGIC         "node_averages": {},
+# MAGIC         "cache_hit_rates": {},
+# MAGIC         "workflow_averages": {}
+# MAGIC     }
+# MAGIC     
+# MAGIC     # Calculate node averages
+# MAGIC     for node_name, timings in _performance_metrics["node_timings"].items():
+# MAGIC         if timings:
+# MAGIC             summary["node_averages"][node_name] = {
+# MAGIC                 "avg_seconds": sum(timings) / len(timings),
+# MAGIC                 "min_seconds": min(timings),
+# MAGIC                 "max_seconds": max(timings),
+# MAGIC                 "count": len(timings)
+# MAGIC             }
+# MAGIC     
+# MAGIC     # Calculate cache hit rates
+# MAGIC     for cache_type in ["space_context", "vector_search", "agent_cache", "llm_pool"]:
+# MAGIC         hits = _performance_metrics["cache_stats"].get(f"{cache_type}_hits", 0)
+# MAGIC         misses = _performance_metrics["cache_stats"].get(f"{cache_type}_misses", 0)
+# MAGIC         total = hits + misses
+# MAGIC         if total > 0:
+# MAGIC             summary["cache_hit_rates"][cache_type] = {
+# MAGIC                 "hit_rate": hits / total,
+# MAGIC                 "hits": hits,
+# MAGIC                 "misses": misses,
+# MAGIC                 "total": total
+# MAGIC             }
+# MAGIC     
+# MAGIC     # Calculate workflow averages
+# MAGIC     ttft_list = _performance_metrics["workflow_metrics"]["ttft_seconds"]
+# MAGIC     ttcl_list = _performance_metrics["workflow_metrics"]["ttcl_seconds"]
+# MAGIC     
+# MAGIC     if ttft_list:
+# MAGIC         summary["workflow_averages"]["ttft_avg"] = sum(ttft_list) / len(ttft_list)
+# MAGIC         summary["workflow_averages"]["ttft_min"] = min(ttft_list)
+# MAGIC         summary["workflow_averages"]["ttft_max"] = max(ttft_list)
+# MAGIC     
+# MAGIC     if ttcl_list:
+# MAGIC         summary["workflow_averages"]["ttcl_avg"] = sum(ttcl_list) / len(ttcl_list)
+# MAGIC         summary["workflow_averages"]["ttcl_min"] = min(ttcl_list)
+# MAGIC         summary["workflow_averages"]["ttcl_max"] = max(ttcl_list)
+# MAGIC     
+# MAGIC     summary["workflow_averages"]["total_requests"] = _performance_metrics["workflow_metrics"]["total_requests"]
+# MAGIC     
+# MAGIC     # Add agent model usage tracking
+# MAGIC     if "agent_model_usage" in _performance_metrics:
+# MAGIC         summary["agent_model_usage"] = _performance_metrics["agent_model_usage"]
+# MAGIC     
+# MAGIC     return summary
+# MAGIC
+# MAGIC def reset_performance_metrics():
+# MAGIC     """Reset all performance metrics (useful for testing)."""
+# MAGIC     global _performance_metrics
+# MAGIC     _performance_metrics = {
+# MAGIC         "node_timings": {},
+# MAGIC         "cache_stats": {
+# MAGIC             "space_context_hits": 0,
+# MAGIC             "space_context_misses": 0,
+# MAGIC             "vector_search_hits": 0,
+# MAGIC             "vector_search_misses": 0,
+# MAGIC             "agent_cache_hits": 0,
+# MAGIC             "agent_cache_misses": 0,
+# MAGIC             "llm_pool_hits": 0,
+# MAGIC             "llm_pool_misses": 0
+# MAGIC         },
+# MAGIC         "workflow_metrics": {
+# MAGIC             "ttft_seconds": [],
+# MAGIC             "ttcl_seconds": [],
+# MAGIC             "total_requests": 0
+# MAGIC         }
+# MAGIC     }
+# MAGIC     print("✓ Performance metrics reset")
+# MAGIC
+# MAGIC def print_agent_model_usage():
+# MAGIC     """Print a summary of which LLM models each agent is using."""
+# MAGIC     print("\n" + "="*80)
+# MAGIC     print("🤖 AGENT LLM MODEL USAGE SUMMARY")
+# MAGIC     print("="*80)
+# MAGIC     
+# MAGIC     if "agent_model_usage" not in _performance_metrics or not _performance_metrics["agent_model_usage"]:
+# MAGIC         print("No agent model usage tracked yet.")
+# MAGIC         return
+# MAGIC     
+# MAGIC     for agent_name, usage_info in sorted(_performance_metrics["agent_model_usage"].items()):
+# MAGIC         model = usage_info.get("model", "unknown")
+# MAGIC         invocations = usage_info.get("invocations", 0)
+# MAGIC         print(f"\n{agent_name.upper()}:")
+# MAGIC         print(f"  Model: {model}")
+# MAGIC         print(f"  Invocations: {invocations}")
+# MAGIC     
+# MAGIC     print("="*80)
+# MAGIC
+# MAGIC print("✓ Phase 3 performance monitoring infrastructure initialized")
+# MAGIC print("  - Node timing decorators")
+# MAGIC print("  - Cache hit/miss tracking")
+# MAGIC print("  - TTFT/TTCL metrics")
+# MAGIC print("  - Performance summary reporting")
+# MAGIC print("  - Agent LLM model usage tracking (NEW)")
+# MAGIC
+# MAGIC def clear_space_context_cache():
+# MAGIC     """Manually clear space context cache (useful for testing or refresh)."""
+# MAGIC     global _space_context_cache
+# MAGIC     _space_context_cache = {"data": None, "timestamp": None, "table_name": None}
+# MAGIC     print("✓ Space context cache cleared")
+# MAGIC
+# MAGIC def clear_agent_caches():
+# MAGIC     """Clear all agent caches (useful for configuration changes)."""
+# MAGIC     global _agent_cache, _genie_agent_pool, _vector_search_cache
+# MAGIC     _agent_cache = {}
+# MAGIC     _genie_agent_pool = {}
+# MAGIC     _vector_search_cache = {}
+# MAGIC     print("✓ Agent caches cleared (including vector search)")
+# MAGIC
+# MAGIC def clear_vector_search_cache(thread_id: str = None):
+# MAGIC     """Clear vector search cache for a specific thread or all threads."""
+# MAGIC     global _vector_search_cache
+# MAGIC     if thread_id:
+# MAGIC         if thread_id in _vector_search_cache:
+# MAGIC             del _vector_search_cache[thread_id]
+# MAGIC             print(f"✓ Vector search cache cleared for thread: {thread_id}")
+# MAGIC     else:
+# MAGIC         _vector_search_cache = {}
+# MAGIC         print("✓ All vector search caches cleared")
+# MAGIC
+# MAGIC def get_cache_stats():
+# MAGIC     """Get cache statistics for monitoring."""
+# MAGIC     stats = {
+# MAGIC         "space_context_cached": _space_context_cache["data"] is not None,
+# MAGIC         "space_context_timestamp": _space_context_cache["timestamp"],
+# MAGIC         "agent_cache_size": len(_agent_cache),
+# MAGIC         "genie_pool_size": len(_genie_agent_pool),
+# MAGIC         "vector_search_cache_size": len(_vector_search_cache),
+# MAGIC         "llm_connection_pool_size": len(_llm_connection_pool),
+# MAGIC         "cached_agents": list(_agent_cache.keys()),
+# MAGIC         "pooled_genie_spaces": list(_genie_agent_pool.keys()),
+# MAGIC         "vector_search_threads": list(_vector_search_cache.keys()),
+# MAGIC         "pooled_llm_connections": list(_llm_connection_pool.keys())
+# MAGIC     }
+# MAGIC     return stats
+# MAGIC
+# MAGIC print("✓ Phase 1 caching infrastructure initialized")
+# MAGIC
+# MAGIC # ==============================================================================
+# MAGIC # PHASE 1 OPTIMIZATION: Cached Agent Getters (Module-Level Singletons)
+# MAGIC # ==============================================================================
+# MAGIC
+# MAGIC def get_cached_planning_agent():
+# MAGIC     """
+# MAGIC     Get or create cached PlanningAgent instance.
+# MAGIC     Expected gain: -500ms to -1s per request
+# MAGIC     """
+# MAGIC     if "planning" not in _agent_cache:
+# MAGIC         record_cache_miss("agent_cache")
+# MAGIC         print("⚡ Creating PlanningAgent (first use)...")
+# MAGIC         llm = get_pooled_llm(LLM_ENDPOINT_PLANNING)
+# MAGIC         # Note: Agent class will be defined later in notebook
+# MAGIC         # This is a forward reference that works because Python resolves at runtime
+# MAGIC         _agent_cache["planning"] = PlanningAgent(llm, VECTOR_SEARCH_INDEX)
+# MAGIC         print("✓ PlanningAgent cached")
+# MAGIC     else:
+# MAGIC         record_cache_hit("agent_cache")
+# MAGIC         print("✓ Using cached PlanningAgent")
+# MAGIC     return _agent_cache["planning"]
+# MAGIC
+# MAGIC def get_cached_sql_table_agent():
+# MAGIC     """
+# MAGIC     Get or create cached SQLSynthesisTableAgent instance.
+# MAGIC     Expected gain: -500ms to -1s per request
+# MAGIC     """
+# MAGIC     if "sql_table" not in _agent_cache:
+# MAGIC         record_cache_miss("agent_cache")
+# MAGIC         print("⚡ Creating SQLSynthesisTableAgent (first use)...")
+# MAGIC         llm = get_pooled_llm(LLM_ENDPOINT_SQL_SYNTHESIS_TABLE)
+# MAGIC         _agent_cache["sql_table"] = SQLSynthesisTableAgent(llm, CATALOG, SCHEMA)
+# MAGIC         print("✓ SQLSynthesisTableAgent cached")
+# MAGIC     else:
+# MAGIC         record_cache_hit("agent_cache")
+# MAGIC         print("✓ Using cached SQLSynthesisTableAgent")
+# MAGIC     return _agent_cache["sql_table"]
+# MAGIC
+# MAGIC def get_cached_summarize_agent():
+# MAGIC     """
+# MAGIC     Get or create cached ResultSummarizeAgent instance.
+# MAGIC     Expected gain: -100ms to -300ms per request
+# MAGIC     """
+# MAGIC     if "summarize" not in _agent_cache:
+# MAGIC         record_cache_miss("agent_cache")
+# MAGIC         print("⚡ Creating ResultSummarizeAgent (first use)...")
+# MAGIC         llm = get_pooled_llm(LLM_ENDPOINT_SUMMARIZE, temperature=0.1, max_tokens=5000)
+# MAGIC         _agent_cache["summarize"] = ResultSummarizeAgent(llm)
+# MAGIC         print("✓ ResultSummarizeAgent cached")
+# MAGIC     else:
+# MAGIC         record_cache_hit("agent_cache")
+# MAGIC         print("✓ Using cached ResultSummarizeAgent")
+# MAGIC     return _agent_cache["summarize"]
+# MAGIC
+# MAGIC print("✓ Agent cache getters defined")
+# MAGIC
+# MAGIC # ==============================================================================
+# MAGIC # PHASE 1 OPTIMIZATION: Genie Agent Pool (Lazy Initialization)
+# MAGIC # ==============================================================================
+# MAGIC
+# MAGIC def get_or_create_genie_agent(space_id: str, space_title: str, description: str):
+# MAGIC     """
+# MAGIC     Get existing Genie agent from pool or create new one if not cached.
+# MAGIC     
+# MAGIC     OPTIMIZATION: Reuses Genie agents across requests to avoid expensive initialization.
+# MAGIC     Expected gain: -1 to -3s on genie route (creating 3-5 agents)
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         space_id: Genie space ID
+# MAGIC         space_title: Space title for agent name
+# MAGIC         description: Space description
+# MAGIC     
+# MAGIC     Returns:
+# MAGIC         Cached or newly created GenieAgent instance
+# MAGIC     """
+# MAGIC     global _genie_agent_pool
+# MAGIC     
+# MAGIC     if space_id not in _genie_agent_pool:
+# MAGIC         from databricks_langchain import GenieAgent
+# MAGIC         
+# MAGIC         print(f"⚡ Creating Genie agent for space: {space_title} (first use)")
+# MAGIC         
+# MAGIC         def enforce_limit(messages, n=5):
+# MAGIC             """Enforce result limit in Genie queries."""
+# MAGIC             last = messages[-1] if messages else {"content": ""}
+# MAGIC             content = last.get("content", "") if isinstance(last, dict) else last.content
+# MAGIC             return f"{content}\n\nPlease limit the result to at most {n} rows."
+# MAGIC         
+# MAGIC         genie_agent = GenieAgent(
+# MAGIC             genie_space_id=space_id,
+# MAGIC             genie_agent_name=f"Genie_{space_title}",
+# MAGIC             description=description,
+# MAGIC             include_context=True,
+# MAGIC             message_processor=lambda msgs: enforce_limit(msgs, n=5)
+# MAGIC         )
+# MAGIC         
+# MAGIC         _genie_agent_pool[space_id] = genie_agent
+# MAGIC         print(f"✓ Genie agent cached for {space_title}")
+# MAGIC     else:
+# MAGIC         print(f"✓ Using cached Genie agent for {space_title}")
+# MAGIC     
+# MAGIC     return _genie_agent_pool[space_id]
+# MAGIC
+# MAGIC print("✓ Genie agent pool initialized")
+# MAGIC
+# MAGIC def query_delta_table(table_name: str, filter_field: str, filter_value: str, select_fields: List[str] = None) -> Any:
+# MAGIC     """
+# MAGIC     Query a delta table with a filter condition.
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         table_name: Full table name (catalog.schema.table)
+# MAGIC         filter_field: Field name to filter on
+# MAGIC         filter_value: Value to filter by
+# MAGIC         select_fields: List of fields to select (None = all fields)
+# MAGIC     
+# MAGIC     Returns:
+# MAGIC         Spark DataFrame with query results
+# MAGIC     """
+# MAGIC     from pyspark.sql import SparkSession
+# MAGIC     spark = SparkSession.builder.getOrCreate()
+# MAGIC
+# MAGIC     if select_fields:
+# MAGIC         fields_str = ", ".join(select_fields)
+# MAGIC     else:
+# MAGIC         fields_str = "*"
+# MAGIC     
+# MAGIC     df = spark.sql(f"""
+# MAGIC         SELECT {fields_str}
+# MAGIC         FROM {table_name}
+# MAGIC         WHERE {filter_field} = '{filter_value}'
+# MAGIC     """)
+# MAGIC     
+# MAGIC     return df
+# MAGIC
+# MAGIC def _load_space_context_uncached(table_name: str) -> Dict[str, str]:
+# MAGIC     """
+# MAGIC     Internal function: Load space context from Delta table without caching.
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         table_name: Full table name (catalog.schema.table)
+# MAGIC         
+# MAGIC     Returns:
+# MAGIC         Dictionary mapping space_id to searchable_content
+# MAGIC     """
+# MAGIC     from pyspark.sql import SparkSession
+# MAGIC     spark = SparkSession.builder.getOrCreate()
+# MAGIC     
+# MAGIC     df = spark.sql(f"""
+# MAGIC         SELECT space_id, searchable_content
+# MAGIC         FROM {table_name}
+# MAGIC         WHERE chunk_type = 'space_summary'
+# MAGIC     """)
+# MAGIC     
+# MAGIC     context = {row["space_id"]: row["searchable_content"] 
+# MAGIC                for row in df.collect()}
+# MAGIC     
+# MAGIC     return context
+# MAGIC
+# MAGIC def load_space_context(table_name: str) -> Dict[str, str]:
+# MAGIC     """
+# MAGIC     Load space context from Delta table with TTL-based caching.
+# MAGIC     
+# MAGIC     OPTIMIZATION: Caches results for 30 minutes to avoid repeated Spark queries.
+# MAGIC     Expected gain: -1 to -2s per request (when cache is hot)
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         table_name: Full table name (catalog.schema.table)
+# MAGIC         
+# MAGIC     Returns:
+# MAGIC         Dictionary mapping space_id to searchable_content
+# MAGIC     """
+# MAGIC     global _space_context_cache
+# MAGIC     
+# MAGIC     now = datetime.now()
+# MAGIC     
+# MAGIC     # Check if cache is valid
+# MAGIC     cache_valid = (
+# MAGIC         _space_context_cache["data"] is not None and
+# MAGIC         _space_context_cache["timestamp"] is not None and
+# MAGIC         _space_context_cache["table_name"] == table_name and
+# MAGIC         now - _space_context_cache["timestamp"] < _SPACE_CONTEXT_CACHE_TTL
+# MAGIC     )
+# MAGIC     
+# MAGIC     if cache_valid:
+# MAGIC         record_cache_hit("space_context")
+# MAGIC         cache_age_seconds = (now - _space_context_cache["timestamp"]).total_seconds()
+# MAGIC         print(f"✓ Using cached space context ({len(_space_context_cache['data'])} spaces, age: {cache_age_seconds:.1f}s)")
+# MAGIC         return _space_context_cache["data"]
+# MAGIC     else:
+# MAGIC         # Cache miss - load from database
+# MAGIC         record_cache_miss("space_context")
+# MAGIC         print(f"⚡ Loading space context from database (cache {'expired' if _space_context_cache['data'] else 'empty'})...")
+# MAGIC         context = _load_space_context_uncached(table_name)
+# MAGIC         
+# MAGIC         # Update cache
+# MAGIC         _space_context_cache["data"] = context
+# MAGIC         _space_context_cache["timestamp"] = now
+# MAGIC         _space_context_cache["table_name"] = table_name
+# MAGIC         
+# MAGIC         print(f"✓ Loaded {len(context)} Genie spaces and cached for {_SPACE_CONTEXT_CACHE_TTL.total_seconds()/60:.0f} minutes")
+# MAGIC         return context
+# MAGIC
+# MAGIC # Note: Context is now loaded dynamically in clarification_node
+# MAGIC # This allows refresh without model redeployment
+# MAGIC # ==============================================================================
+# MAGIC # Inline TypedDicts for Unified Agent (self-contained)
+# MAGIC # ==============================================================================
+# MAGIC
+# MAGIC from typing import TypedDict, Optional, List, Dict, Any, Literal, Annotated, Tuple
+# MAGIC from datetime import datetime
+# MAGIC import operator
+# MAGIC import uuid as uuid_module
+# MAGIC
+# MAGIC class ConversationTurn(TypedDict):
+# MAGIC     """
+# MAGIC     Represents a single conversation turn with all its context.
+# MAGIC     Inline definition for simplified unified agent.
+# MAGIC     """
+# MAGIC     turn_id: str
+# MAGIC     query: str
+# MAGIC     intent_type: Literal["new_question", "refinement", "continuation", "clarification_response"]
+# MAGIC     parent_turn_id: Optional[str]
+# MAGIC     context_summary: Optional[str]
+# MAGIC     timestamp: str  # ISO format datetime string
+# MAGIC     triggered_clarification: Optional[bool]
+# MAGIC     metadata: Optional[Dict[str, Any]]
+# MAGIC
+# MAGIC class ClarificationRequest(TypedDict):
+# MAGIC     """Unified clarification request object."""
+# MAGIC     reason: str
+# MAGIC     options: List[str]
+# MAGIC     turn_id: str
+# MAGIC     timestamp: str
+# MAGIC     best_guess: Optional[str]
+# MAGIC     best_guess_confidence: Optional[float]
+# MAGIC
+# MAGIC class IntentMetadata(TypedDict):
+# MAGIC     """Intent metadata for business logic."""
+# MAGIC     intent_type: Literal["new_question", "refinement", "continuation", "clarification_response"]
+# MAGIC     confidence: float
+# MAGIC     reasoning: str
+# MAGIC     topic_change_score: float
+# MAGIC     domain: Optional[str]
+# MAGIC     operation: Optional[str]
+# MAGIC     complexity: Literal["simple", "moderate", "complex"]
+# MAGIC     parent_turn_id: Optional[str]
+# MAGIC
+# MAGIC class AgentState(TypedDict):
+# MAGIC     """Simplified agent state using turn-based context management."""
+# MAGIC     # Turn Management
+# MAGIC     current_turn: Optional[ConversationTurn]
+# MAGIC     turn_history: Annotated[List[ConversationTurn], operator.add]
+# MAGIC     intent_metadata: Optional[IntentMetadata]
+# MAGIC     
+# MAGIC     # Clarification
+# MAGIC     pending_clarification: Optional[ClarificationRequest]
+# MAGIC     question_clear: bool
+# MAGIC     
+# MAGIC     # Meta-question handling (NEW)
+# MAGIC     is_meta_question: Optional[bool]
+# MAGIC     meta_answer: Optional[str]
+# MAGIC     
+# MAGIC     # Irrelevant question handling (NEW)
+# MAGIC     is_irrelevant: Optional[bool]
+# MAGIC     
+# MAGIC     # Deprecated
+# MAGIC     original_query: Optional[str]
+# MAGIC     
+# MAGIC     # Planning
+# MAGIC     plan: Optional[Dict[str, Any]]
+# MAGIC     sub_questions: Optional[List[str]]
+# MAGIC     requires_multiple_spaces: Optional[bool]
+# MAGIC     relevant_space_ids: Optional[List[str]]
+# MAGIC     relevant_spaces: Optional[List[Dict[str, Any]]]
+# MAGIC     vector_search_relevant_spaces_info: Optional[List[Dict[str, str]]]
+# MAGIC     requires_join: Optional[bool]
+# MAGIC     join_strategy: Optional[str]
+# MAGIC     execution_plan: Optional[str]
+# MAGIC     genie_route_plan: Optional[Dict[str, str]]
+# MAGIC     
+# MAGIC     # SQL Synthesis
+# MAGIC     sql_query: Optional[str]  # Keep for backward compatibility (first query)
+# MAGIC     sql_queries: Optional[List[str]]  # NEW: List of all SQL queries from multi-part questions
+# MAGIC     sql_query_labels: Optional[List[str]]  # NEW: Per-query labels (e.g. "QUERY 1: Most Common Diagnoses")
+# MAGIC     sql_synthesis_explanation: Optional[str]
+# MAGIC     synthesis_error: Optional[str]
+# MAGIC     has_sql: Optional[bool]  # Whether SQL was successfully extracted
+# MAGIC     
+# MAGIC     # Execution
+# MAGIC     execution_result: Optional[Dict[str, Any]]  # Keep for backward compatibility (first result)
+# MAGIC     execution_results: Optional[List[Dict[str, Any]]]  # NEW: List of all execution results
+# MAGIC     execution_error: Optional[str]
+# MAGIC     
+# MAGIC     # Summary
+# MAGIC     final_summary: Optional[str]
+# MAGIC     
+# MAGIC     # Conversation Management
+# MAGIC     user_id: Optional[str]
+# MAGIC     thread_id: Optional[str]
+# MAGIC     user_preferences: Optional[Dict[str, Any]]
+# MAGIC     
+# MAGIC     # Control Flow
+# MAGIC     next_agent: Optional[str]
+# MAGIC     messages: Annotated[List, operator.add]
+# MAGIC
+# MAGIC # Helper functions
+# MAGIC def create_conversation_turn(
+# MAGIC     query: str,
+# MAGIC     intent_type: Literal["new_question", "refinement", "continuation", "clarification_response"],
+# MAGIC     parent_turn_id: Optional[str] = None,
+# MAGIC     context_summary: Optional[str] = None,
+# MAGIC     triggered_clarification: bool = False,
+# MAGIC     metadata: Optional[Dict[str, Any]] = None
+# MAGIC ) -> ConversationTurn:
+# MAGIC     """
+# MAGIC     Factory function to create a ConversationTurn with runtime validation.
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         query: User's query string
+# MAGIC         intent_type: Must be one of: "new_question", "refinement", "continuation", "clarification_response"
+# MAGIC         parent_turn_id: Optional parent turn ID for context
+# MAGIC         context_summary: Optional summary of conversation context
+# MAGIC         triggered_clarification: Whether this turn triggered clarification
+# MAGIC         metadata: Optional additional metadata
+# MAGIC         
+# MAGIC     Returns:
+# MAGIC         ConversationTurn with validated intent_type
+# MAGIC         
+# MAGIC     Raises:
+# MAGIC         ValueError: If intent_type is not one of the allowed values
+# MAGIC     """
+# MAGIC     # Runtime validation to enforce type contract
+# MAGIC     valid_intent_types = {"new_question", "refinement", "continuation", "clarification_response"}
+# MAGIC     if intent_type not in valid_intent_types:
+# MAGIC         raise ValueError(
+# MAGIC             f"Invalid intent_type: '{intent_type}'. "
+# MAGIC             f"Must be one of: {valid_intent_types}."
+# MAGIC         )
+# MAGIC     
+# MAGIC     return ConversationTurn(
+# MAGIC         turn_id=str(uuid_module.uuid4()),
+# MAGIC         query=query,
+# MAGIC         intent_type=intent_type,
+# MAGIC         parent_turn_id=parent_turn_id,
+# MAGIC         context_summary=context_summary,
+# MAGIC         timestamp=datetime.utcnow().isoformat(),
+# MAGIC         triggered_clarification=triggered_clarification,
+# MAGIC         metadata=metadata or {}
+# MAGIC     )
+# MAGIC
+# MAGIC def create_clarification_request(
+# MAGIC     reason: str,
+# MAGIC     options: List[str],
+# MAGIC     turn_id: str,
+# MAGIC     best_guess: Optional[str] = None,
+# MAGIC     best_guess_confidence: Optional[float] = None
+# MAGIC ) -> ClarificationRequest:
+# MAGIC     """Factory function to create a ClarificationRequest."""
+# MAGIC     return ClarificationRequest(
+# MAGIC         reason=reason,
+# MAGIC         options=options,
+# MAGIC         turn_id=turn_id,
+# MAGIC         timestamp=datetime.utcnow().isoformat(),
+# MAGIC         best_guess=best_guess,
+# MAGIC         best_guess_confidence=best_guess_confidence
+# MAGIC     )
+# MAGIC
+# MAGIC def format_clarification_message(clarification: ClarificationRequest) -> str:
+# MAGIC     """Format a clarification request into a user-friendly message."""
+# MAGIC     message = f"I need clarification: {clarification['reason']}\n\n"
+# MAGIC     message += "Please choose one of the following options or provide your own clarification:\n"
+# MAGIC     for i, option in enumerate(clarification['options'], 1):
+# MAGIC         message += f"{i}. {option}\n"
+# MAGIC     return message
+# MAGIC
+# MAGIC def get_reset_state_template() -> Dict[str, Any]:
+# MAGIC     """Get template for resetting per-query execution fields."""
+# MAGIC     return {
+# MAGIC         "pending_clarification": None,
+# MAGIC         "question_clear": False,
+# MAGIC         "is_meta_question": False,
+# MAGIC         "meta_answer": None,
+# MAGIC         "is_irrelevant": False,
+# MAGIC         "plan": None,
+# MAGIC         "sub_questions": None,
+# MAGIC         "requires_multiple_spaces": None,
+# MAGIC         "relevant_space_ids": None,
+# MAGIC         "relevant_spaces": None,
+# MAGIC         "vector_search_relevant_spaces_info": None,
+# MAGIC         "requires_join": None,
+# MAGIC         "join_strategy": None,
+# MAGIC         "execution_plan": None,
+# MAGIC         "genie_route_plan": None,
+# MAGIC         "sql_query": None,
+# MAGIC         "sql_queries": None,
+# MAGIC         "sql_query_labels": None,
+# MAGIC         "sql_synthesis_explanation": None,
+# MAGIC         "synthesis_error": None,
+# MAGIC         "has_sql": None,
+# MAGIC         "execution_result": None,
+# MAGIC         "execution_results": None,
+# MAGIC         "execution_error": None,
+# MAGIC         "final_summary": None,
+# MAGIC     }
+# MAGIC
+# MAGIC print("✓ Inline TypedDicts defined (self-contained)")
+# MAGIC
+# MAGIC # State Reset Template
+# MAGIC # All per-query execution fields that should be cleared for each new query.
+# MAGIC # This prevents stale data from persisting across queries when using CheckpointSaver.
+# MAGIC # Used by both Model Serving (run_agent) and local testing (invoke_super_agent_hybrid).
+# MAGIC # Use the shared reset state template from conversation_models
+# MAGIC RESET_STATE_TEMPLATE = get_reset_state_template()
+# MAGIC
+# MAGIC # NOTE: Turn-based fields (current_turn, turn_history, intent_metadata) are NOT reset
+# MAGIC # They are managed by unified_intent_context_clarification_node and persist across queries
+# MAGIC
+# MAGIC # For reference, the template includes per-query fields (see conversation_models.get_reset_state_template()):
+# MAGIC # RESET_STATE_TEMPLATE = {
+# MAGIC     # Clarification fields (per-query)
+# MAGIC     # "pending_clarification": None,
+# MAGIC     # "question_clear": False,
+# MAGIC     # "is_meta_question": False,
+# MAGIC     # "meta_answer": None,
+# MAGIC     # "is_irrelevant": False,
+# MAGIC     
+# MAGIC     # Planning fields (per-query)
+# MAGIC     # "plan": None,
+# MAGIC     # "sub_questions": None,
+# MAGIC     # "requires_multiple_spaces": None,
+# MAGIC     # "relevant_space_ids": None,
+# MAGIC     # "relevant_spaces": None,
+# MAGIC     # "vector_search_relevant_spaces_info": None,
+# MAGIC     # "requires_join": None,
+# MAGIC     # "join_strategy": None,
+# MAGIC     # "execution_plan": None,
+# MAGIC     # "genie_route_plan": None,
+# MAGIC     
+# MAGIC     # SQL fields (per-query)
+# MAGIC     # "sql_query": None,
+# MAGIC     # "sql_queries": None,
+# MAGIC     # "sql_query_labels": None,
+# MAGIC     # "sql_synthesis_explanation": None,
+# MAGIC     # "synthesis_error": None,
+# MAGIC     # "has_sql": None,
+# MAGIC     
+# MAGIC     # Execution fields (per-query)
+# MAGIC     # "execution_result": None,
+# MAGIC     # "execution_results": None,
+# MAGIC     # "execution_error": None,
+# MAGIC     
+# MAGIC     # Summary (per-query)
+# MAGIC     # "final_summary": None,
+# MAGIC # }
+# MAGIC
+# MAGIC # Fields intentionally NOT in reset template:
+# MAGIC # 
+# MAGIC # NEW TURN-BASED FIELDS (persist across queries via CheckpointSaver):
+# MAGIC # - current_turn: Set by intent_detection_node for each query
+# MAGIC # - turn_history: Accumulated by reducer with operator.add, persists across conversation
+# MAGIC # - intent_metadata: Set by intent_detection_node for each query
+# MAGIC #
+# MAGIC # DEPRECATED LEGACY FIELDS (removed from AgentState):
+# MAGIC # - clarification_count: Replaced by turn_history with triggered_clarification flag
+# MAGIC # - last_clarified_query: Replaced by turn_history with triggered_clarification flag
+# MAGIC # - combined_query_context: Replaced by current_turn.context_summary (LLM-generated)
+# MAGIC # - clarification_needed (as state field): Replaced by pending_clarification object
+# MAGIC # - clarification_options (as state field): Replaced by pending_clarification object
+# MAGIC #
+# MAGIC # DEPRECATED BUT KEPT FOR BACKWARD COMPATIBILITY:
+# MAGIC # - original_query: Kept in AgentState but deprecated. Use messages array instead.
+# MAGIC #   This field is still set in initial_state for compatibility with legacy code.
+# MAGIC #
+# MAGIC # PERSISTENT FIELDS (never reset):
+# MAGIC # - messages: Managed by operator.add in AgentState, persists across conversation
+# MAGIC # - user_id, thread_id, user_preferences: Identity/context, persists for entire conversation
+# MAGIC # - next_agent: Control flow field, managed by nodes and routing logic (not in reset template)
+# MAGIC
+# MAGIC print("✓ State reset template defined for per-query field clearing")
+# MAGIC
+# MAGIC class PlanningAgent:
+# MAGIC     """
+# MAGIC     Agent responsible for query analysis and execution planning.
+# MAGIC     
+# MAGIC     OOP design with vector search integration.
+# MAGIC     """
+# MAGIC     
+# MAGIC     def __init__(self, llm: Runnable, vector_search_index: str):
+# MAGIC         self.llm = llm
+# MAGIC         self.vector_search_index = vector_search_index
+# MAGIC         self.name = "Planning"
+# MAGIC     
+# MAGIC     def search_relevant_spaces(self, query: str, num_results: int = 5) -> List[Dict[str, Any]]:
+# MAGIC         """
+# MAGIC         Search for relevant Genie spaces using vector search.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             query: User's question
+# MAGIC             num_results: Number of results to return
+# MAGIC             
+# MAGIC         Returns:
+# MAGIC             List of relevant space dictionaries
+# MAGIC         """
+# MAGIC         vs_tool = VectorSearchRetrieverTool(
+# MAGIC             index_name=self.vector_search_index,
+# MAGIC             num_results=num_results,
+# MAGIC             columns=["space_id", "space_title", "searchable_content"],
+# MAGIC             filters={"chunk_type": "space_summary"},
+# MAGIC             query_type="ANN",
+# MAGIC             include_metadata=True,
+# MAGIC             include_score=True
+# MAGIC         )
+# MAGIC         
+# MAGIC         docs = vs_tool.invoke({"query": query})
+# MAGIC         
+# MAGIC         relevant_spaces = []
+# MAGIC         for doc in docs:
+# MAGIC             print(doc)
+# MAGIC             relevant_spaces.append({
+# MAGIC                 "space_id": doc.metadata.get("space_id", ""),
+# MAGIC                 "space_title": doc.metadata.get("space_title", ""),
+# MAGIC                 "searchable_content": doc.page_content,
+# MAGIC                 "score": doc.metadata.get("score", 0.0)
+# MAGIC             })
+# MAGIC         
+# MAGIC         return relevant_spaces
+# MAGIC     
+# MAGIC     def create_execution_plan(
+# MAGIC         self, 
+# MAGIC         query: str, 
+# MAGIC         relevant_spaces: List[Dict[str, Any]],
+# MAGIC         original_query: str = None
+# MAGIC     ) -> Dict[str, Any]:
+# MAGIC         """
+# MAGIC         Create execution plan based on query and relevant spaces.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             query: User's question (may be context_summary if available)
+# MAGIC             relevant_spaces: List of relevant Genie spaces
+# MAGIC             original_query: Original user query from this turn (before context enrichment)
+# MAGIC             
+# MAGIC         Returns:
+# MAGIC             Dictionary with execution plan
+# MAGIC         """
+# MAGIC         # Use original_query if provided, otherwise use query as original
+# MAGIC         original_query_display = original_query if original_query is not None else query
+# MAGIC         
+# MAGIC         planning_prompt = f"""
+# MAGIC You are a query planning expert. Analyze the following question and create an execution plan.
+# MAGIC
+# MAGIC User original query this turn: {original_query_display}
+# MAGIC
+# MAGIC Question: {query}
+# MAGIC
+# MAGIC Potentially relevant Genie spaces:
+# MAGIC {json.dumps(relevant_spaces, indent=2)}
+# MAGIC
+# MAGIC Break down the question and determine:
+# MAGIC 1. What are the sub-questions or analytical components?
+# MAGIC 2. How many Genie spaces are needed to answer completely? (List their space_ids)
+# MAGIC 3. If multiple spaces are needed, do we need to JOIN data across them? Reasoning whether the sub-questions are totally independent without joining need.
+# MAGIC     - JOIN needed: E.g., "How many active plan members over 50 are on Lexapro?" requires joining member data with pharmacy claims.
+# MAGIC     - No need for JOIN: E.g., "How many active plan members over 50? How much total cost for all Lexapro claims?" - Two independent questions.
+# MAGIC 4. If JOIN is needed, what's the best strategy:
+# MAGIC     - "table_route": Directly synthesize SQL across multiple tables
+# MAGIC     - "genie_route": Query each Genie Space Agent separately, then combine SQL queries
+# MAGIC     - If user explicitly asks for "genie_route", use it; otherwise, use "table_route"
+# MAGIC     - always populate the join_strategy field in the JSON output.
+# MAGIC 5. Execution plan: A brief description of how to execute the plan.
+# MAGIC     - For genie_route: Return "genie_route_plan": {{'space_id_1':'partial_question_1', 'space_id_2':'partial_question_2'}}
+# MAGIC     - For table_route: Return "genie_route_plan": null
+# MAGIC     - Each partial_question should be similar to original but scoped to that space
+# MAGIC     - Add "Please limit to top 10 rows" to each partial question
+# MAGIC
+# MAGIC Return your analysis as JSON:
+# MAGIC {{
+# MAGIC     "original_query": "{query}",
+# MAGIC     "vector_search_relevant_spaces_info":{[{sp['space_id']: sp['space_title']} for sp in relevant_spaces]},
+# MAGIC     "question_clear": true,
+# MAGIC     "sub_questions": ["sub-question 1", "sub-question 2", ...],
+# MAGIC     "requires_multiple_spaces": true/false,
+# MAGIC     "relevant_space_ids": ["space_id_1", "space_id_2", ...],
+# MAGIC     "requires_join": true/false,
+# MAGIC     "join_strategy": "table_route" or "genie_route",
+# MAGIC     "execution_plan": "Brief description of execution plan",
+# MAGIC     "genie_route_plan": {{'space_id_1':'partial_question_1', 'space_id_2':'partial_question_2'}} or null
+# MAGIC }}
+# MAGIC
+# MAGIC Only return valid JSON, no explanations.
+# MAGIC """
+# MAGIC         
+# MAGIC         # Stream LLM response for immediate first token emission
+# MAGIC         print("🤖 Streaming planning LLM call...")
+# MAGIC         content = ""
+# MAGIC         for chunk in self.llm.stream(planning_prompt):
+# MAGIC             if chunk.content:
+# MAGIC                 content += chunk.content
+# MAGIC         
+# MAGIC         content = content.strip()
+# MAGIC         print(f"✓ Planning stream complete ({len(content)} chars)")
+# MAGIC         
+# MAGIC         # Use regex to extract JSON from markdown code blocks
+# MAGIC         json_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?```', content, re.DOTALL)
+# MAGIC         if json_match:
+# MAGIC             json_str = json_match.group(1).strip()
+# MAGIC         else:
+# MAGIC             # No code blocks, assume entire content is JSON
+# MAGIC             json_str = content
+# MAGIC         
+# MAGIC         # Remove any trailing commas before ] or }
+# MAGIC         json_str = re.sub(r',(\s*[}\]])', r'\1', json_str)
+# MAGIC         
+# MAGIC         try:
+# MAGIC             plan_result = json.loads(json_str)
+# MAGIC             return plan_result
+# MAGIC         except json.JSONDecodeError as e:
+# MAGIC             print(f"❌ Planning JSON parsing error at position {e.pos}: {e.msg}")
+# MAGIC             print(f"Raw content (first 500 chars):\n{content[:500]}")
+# MAGIC             print(f"Cleaned JSON (first 500 chars):\n{json_str[:500]}")
+# MAGIC             
+# MAGIC             # Try one more time with even more aggressive cleaning
+# MAGIC             try:
+# MAGIC                 # Remove comments
+# MAGIC                 json_str_clean = re.sub(r'//.*$', '', json_str, flags=re.MULTILINE)
+# MAGIC                 # Remove trailing commas again
+# MAGIC                 json_str_clean = re.sub(r',(\s*[}\]])', r'\1', json_str_clean)
+# MAGIC                 plan_result = json.loads(json_str_clean)
+# MAGIC                 print("✓ Successfully parsed JSON after aggressive cleaning")
+# MAGIC                 return plan_result
+# MAGIC             except:
+# MAGIC                 raise e  # Re-raise original error
+# MAGIC     
+# MAGIC     def __call__(self, query: str) -> Dict[str, Any]:
+# MAGIC         """
+# MAGIC         Analyze query and create execution plan.
+# MAGIC         
+# MAGIC         Returns:
+# MAGIC             Complete execution plan with relevant spaces
+# MAGIC         """
+# MAGIC         # Search for relevant spaces
+# MAGIC         relevant_spaces = self.search_relevant_spaces(query)
+# MAGIC         
+# MAGIC         # Create execution plan
+# MAGIC         plan = self.create_execution_plan(query, relevant_spaces)
+# MAGIC         
+# MAGIC         return plan
+# MAGIC
+# MAGIC print("✓ PlanningAgent class defined")
+# MAGIC class SQLSynthesisTableAgent:
+# MAGIC     """
+# MAGIC     Agent responsible for fast SQL synthesis using UC function tools.
+# MAGIC     
+# MAGIC     OOP design with UC toolkit integration.
+# MAGIC     """
+# MAGIC     
+# MAGIC     def __init__(
+# MAGIC         self, 
+# MAGIC         llm: Runnable, 
+# MAGIC         catalog: str, 
+# MAGIC         schema: str
+# MAGIC     ):
+# MAGIC         self.llm = llm
+# MAGIC         self.catalog = catalog
+# MAGIC         self.schema = schema
+# MAGIC         self.name = "SQLSynthesisTable"
+# MAGIC         
+# MAGIC         # Initialize UC Function Client
+# MAGIC         client = DatabricksFunctionClient()
+# MAGIC         set_uc_function_client(client)
+# MAGIC         
+# MAGIC         # Create UC Function Toolkit
+# MAGIC         uc_function_names = [
+# MAGIC             f"{catalog}.{schema}.get_space_summary",
+# MAGIC             f"{catalog}.{schema}.get_table_overview",
+# MAGIC             f"{catalog}.{schema}.get_column_detail",
+# MAGIC             f"{catalog}.{schema}.get_space_instructions",
+# MAGIC             f"{catalog}.{schema}.get_space_details",
+# MAGIC         ]
+# MAGIC         
+# MAGIC         self.uc_toolkit = UCFunctionToolkit(function_names=uc_function_names)
+# MAGIC         self.tools = self.uc_toolkit.tools
+# MAGIC         
+# MAGIC         # Create SQL synthesis agent with tools
+# MAGIC         self.agent = create_agent(
+# MAGIC             model=llm,
+# MAGIC             tools=self.tools,
+# MAGIC             system_prompt=(
+# MAGIC             """
+# MAGIC You are a specialized SQL synthesis agent in a multi-agent system.
+# MAGIC
+# MAGIC ROLE: You receive execution plans from the planning agent and generate SQL queries.
+# MAGIC
+# MAGIC ## WORKFLOW:
+# MAGIC 1. Review the execution plan and provided metadata
+# MAGIC 2. If metadata is sufficient → Generate SQL immediately
+# MAGIC 3. If insufficient, call UC function tools in this order to gather metadata:
+# MAGIC    a) get_space_summary for space information
+# MAGIC    b) get_table_overview for table schemas
+# MAGIC    c) get_column_detail for specific columns
+# MAGIC    d) get_space_details ONLY as last resort (token intensive)
+# MAGIC 4. If still cannot find enough metadata in relevant spaces, expand searching scope to all spaces
+# MAGIC    mentioned in the execution plan's 'vector_search_relevant_spaces_info' field
+# MAGIC 5. Generate complete, executable SQL using the gathered metadata, print out the final SQL
+# MAGIC
+# MAGIC ## UC FUNCTION USAGE:
+# MAGIC - Pass arguments as JSON array strings: e.g., '[\"space_id_1\", \"space_id_2\"]' or passing a NULL without any quote
+# MAGIC - Always explicitly passing all required arguments, even it is a NULL
+# MAGIC - Only query spaces from execution plan's relevant_space_ids
+# MAGIC - Use minimal sufficiency: only query what you need
+# MAGIC - OPTIMIZATION: When possible, call multiple UC functions in parallel by returning multiple tool calls
+# MAGIC   Example: If you need table_overview for space_1 AND column_detail for space_2, call both tools at once
+# MAGIC - This enables parallel execution and reduces latency by 1-2 seconds
+# MAGIC
+# MAGIC ## SQL FINETUNE INSTRUCTIONS:
+# MAGIC - **Additional SQL Finetune Step** After you already generated the SQL, take a reflection first, and then you are ready to call **get_space_instructions** to extract the space instructions taught by human; only use the most related instruction parts to finetune the SQL if necessary. 
+# MAGIC - This provides essential human-taught SQL patterns and best practices for the specific space.
+# MAGIC
+# MAGIC
+# MAGIC ## OUTPUT REQUIREMENTS:
+# MAGIC - Generate complete, executable SQL with:
+# MAGIC   * Proper JOINs based on execution plan
+# MAGIC   * WHERE clauses for filtering
+# MAGIC   * Appropriate aggregations
+# MAGIC   * Clear column aliases
+# MAGIC   * Always use real column names, never make up ones
+# MAGIC
+# MAGIC ## MULTI-QUERY STRATEGY:
+# MAGIC - If the question has multiple parts (sub_questions) and you think it's better to report
+# MAGIC   each query and result separately instead of combining into one big complex query:
+# MAGIC   * Generate MULTIPLE separate SQL queries (one per sub-question)
+# MAGIC   * This is preferred when: sub-questions are independent, results are easier to interpret
+# MAGIC     separately, or combining would create overly complex SQL
+# MAGIC - If sub-questions are closely related and naturally combine (e.g., same table, similar filters):
+# MAGIC   * You may generate a single combined SQL query
+# MAGIC
+# MAGIC ## OUTPUT FORMAT:
+# MAGIC - Return your response with:
+# MAGIC 1. Your explanations; If SQL cannot be generated, explain what metadata is missing
+# MAGIC 2. SQL queries formatted as follows:
+# MAGIC    * For SINGLE-part questions: One sql code block with query ending in semicolon
+# MAGIC    * For MULTI-part questions: Use SEPARATE sql code blocks (one per query)
+# MAGIC    * Each query MUST end with a semicolon (;)
+# MAGIC    * Add a leading comment before each query: -- Query N: <brief description>
+# MAGIC    * Example for multi-part:
+# MAGIC      sql
+# MAGIC      -- Query 1: Most common diagnoses
+# MAGIC      SELECT diagnosis_code, COUNT(*) AS freq FROM diagnosis GROUP BY diagnosis_code;
+# MAGIC      
+# MAGIC      sql
+# MAGIC      -- Query 2: Top procedures
+# MAGIC      SELECT procedure_code, COUNT(*) AS count FROM procedures GROUP BY procedure_code;
+# MAGIC      
+# MAGIC """
+# MAGIC             )
+# MAGIC         )
+# MAGIC     
+# MAGIC     def synthesize_sql(self, plan: Dict[str, Any]) -> Dict[str, Any]:
+# MAGIC         """
+# MAGIC         Synthesize SQL query based on execution plan.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             plan: Execution plan from planning agent
+# MAGIC             
+# MAGIC         Returns:
+# MAGIC             Dictionary with:
+# MAGIC             - sql: str - Extracted SQL query (None if cannot generate)
+# MAGIC             - explanation: str - Agent's explanation/reasoning
+# MAGIC             - has_sql: bool - Whether SQL was successfully extracted
+# MAGIC         """
+# MAGIC         # # Prepare plan summary for agent
+# MAGIC         # plan_summary = {
+# MAGIC         #     "original_query": plan.get("original_query", ""),
+# MAGIC         #     "vector_search_relevant_spaces_info": plan.get("vector_search_relevant_spaces_info", []),
+# MAGIC         #     "relevant_space_ids": plan.get("relevant_space_ids", []),
+# MAGIC         #     "execution_plan": plan.get("execution_plan", ""),
+# MAGIC         #     "requires_join": plan.get("requires_join", False),
+# MAGIC         #     "sub_questions": plan.get("sub_questions", [])
+# MAGIC         # }
+# MAGIC         plan_result = plan
+# MAGIC         # Invoke agent
+# MAGIC         agent_message = {
+# MAGIC             "messages": [
+# MAGIC                 {
+# MAGIC                     "role": "user",
+# MAGIC                     "content": f"""
+# MAGIC Generate a SQL query to answer the question according to the Query Plan:
+# MAGIC {json.dumps(plan_result, indent=2)}
+# MAGIC
+# MAGIC Use your available UC function tools to gather metadata intelligently.
+# MAGIC """
+# MAGIC                 }
+# MAGIC             ]
+# MAGIC         }
+# MAGIC         
+# MAGIC         result = self.agent.invoke(agent_message)
+# MAGIC         
+# MAGIC         # Extract SQL and explanation from response
+# MAGIC         if result and "messages" in result:
+# MAGIC             final_content = result["messages"][-1].content
+# MAGIC             original_content = final_content
+# MAGIC             
+# MAGIC             sql_query = None
+# MAGIC             has_sql = False
+# MAGIC             
+# MAGIC             # Try to extract SQL from markdown - use findall to capture ALL code blocks
+# MAGIC             if "```sql" in final_content.lower():
+# MAGIC                 # Find all ```sql blocks
+# MAGIC                 sql_blocks = re.findall(r'```sql\s*(.*?)\s*```', final_content, re.IGNORECASE | re.DOTALL)
+# MAGIC                 if sql_blocks:
+# MAGIC                     # Join all SQL blocks with newlines to preserve multi-query structure
+# MAGIC                     sql_query = '\n\n'.join(block.strip() for block in sql_blocks if block.strip())
+# MAGIC                     has_sql = True
+# MAGIC                     # Remove all SQL blocks from content to get explanation
+# MAGIC                     final_content = re.sub(r'```sql\s*.*?\s*```', '', final_content, flags=re.IGNORECASE | re.DOTALL)
+# MAGIC             elif "```" in final_content:
+# MAGIC                 # Find all generic code blocks
+# MAGIC                 code_blocks = re.findall(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
+# MAGIC                 # Filter for SQL-like blocks
+# MAGIC                 sql_blocks = [
+# MAGIC                     block.strip() for block in code_blocks 
+# MAGIC                     if block.strip() and any(keyword in block.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN', 'WITH'])
+# MAGIC                 ]
+# MAGIC                 if sql_blocks:
+# MAGIC                     # Join all SQL blocks
+# MAGIC                     sql_query = '\n\n'.join(sql_blocks)
+# MAGIC                     has_sql = True
+# MAGIC                     # Remove all code blocks from content to get explanation
+# MAGIC                     final_content = re.sub(r'```\s*.*?\s*```', '', final_content, flags=re.DOTALL)
+# MAGIC             
+# MAGIC             # Clean up explanation
+# MAGIC             explanation = final_content.strip()
+# MAGIC             if not explanation:
+# MAGIC                 explanation = original_content if not has_sql else "SQL query generated successfully."
+# MAGIC             
+# MAGIC             return {
+# MAGIC                 "sql": sql_query,
+# MAGIC                 "explanation": explanation,
+# MAGIC                 "has_sql": has_sql
+# MAGIC             }
+# MAGIC         else:
+# MAGIC             raise Exception("No response from agent")
+# MAGIC     
+# MAGIC     def __call__(self, plan: Dict[str, Any]) -> Dict[str, Any]:
+# MAGIC         """Make agent callable."""
+# MAGIC         return self.synthesize_sql(plan)
+# MAGIC
+# MAGIC print("✓ SQLSynthesisTableAgent class defined")
+# MAGIC class SQLSynthesisGenieAgent:
+# MAGIC     """
+# MAGIC     Agent responsible for Genie Route SQL synthesis using Genie agents as tools.
+# MAGIC     
+# MAGIC     EXECUTION MODES:
+# MAGIC     ---------------
+# MAGIC     1. LangGraph Agent Mode (default via synthesize_sql()):
+# MAGIC        - Uses LangGraph agent with tool calling
+# MAGIC        - Supports retries, disaster recovery, and adaptive routing
+# MAGIC        - Agent decides which tools to call and when
+# MAGIC        - Best for complex queries requiring orchestration
+# MAGIC     
+# MAGIC     2. RunnableParallel Mode (via invoke_genie_agents_parallel()):
+# MAGIC        - Uses RunnableParallel for direct parallel execution
+# MAGIC        - Faster for simple parallel queries
+# MAGIC        - No retry logic or adaptive routing
+# MAGIC        - Best for straightforward parallel execution
+# MAGIC     
+# MAGIC     ARCHITECTURE:
+# MAGIC     ------------
+# MAGIC     - Upgraded from RunnableLambda to RunnableParallel pattern
+# MAGIC     - Each Genie agent is wrapped as both a tool and a parallel executor
+# MAGIC     - Supports efficient parallel invocation using LangChain's RunnableParallel
+# MAGIC     - Optimized to only create Genie agents for relevant spaces (not all spaces)
+# MAGIC     """
+# MAGIC     
+# MAGIC     def __init__(self, llm: Runnable, relevant_spaces: List[Dict[str, Any]]):
+# MAGIC         """
+# MAGIC         Initialize SQL Synthesis Genie Agent with tool-calling pattern.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             llm: Language model for SQL synthesis
+# MAGIC             relevant_spaces: List of relevant spaces from PlanningAgent's Vector Search.
+# MAGIC                             Each dict should have: space_id, space_title, searchable_content
+# MAGIC         """
+# MAGIC         self.llm = llm
+# MAGIC         self.relevant_spaces = relevant_spaces
+# MAGIC         self.name = "SQLSynthesisGenie"
+# MAGIC         
+# MAGIC         # Create Genie agents and their tool representations
+# MAGIC         self.genie_agents = []
+# MAGIC         self.genie_agent_tools = []
+# MAGIC         self._create_genie_agent_tools()
+# MAGIC         
+# MAGIC         # Create SQL synthesis agent with Genie agent tools
+# MAGIC         self.sql_synthesis_agent = self._create_sql_synthesis_agent()
+# MAGIC     
+# MAGIC     def _create_genie_agent_tools(self):
+# MAGIC         """
+# MAGIC         Create Genie agents as tools only for relevant spaces.
+# MAGIC         
+# MAGIC         OPTIMIZED: Uses cached Genie agents from pool to avoid expensive initialization.
+# MAGIC         Expected gain: -1 to -3s on genie route (when agents are already cached)
+# MAGIC         
+# MAGIC         Creates both:
+# MAGIC         1. Individual tool wrappers for LangGraph agent tool calling
+# MAGIC         2. A parallel executor mapping for efficient batch invocation
+# MAGIC         
+# MAGIC         Uses LangChain preferred syntax with Pydantic BaseModel and StructuredTool.
+# MAGIC         """
+# MAGIC         print(f"  Creating Genie agent tools for {len(self.relevant_spaces)} relevant spaces...")
+# MAGIC         
+# MAGIC         for space in self.relevant_spaces:
+# MAGIC             space_id = space.get("space_id")
+# MAGIC             space_title = space.get("space_title", space_id)
+# MAGIC             searchable_content = space.get("searchable_content", "")
+# MAGIC             
+# MAGIC             if not space_id:
+# MAGIC                 print(f"  ⚠ Warning: Space missing space_id, skipping: {space}")
+# MAGIC                 continue
+# MAGIC             
+# MAGIC             genie_agent_name = f"Genie_{space_title}"
+# MAGIC             description = searchable_content
+# MAGIC             
+# MAGIC             # OPTIMIZATION: Get Genie agent from pool (cached or newly created)
+# MAGIC             genie_agent = get_or_create_genie_agent(space_id, space_title, description)
+# MAGIC             self.genie_agents.append(genie_agent)
+# MAGIC             
+# MAGIC             # Define tool input schema using Pydantic
+# MAGIC             class GenieToolInput(BaseModel):
+# MAGIC                 question: str = Field(..., description="Natural-language query to run in the Genie Space")
+# MAGIC                 conversation_id: Optional[str] = Field(None, description="Optional Genie conversation for continuity")
+# MAGIC             
+# MAGIC             # Create tool function using factory pattern to capture agent
+# MAGIC             def make_genie_tool_call(agent):
+# MAGIC                 """Factory function to capture agent in closure properly"""
+# MAGIC                 def _genie_tool_call(question: str, conversation_id: Optional[str] = None):
+# MAGIC                     """
+# MAGIC                     StructuredTool with args_schema expects individual field arguments,
+# MAGIC                     not a single Pydantic object.
+# MAGIC                     """
+# MAGIC                     # GenieAgent expects a LangChain-style message list
+# MAGIC                     result = agent.invoke({
+# MAGIC                         "messages": [{"role": "user", "content": question}],
+# MAGIC                         "conversation_id": conversation_id,
+# MAGIC                     })
+# MAGIC                     # Extract final output + optional context
+# MAGIC                     out = {"conversation_id": result.get("conversation_id")}
+# MAGIC                     msgs = result["messages"]
+# MAGIC                     def _get(name): 
+# MAGIC                         return next((getattr(m, "content", "") for m in msgs if getattr(m, "name", None) == name), None)
+# MAGIC                     out["answer"] = _get("query_result") or ""
+# MAGIC                     reasoning = _get("query_reasoning")
+# MAGIC                     sql = _get("query_sql")
+# MAGIC                     if reasoning: out["reasoning"] = reasoning
+# MAGIC                     if sql: out["sql"] = sql
+# MAGIC                     return out
+# MAGIC                 return _genie_tool_call
+# MAGIC             
+# MAGIC             # Create StructuredTool
+# MAGIC             genie_tool = StructuredTool(
+# MAGIC                 name=genie_agent_name,
+# MAGIC                 description=(
+# MAGIC                     f"Use for governed analytics queries (NL→SQL) in {space_title}. "
+# MAGIC                     f"{description}. "
+# MAGIC                     "Returns an answer and, when available, the generated SQL and reasoning."
+# MAGIC                 ),
+# MAGIC                 args_schema=GenieToolInput,
+# MAGIC                 func=make_genie_tool_call(genie_agent),
+# MAGIC             )
+# MAGIC             self.genie_agent_tools.append(genie_tool)
+# MAGIC             
+# MAGIC             print(f"  ✓ Created Genie agent tool: {genie_agent_name} ({space_id})")
+# MAGIC     
+# MAGIC     def _create_parallel_execution_tool(self):
+# MAGIC         """
+# MAGIC         Create a tool that allows the agent to invoke multiple Genie agents in parallel.
+# MAGIC         
+# MAGIC         This tool gives the agent control over parallel execution with the same
+# MAGIC         disaster recovery capabilities as individual tool calls.
+# MAGIC         
+# MAGIC         Uses RunnableParallel pattern with StructuredTool for type safety.
+# MAGIC         """
+# MAGIC
+# MAGIC         
+# MAGIC         # Define input schema for parallel execution
+# MAGIC         class ParallelGenieInput(BaseModel):
+# MAGIC             genie_route_plan: Dict[str, str] = Field(
+# MAGIC                 ..., 
+# MAGIC                 description="Dictionary mapping space_id to question. Example: {'space_id_1': 'Get member demographics', 'space_id_2': 'Get benefits'}"
+# MAGIC             )
+# MAGIC         
+# MAGIC         # Merge function to combine outputs from multiple Genie agents
+# MAGIC         def merge_genie_outputs(outputs: Dict[str, Any]) -> Dict[str, Any]:
+# MAGIC             """
+# MAGIC             Merge outputs from multiple Genie agents into a unified result.
+# MAGIC             
+# MAGIC             Args:
+# MAGIC                 outputs: Dictionary keyed by space_id, each containing agent results
+# MAGIC             
+# MAGIC             Returns:
+# MAGIC                 Unified dictionary with extracted SQL, reasoning, and metadata from all agents
+# MAGIC             """
+# MAGIC             merged_results = {}
+# MAGIC             
+# MAGIC             for space_id, result in outputs.items():
+# MAGIC                 extracted = {
+# MAGIC                     "space_id": space_id,
+# MAGIC                     "question": outputs.get(f"{space_id}_question", ""),
+# MAGIC                     "sql": "",
+# MAGIC                     "reasoning": "",
+# MAGIC                     "answer": "",
+# MAGIC                     "conversation_id": "",
+# MAGIC                     "success": False
+# MAGIC                 }
+# MAGIC                 
+# MAGIC                 # Handle direct dict output from StructuredTool
+# MAGIC                 if isinstance(result, dict):
+# MAGIC                     extracted["answer"] = result.get("answer", "")
+# MAGIC                     extracted["sql"] = result.get("sql", "")
+# MAGIC                     extracted["reasoning"] = result.get("reasoning", "")
+# MAGIC                     extracted["conversation_id"] = result.get("conversation_id", "")
+# MAGIC                     extracted["success"] = bool(result.get("sql") or result.get("answer"))
+# MAGIC                 
+# MAGIC                 # Handle message-based output (fallback)
+# MAGIC                 elif isinstance(result, dict) and "messages" in result:
+# MAGIC                     messages = result.get("messages", [])
+# MAGIC                     
+# MAGIC                     # Extract reasoning (query_reasoning)
+# MAGIC                     for msg in messages:
+# MAGIC                         if hasattr(msg, 'name') and msg.name == 'query_reasoning':
+# MAGIC                             extracted["reasoning"] = msg.content if hasattr(msg, 'content') else ""
+# MAGIC                             break
+# MAGIC                     
+# MAGIC                     # Extract SQL (query_sql)
+# MAGIC                     for msg in messages:
+# MAGIC                         if hasattr(msg, 'name') and msg.name == 'query_sql':
+# MAGIC                             extracted["sql"] = msg.content if hasattr(msg, 'content') else ""
+# MAGIC                             extracted["success"] = True
+# MAGIC                             break
+# MAGIC                     
+# MAGIC                     # Extract answer (query_result)
+# MAGIC                     for msg in messages:
+# MAGIC                         if hasattr(msg, 'name') and msg.name == 'query_result':
+# MAGIC                             extracted["answer"] = msg.content if hasattr(msg, 'content') else ""
+# MAGIC                             break
+# MAGIC                     
+# MAGIC                     # Extract conversation_id
+# MAGIC                     extracted["conversation_id"] = result.get("conversation_id", "")
+# MAGIC                 
+# MAGIC                 merged_results[space_id] = extracted
+# MAGIC             
+# MAGIC             return merged_results
+# MAGIC         
+# MAGIC         # Build a mapping from space_id to tool for easy lookup
+# MAGIC         space_id_to_tool = {}
+# MAGIC         for space in self.relevant_spaces:
+# MAGIC             space_id = space.get("space_id")
+# MAGIC             if space_id:
+# MAGIC                 # Find the corresponding tool by matching space_id
+# MAGIC                 for tool in self.genie_agent_tools:
+# MAGIC                     # Match tool to space by checking if space_title is in tool name
+# MAGIC                     space_title = space.get("space_title", space_id)
+# MAGIC                     if f"Genie_{space_title}" == tool.name:
+# MAGIC                         space_id_to_tool[space_id] = tool
+# MAGIC                         break
+# MAGIC         
+# MAGIC         # Tool function that builds and invokes dynamic parallel execution
+# MAGIC         def invoke_parallel_genie_agents(genie_route_plan: Dict[str, str]) -> Dict[str, Any]:
+# MAGIC             """
+# MAGIC             Invoke multiple Genie agents in parallel for efficient SQL generation.
+# MAGIC             
+# MAGIC             StructuredTool with args_schema expects individual field arguments,
+# MAGIC             not a single Pydantic object.
+# MAGIC             
+# MAGIC             Args:
+# MAGIC                 genie_route_plan: Dictionary mapping space_id to question
+# MAGIC             
+# MAGIC             Returns:
+# MAGIC                 Dictionary with results from each Genie agent, keyed by space_id.
+# MAGIC                 Each result contains the SQL query, reasoning, and answer from that agent.
+# MAGIC             """
+# MAGIC             try:
+# MAGIC                 route_plan = genie_route_plan
+# MAGIC                 
+# MAGIC                 # Validate all requested space_ids exist
+# MAGIC                 for space_id in route_plan.keys():
+# MAGIC                     if space_id not in space_id_to_tool:
+# MAGIC                         return {
+# MAGIC                             "error": f"No tool found for space_id: {space_id}",
+# MAGIC                             "available_space_ids": list(space_id_to_tool.keys())
+# MAGIC                         }
+# MAGIC                 
+# MAGIC                 if not route_plan:
+# MAGIC                     return {"error": "No valid parallel tasks to execute"}
+# MAGIC                 
+# MAGIC                 # Build dynamic parallel tasks - each task invokes the corresponding tool's func
+# MAGIC                 # Call the underlying function directly with individual arguments
+# MAGIC                 parallel_tasks = {}
+# MAGIC                 for space_id, question in route_plan.items():
+# MAGIC                     tool = space_id_to_tool[space_id]
+# MAGIC                     # Create a lambda that calls the tool's func with individual kwargs
+# MAGIC                     # Use default argument to capture values properly in closure
+# MAGIC                     parallel_tasks[space_id] = RunnableLambda(
+# MAGIC                         lambda inp, sid=space_id, t=tool: t.func(
+# MAGIC                             question=inp[sid], conversation_id=None
+# MAGIC                         )
+# MAGIC                     )
+# MAGIC                 
+# MAGIC                 # Create parallel runner and compose with merge function
+# MAGIC                 parallel = RunnableParallel(**parallel_tasks)
+# MAGIC                 composed = parallel | RunnableLambda(merge_genie_outputs)
+# MAGIC                 
+# MAGIC                 # Invoke the composed chain
+# MAGIC                 results = composed.invoke(route_plan)
+# MAGIC                 
+# MAGIC                 return results
+# MAGIC                 
+# MAGIC             except Exception as e:
+# MAGIC                 return {"error": f"Parallel execution failed: {str(e)}"}
+# MAGIC         
+# MAGIC         # Create StructuredTool with proper schema
+# MAGIC         parallel_tool = StructuredTool(
+# MAGIC             name="invoke_parallel_genie_agents",
+# MAGIC             description=(
+# MAGIC                 "Invoke multiple Genie agents in PARALLEL for fast SQL generation. "
+# MAGIC                 "Input: Dictionary mapping space_id to question. "
+# MAGIC                 "Example: {'space_01j9t0jhx009k25rvp67y1k7j0': 'Get member demographics', 'space_01j9t0jhx009k25rvp67y1k7j1': 'Get benefit costs'}. "
+# MAGIC                 "Returns: Dictionary with SQL, reasoning, and answer from each agent. "
+# MAGIC                 "Use this tool when: "
+# MAGIC                 "(1) You need to query multiple Genie spaces simultaneously, "
+# MAGIC                 "(2) The queries are independent (no dependencies between them), "
+# MAGIC                 "(3) You want faster execution than calling each agent sequentially. "
+# MAGIC                 "After getting results, check if you have all needed SQL components. If missing information, you can: "
+# MAGIC                 "call this tool again with updated questions, or call individual Genie agent tools for specific missing pieces."
+# MAGIC             ),
+# MAGIC             args_schema=ParallelGenieInput,
+# MAGIC             func=invoke_parallel_genie_agents,
+# MAGIC         )
+# MAGIC         
+# MAGIC         return parallel_tool
+# MAGIC     
+# MAGIC     def _create_sql_synthesis_agent(self):
+# MAGIC         """
+# MAGIC         Create LangGraph SQL Synthesis Agent with Genie agent tools.
+# MAGIC         
+# MAGIC         Uses Databricks LangGraph SDK with create_agent pattern.
+# MAGIC         Includes both individual Genie agent tools AND a parallel execution tool.
+# MAGIC         """
+# MAGIC         tools = []
+# MAGIC         tools.extend(self.genie_agent_tools)
+# MAGIC         
+# MAGIC         # Add parallel execution tool
+# MAGIC         parallel_tool = self._create_parallel_execution_tool()
+# MAGIC         tools.append(parallel_tool)
+# MAGIC         
+# MAGIC         print(f"✓ Created SQL Synthesis Agent with {len(self.genie_agent_tools)} Genie agent tools + 1 parallel execution tool")
+# MAGIC         
+# MAGIC         # Create SQL Synthesis Agent (specialized for multi-agent system)
+# MAGIC         sql_synthesis_agent = create_agent(
+# MAGIC             model=self.llm,
+# MAGIC             tools=tools,
+# MAGIC             system_prompt=(
+# MAGIC """You are a SQL synthesis agent with access to both INDIVIDUAL and PARALLEL Genie agent execution tools.
+# MAGIC
+# MAGIC The Plan given to you is a JSON:
+# MAGIC {
+# MAGIC 'original_query': 'The User's Question',
+# MAGIC 'vector_search_relevant_spaces_info': [{'space_id': 'space_id_1', 'space_title': 'space_title_1'}, ...],
+# MAGIC "question_clear": true,
+# MAGIC "sub_questions": ["sub-question 1", "sub-question 2", ...],
+# MAGIC "requires_multiple_spaces": true/false,
+# MAGIC "relevant_space_ids": ["space_id_1", "space_id_2", ...],
+# MAGIC "requires_join": true/false,
+# MAGIC "join_strategy": "table_route" or "genie_route" or null,
+# MAGIC "execution_plan": "Brief description of execution plan",
+# MAGIC "genie_route_plan": {'space_id_1':'partial_question_1', 'space_id_2':'partial_question_2', ...} or null,}
+# MAGIC
+# MAGIC ## TOOL EXECUTION STRATEGY:
+# MAGIC
+# MAGIC ### OPTION 1: PARALLEL EXECUTION (⚡ ALWAYS USE THIS - Saves 1-2 seconds!)
+# MAGIC **DEFAULT STRATEGY**: Use the `invoke_parallel_genie_agents` tool to query ALL Genie spaces simultaneously.
+# MAGIC This tool executes multiple Genie agent calls in parallel using RunnableParallel pattern.
+# MAGIC
+# MAGIC 1. Extract the genie_route_plan from the input JSON
+# MAGIC 2. Convert it to a JSON string: '{"space_id_1": "question1", "space_id_2": "question2"}'
+# MAGIC 3. Call: invoke_parallel_genie_agents(genie_route_plan='{"space_id_1": "question1", ...}')
+# MAGIC 4. You'll receive JSON with SQL and thinking from ALL agents at once
+# MAGIC 5. Check if you have all needed SQL components
+# MAGIC 6. If missing information:
+# MAGIC    - Reframe questions and call invoke_parallel_genie_agents again with updated questions
+# MAGIC    - OR call specific individual Genie agent tools for missing pieces
+# MAGIC
+# MAGIC ### OPTION 2: SEQUENTIAL EXECUTION (⚠️ Only for Special Cases)
+# MAGIC **RARE**: Only use individual Genie agent tools sequentially when:
+# MAGIC - One query strictly depends on results from another (rare in practice)
+# MAGIC - Parallel execution failed and you need granular error handling
+# MAGIC - You're doing adaptive refinement based on partial results
+# MAGIC
+# MAGIC **NOTE**: 99% of queries should use OPTION 1 (parallel) for optimal performance.
+# MAGIC
+# MAGIC ## DISASTER RECOVERY (DR) - WORKS FOR BOTH PARALLEL AND SEQUENTIAL:
+# MAGIC
+# MAGIC 1. **First Attempt**: Try your query AS IS
+# MAGIC 2. **If fails**: Analyze the error message
+# MAGIC    - If agent says "I don't have information for X", remove X from the question
+# MAGIC    - If agent returns empty/incomplete SQL, try rephrasing the question
+# MAGIC 3. **Retry Once**: Call the same tool with updated question(s)
+# MAGIC 4. **If still fails**: Try alternative Genie agents that might have the information
+# MAGIC 5. **Final fallback**: Work with what you have and explain limitations
+# MAGIC
+# MAGIC ## EXAMPLE PARALLEL EXECUTION WITH DR:
+# MAGIC
+# MAGIC Step 1: Call invoke_parallel_genie_agents with initial questions
+# MAGIC Step 2: Check results - if space_1 succeeded but space_2 failed
+# MAGIC Step 3: Keep space_1 SQL, retry space_2 with reframed question using invoke_parallel_genie_agents
+# MAGIC Step 4: Combine all successful SQL fragments
+# MAGIC
+# MAGIC ## SQL SYNTHESIS:
+# MAGIC
+# MAGIC MULTI-QUERY STRATEGY:
+# MAGIC - If the question has multiple parts and you think it's better to report each query
+# MAGIC   and result separately instead of combining into one big complex query:
+# MAGIC   * Generate MULTIPLE separate SQL queries (one per sub-question)
+# MAGIC   * This is preferred when: sub-questions are independent, results are easier to interpret
+# MAGIC     separately, or combining would create overly complex SQL
+# MAGIC - If sub-questions are closely related and naturally combine (e.g., same Genie space, similar context):
+# MAGIC   * You may combine SQL fragments into a single query
+# MAGIC
+# MAGIC OUTPUT REQUIREMENTS:
+# MAGIC - Generate complete, executable SQL with:
+# MAGIC   * Proper JOINs based on execution plan strategy
+# MAGIC   * WHERE clauses for filtering  
+# MAGIC   * Appropriate aggregations
+# MAGIC   * Clear column aliases
+# MAGIC   * Always use real column names from the data
+# MAGIC - Return your response with:
+# MAGIC   1. Your explanation (including which execution strategy you used)
+# MAGIC   2. SQL queries formatted as follows:
+# MAGIC      * For SINGLE-part questions: One ```sql code block with query ending in semicolon
+# MAGIC      * For MULTI-part questions: Use SEPARATE ```sql code blocks (one per query)
+# MAGIC      * Each query MUST end with a semicolon (;)
+# MAGIC      * Add a leading comment before each query: -- Query N: <brief description>
+# MAGIC      * Example for multi-part:
+# MAGIC        ```sql
+# MAGIC        -- Query 1: Most common diagnoses
+# MAGIC        SELECT diagnosis_code, COUNT(*) AS freq FROM diagnosis GROUP BY diagnosis_code;
+# MAGIC        ```
+# MAGIC        ```sql
+# MAGIC        -- Query 2: Top procedures
+# MAGIC        SELECT procedure_code, COUNT(*) AS count FROM procedures GROUP BY procedure_code;
+# MAGIC        ```"""
+# MAGIC             )
+# MAGIC         )
+# MAGIC         
+# MAGIC         return sql_synthesis_agent
+# MAGIC     
+# MAGIC     def invoke_genie_agents_parallel(self, genie_route_plan: Dict[str, str]) -> Dict[str, Any]:
+# MAGIC         """
+# MAGIC         Invoke multiple Genie agents in parallel using RunnableParallel.
+# MAGIC         
+# MAGIC         This method demonstrates the proper use of RunnableParallel for efficient
+# MAGIC         parallel execution of multiple Genie agents simultaneously.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             genie_route_plan: Dictionary mapping space_id to partial_question
+# MAGIC                 Example: {
+# MAGIC                     "space_01j9t0jhx009k25rvp67y1k7j0": "Get member demographics",
+# MAGIC                     "space_01j9t0jhx009k25rvp67y1k7j1": "Get benefit costs"
+# MAGIC                 }
+# MAGIC         
+# MAGIC         Returns:
+# MAGIC             Dictionary mapping space_id to agent response
+# MAGIC             Example: {
+# MAGIC                 "space_01j9t0jhx009k25rvp67y1k7j0": {...response...},
+# MAGIC                 "space_01j9t0jhx009k25rvp67y1k7j1": {...response...}
+# MAGIC             }
+# MAGIC         """
+# MAGIC         if not genie_route_plan:
+# MAGIC             return {}
+# MAGIC         
+# MAGIC         # Build space_id to tool mapping
+# MAGIC         space_id_to_tool = {}
+# MAGIC         for space in self.relevant_spaces:
+# MAGIC             space_id = space.get("space_id")
+# MAGIC             if space_id and space_id in genie_route_plan:
+# MAGIC                 # Find the corresponding tool by matching space_id
+# MAGIC                 for tool in self.genie_agent_tools:
+# MAGIC                     space_title = space.get("space_title", space_id)
+# MAGIC                     if f"Genie_{space_title}" == tool.name:
+# MAGIC                         space_id_to_tool[space_id] = tool
+# MAGIC                         break
+# MAGIC         
+# MAGIC         # Build parallel tasks that call tool.func() directly with individual arguments
+# MAGIC         parallel_tasks = {}
+# MAGIC         for space_id, question in genie_route_plan.items():
+# MAGIC             if space_id in space_id_to_tool:
+# MAGIC                 tool = space_id_to_tool[space_id]
+# MAGIC                 parallel_tasks[space_id] = RunnableLambda(
+# MAGIC                     lambda inp, sid=space_id, t=tool: t.func(
+# MAGIC                         question=inp[sid], conversation_id=None
+# MAGIC                     )
+# MAGIC                 )
+# MAGIC             else:
+# MAGIC                 print(f"  ⚠ Warning: No tool found for space_id: {space_id}")
+# MAGIC         
+# MAGIC         if not parallel_tasks:
+# MAGIC             print("  ⚠ Warning: No valid parallel tasks to execute")
+# MAGIC             return {}
+# MAGIC         
+# MAGIC         # Create RunnableParallel with all tasks
+# MAGIC         parallel_runner = RunnableParallel(**parallel_tasks)
+# MAGIC         
+# MAGIC         print(f"  🚀 Invoking {len(parallel_tasks)} Genie agents in parallel using RunnableParallel...")
+# MAGIC         
+# MAGIC         try:
+# MAGIC             # Invoke all agents in parallel
+# MAGIC             # Now invoke with the actual question mapping
+# MAGIC             results = parallel_runner.invoke(genie_route_plan)
+# MAGIC             
+# MAGIC             print(f"  ✅ Parallel invocation completed for {len(results)} agents")
+# MAGIC             print(results)
+# MAGIC             return results
+# MAGIC             
+# MAGIC         except Exception as e:
+# MAGIC             print(f"  ❌ Parallel invocation failed: {str(e)}")
+# MAGIC             return {}
+# MAGIC     
+# MAGIC     def synthesize_sql(
+# MAGIC         self, 
+# MAGIC         plan: Dict[str, Any]
+# MAGIC     ) -> Dict[str, Any]:
+# MAGIC         """
+# MAGIC         Synthesize SQL using Genie agents with intelligent tool selection.
+# MAGIC         
+# MAGIC         The agent has access to:
+# MAGIC         1. invoke_parallel_genie_agents tool - For fast parallel execution
+# MAGIC         2. Individual Genie agent tools - For sequential/dependent queries
+# MAGIC         
+# MAGIC         The agent autonomously decides which strategy to use and handles
+# MAGIC         disaster recovery with retry logic for both parallel and sequential execution
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             plan: Complete plan dictionary from PlanningAgent containing:
+# MAGIC                 - original_query: Original user question
+# MAGIC                 - execution_plan: Execution plan description
+# MAGIC                 - genie_route_plan: Mapping of space_id to partial question
+# MAGIC                 - vector_search_relevant_spaces_info: List of relevant spaces
+# MAGIC                 - relevant_space_ids: List of relevant space IDs
+# MAGIC                 - requires_join: Whether join is needed
+# MAGIC                 - join_strategy: Join strategy (table_route/genie_route)
+# MAGIC             
+# MAGIC         Returns:
+# MAGIC             Dictionary with:
+# MAGIC             - sql: str - Combined SQL query (None if cannot generate)
+# MAGIC             - explanation: str - Agent's explanation/reasoning
+# MAGIC             - has_sql: bool - Whether SQL was successfully extracted
+# MAGIC         """
+# MAGIC         # Build the plan result JSON for the agent
+# MAGIC         plan_result = plan
+# MAGIC         
+# MAGIC         print(f"\n{'='*80}")
+# MAGIC         print("🤖 SQL Synthesis Agent - Starting (with parallel execution tool)...")
+# MAGIC         print(f"{'='*80}")
+# MAGIC         print(f"Plan: {json.dumps(plan_result, indent=2)}")
+# MAGIC         print(f"{'='*80}\n")
+# MAGIC         
+# MAGIC         # Create the message for the agent
+# MAGIC         # The agent will autonomously decide whether to use:
+# MAGIC         # 1. invoke_parallel_genie_agents tool (fast parallel execution)
+# MAGIC         # 2. Individual Genie agent tools (sequential execution)
+# MAGIC         # 3. A combination of both strategies
+# MAGIC         agent_message = {
+# MAGIC             "messages": [
+# MAGIC                 {
+# MAGIC                     "role": "user",
+# MAGIC                     "content": f"""
+# MAGIC Generate a SQL query to answer the question according to the Query Plan:
+# MAGIC {json.dumps(plan_result, indent=2)}
+# MAGIC
+# MAGIC RECOMMENDED APPROACH:
+# MAGIC If 'genie_route_plan' is provided with multiple spaces, consider using the invoke_parallel_genie_agents tool for faster execution.
+# MAGIC Convert the genie_route_plan to a JSON string and call the tool to get all SQL fragments in parallel.
+# MAGIC Then combine them into a final SQL query.
+# MAGIC """
+# MAGIC                 }
+# MAGIC             ]
+# MAGIC         }
+# MAGIC         
+# MAGIC         try:
+# MAGIC             # MLflow autologging is enabled globally at agent initialization
+# MAGIC             # No need to call it again here to avoid context issues
+# MAGIC             
+# MAGIC             # Invoke the agent
+# MAGIC             result = self.sql_synthesis_agent.invoke(agent_message)
+# MAGIC             
+# MAGIC             # Extract SQL from agent result
+# MAGIC             # The agent returns {"messages": [...]}
+# MAGIC             # Last message contains the final response
+# MAGIC             final_message = result["messages"][-1]
+# MAGIC             final_content = final_message.content.strip()
+# MAGIC             
+# MAGIC             print(f"\n{'='*80}")
+# MAGIC             print("✅ SQL Synthesis Agent completed")
+# MAGIC             print(f"{'='*80}")
+# MAGIC             print(f"Result: {final_content[:500]}...")
+# MAGIC             print(f"{'='*80}\n")
+# MAGIC             
+# MAGIC             # Extract SQL and explanation from the result
+# MAGIC             sql_query = None
+# MAGIC             has_sql = False
+# MAGIC             explanation = final_content
+# MAGIC             
+# MAGIC             # Clean markdown if present and extract SQL - use findall to capture ALL code blocks
+# MAGIC             if "```sql" in final_content.lower():
+# MAGIC                 # Find all ```sql blocks
+# MAGIC                 sql_blocks = re.findall(r'```sql\s*(.*?)\s*```', final_content, re.IGNORECASE | re.DOTALL)
+# MAGIC                 if sql_blocks:
+# MAGIC                     # Join all SQL blocks with newlines to preserve multi-query structure
+# MAGIC                     sql_query = '\n\n'.join(block.strip() for block in sql_blocks if block.strip())
+# MAGIC                     has_sql = True
+# MAGIC                     # Remove all SQL blocks to get explanation
+# MAGIC                     explanation = re.sub(r'```sql\s*.*?\s*```', '', final_content, flags=re.IGNORECASE | re.DOTALL)
+# MAGIC             elif "```" in final_content:
+# MAGIC                 # Find all generic code blocks
+# MAGIC                 code_blocks = re.findall(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
+# MAGIC                 # Filter for SQL-like blocks
+# MAGIC                 sql_blocks = [
+# MAGIC                     block.strip() for block in code_blocks 
+# MAGIC                     if block.strip() and any(keyword in block.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN', 'WITH'])
+# MAGIC                 ]
+# MAGIC                 if sql_blocks:
+# MAGIC                     # Join all SQL blocks
+# MAGIC                     sql_query = '\n\n'.join(sql_blocks)
+# MAGIC                     has_sql = True
+# MAGIC                     # Remove all code blocks to get explanation
+# MAGIC                     explanation = re.sub(r'```\s*.*?\s*```', '', final_content, flags=re.DOTALL)
+# MAGIC             else:
+# MAGIC                 # No markdown, check if the entire content is SQL
+# MAGIC                 if any(keyword in final_content.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN']):
+# MAGIC                     sql_query = final_content
+# MAGIC                     has_sql = True
+# MAGIC                     explanation = "SQL query generated successfully by Genie agent tools."
+# MAGIC             
+# MAGIC             explanation = explanation.strip()
+# MAGIC             if not explanation:
+# MAGIC                 explanation = final_content if not has_sql else "SQL query generated successfully by Genie agent tools."
+# MAGIC             
+# MAGIC             return {
+# MAGIC                 "sql": sql_query,
+# MAGIC                 "explanation": explanation,
+# MAGIC                 "has_sql": has_sql
+# MAGIC             }
+# MAGIC             
+# MAGIC         except Exception as e:
+# MAGIC             print(f"\n{'='*80}")
+# MAGIC             print("❌ SQL Synthesis Agent failed")
+# MAGIC             print(f"{'='*80}")
+# MAGIC             print(f"Error: {str(e)}")
+# MAGIC             print(f"{'='*80}\n")
+# MAGIC             
+# MAGIC             return {
+# MAGIC                 "sql": None,
+# MAGIC                 "explanation": f"SQL synthesis failed: {str(e)}",
+# MAGIC                 "has_sql": False
+# MAGIC             }
+# MAGIC     
+# MAGIC     def __call__(
+# MAGIC         self, 
+# MAGIC         plan: Dict[str, Any]
+# MAGIC     ) -> Dict[str, Any]:
+# MAGIC         """Make agent callable with plan dictionary."""
+# MAGIC         return self.synthesize_sql(plan)
+# MAGIC
+# MAGIC print("✓ SQLSynthesisGenieAgent class defined")
+# MAGIC
+# MAGIC # --------------------------------------------------------------------------
+# MAGIC # Utility Function: Extract Multiple SQL Queries
+# MAGIC # --------------------------------------------------------------------------
+# MAGIC SQL_KEYWORDS = {'SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER', 'MERGE', 'REPLACE'}
+# MAGIC
+# MAGIC def _split_multi_query_block(block: str) -> Tuple[List[str], List[str]]:
+# MAGIC     """
+# MAGIC     Split a single SQL block that may contain multiple semicolon-separated
+# MAGIC     queries into individual queries and their leading-comment labels.
+# MAGIC     
+# MAGIC     Strategy:
+# MAGIC       1. Split the block on ';' (the standard SQL statement terminator).
+# MAGIC       2. For each resulting segment, extract any leading SQL comment lines
+# MAGIC          (lines starting with '--') as the query label / title.
+# MAGIC          The first leading comment line becomes the label text (without '--').
+# MAGIC       3. Only keep segments that contain real SQL keywords.
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         block: A SQL string, possibly containing multiple ';'-separated statements,
+# MAGIC                each optionally preceded by comment-line labels such as:
+# MAGIC                  -- QUERY 1: Most Common Diagnoses
+# MAGIC                  -- Patient counts by year
+# MAGIC                  -- Top procedures
+# MAGIC     
+# MAGIC     Returns:
+# MAGIC         Tuple of (queries, labels) where:
+# MAGIC           - queries:  list of individual SQL query strings (with trailing ';')
+# MAGIC           - labels:   list of label strings aligned by index. Empty string when
+# MAGIC                       no leading comment was found for a query.
+# MAGIC     """
+# MAGIC     raw_segments = block.split(';')
+# MAGIC     
+# MAGIC     queries: List[str] = []
+# MAGIC     labels: List[str] = []
+# MAGIC     
+# MAGIC     for segment in raw_segments:
+# MAGIC         segment = segment.strip()
+# MAGIC         if not segment:
+# MAGIC             continue
+# MAGIC         
+# MAGIC         # Does this segment contain actual SQL?
+# MAGIC         segment_upper = segment.upper()
+# MAGIC         if not any(kw in segment_upper for kw in SQL_KEYWORDS):
+# MAGIC             continue
+# MAGIC         
+# MAGIC         # Walk lines: collect leading comment lines, find where SQL body starts
+# MAGIC         lines = segment.split('\n')
+# MAGIC         leading_comments: List[str] = []
+# MAGIC         sql_start_idx = 0
+# MAGIC         
+# MAGIC         for i, line in enumerate(lines):
+# MAGIC             stripped = line.strip()
+# MAGIC             if stripped.startswith('--'):
+# MAGIC                 # Strip the '--' prefix and any surrounding whitespace
+# MAGIC                 comment_text = stripped.lstrip('-').strip()
+# MAGIC                 if comment_text:
+# MAGIC                     leading_comments.append(comment_text)
+# MAGIC             elif stripped == '':
+# MAGIC                 # Skip blank lines between comments and SQL body
+# MAGIC                 continue
+# MAGIC             else:
+# MAGIC                 # First non-comment, non-blank line → SQL body starts here
+# MAGIC                 sql_start_idx = i
+# MAGIC                 break
+# MAGIC         else:
+# MAGIC             # Every line was a comment or blank → no actual SQL
+# MAGIC             continue
+# MAGIC         
+# MAGIC         sql_text = '\n'.join(lines[sql_start_idx:]).strip()
+# MAGIC         if not sql_text:
+# MAGIC             continue
+# MAGIC         
+# MAGIC         # Use the first leading comment as the label / title
+# MAGIC         label = leading_comments[0] if leading_comments else ""
+# MAGIC         
+# MAGIC         queries.append(sql_text.rstrip(';').strip() + ';')
+# MAGIC         labels.append(label)
+# MAGIC     
+# MAGIC     return queries, labels
+# MAGIC
+# MAGIC def extract_all_sql_queries(content: str) -> Tuple[List[str], List[str]]:
+# MAGIC     """
+# MAGIC     Extract all SQL queries from content, with support for:
+# MAGIC       - Multiple ```sql code blocks (each treated as a separate query)
+# MAGIC       - A single code block containing multiple ';'-separated queries
+# MAGIC       - Leading comment lines (-- ...) used as query labels / titles
+# MAGIC       - Raw SQL without code fences
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         content: The text content containing SQL (possibly in markdown code blocks)
+# MAGIC         
+# MAGIC     Returns:
+# MAGIC         Tuple of (sql_queries, query_labels) where:
+# MAGIC           - sql_queries:  list of individual SQL query strings
+# MAGIC           - query_labels: list of label strings aligned with queries
+# MAGIC     """
+# MAGIC     raw_blocks: List[str] = []
+# MAGIC     
+# MAGIC     # 1. Find all ```sql blocks (case-insensitive)
+# MAGIC     sql_pattern = r'```sql\s*(.*?)\s*```'
+# MAGIC     matches = re.findall(sql_pattern, content, re.IGNORECASE | re.DOTALL)
+# MAGIC     
+# MAGIC     if matches:
+# MAGIC         raw_blocks.extend([m.strip() for m in matches if m.strip()])
+# MAGIC     else:
+# MAGIC         # 2. Fallback: generic code blocks that look like SQL
+# MAGIC         generic_pattern = r'```\s*(.*?)\s*```'
+# MAGIC         matches = re.findall(generic_pattern, content, re.DOTALL)
+# MAGIC         for match in matches:
+# MAGIC             match = match.strip()
+# MAGIC             if match and any(kw in match.upper() for kw in SQL_KEYWORDS):
+# MAGIC                 raw_blocks.append(match)
+# MAGIC     
+# MAGIC     # 3. Last resort: treat the raw content itself as SQL (no code fences)
+# MAGIC     if not raw_blocks and any(kw in content.upper() for kw in ['SELECT', 'FROM']):
+# MAGIC         raw_blocks = [content.strip()]
+# MAGIC     
+# MAGIC     # 4. Split each block on ';' to extract individual queries + labels
+# MAGIC     all_queries: List[str] = []
+# MAGIC     all_labels: List[str] = []
+# MAGIC     for block in raw_blocks:
+# MAGIC         queries, labels = _split_multi_query_block(block)
+# MAGIC         all_queries.extend(queries)
+# MAGIC         all_labels.extend(labels)
+# MAGIC     
+# MAGIC     return all_queries, all_labels
+# MAGIC
+# MAGIC print("✓ extract_all_sql_queries utility function defined")
+# MAGIC
+# MAGIC # --------------------------------------------------------------------------
+# MAGIC # Helper Function: Extract SQL Queries from Agent Result
+# MAGIC # --------------------------------------------------------------------------
+# MAGIC def extract_sql_queries_from_agent_result(
+# MAGIC     result: dict,
+# MAGIC     agent_name: str = "agent"
+# MAGIC ) -> Tuple[List[str], List[str]]:
+# MAGIC     """
+# MAGIC     Extract SQL queries and labels from agent result dictionary.
+# MAGIC     
+# MAGIC     This helper provides a simple, robust extraction strategy:
+# MAGIC       1. Try result['sql'] field first (primary source)
+# MAGIC       2. Try result['explanation'] field if sql is empty (fallback)
+# MAGIC       3. Try combined content as last resort
+# MAGIC     
+# MAGIC     Takes first non-empty result, delegating all parsing complexity to
+# MAGIC     extract_all_sql_queries() which handles:
+# MAGIC       - Markdown code fences
+# MAGIC       - Semicolon splitting
+# MAGIC       - Label extraction from comments
+# MAGIC       - Multiple query detection
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         result: Agent result dict with 'sql' and/or 'explanation' fields
+# MAGIC         agent_name: Name for logging (e.g., 'sql_synthesis_table')
+# MAGIC     
+# MAGIC     Returns:
+# MAGIC         Tuple of (queries, labels):
+# MAGIC           - queries: List of individual SQL query strings
+# MAGIC           - labels: List of label strings (from leading comments)
+# MAGIC           Returns ([], []) if extraction fails
+# MAGIC     
+# MAGIC     Example:
+# MAGIC         result = {
+# MAGIC             "sql": "-- Query 1\\nSELECT...; -- Query 2\\nSELECT...;",
+# MAGIC             "explanation": "Here are the queries...",
+# MAGIC             "has_sql": True
+# MAGIC         }
+# MAGIC         queries, labels = extract_sql_queries_from_agent_result(result, "table_agent")
+# MAGIC         # Returns: (["SELECT...", "SELECT..."], ["Query 1", "Query 2"])
+# MAGIC     """
+# MAGIC     sql_query = result.get("sql", "")
+# MAGIC     explanation = result.get("explanation", "")
+# MAGIC     
+# MAGIC     # Attempt 1: Extract from sql field (primary source)
+# MAGIC     if sql_query:
+# MAGIC         queries, labels = extract_all_sql_queries(sql_query)
+# MAGIC         if queries:
+# MAGIC             print(f"✓ [{agent_name}] Extracted {len(queries)} quer{'y' if len(queries) == 1 else 'ies'} from 'sql' field")
+# MAGIC             return queries, labels
+# MAGIC     
+# MAGIC     # Attempt 2: Extract from explanation (fallback)
+# MAGIC     if explanation:
+# MAGIC         queries, labels = extract_all_sql_queries(explanation)
+# MAGIC         if queries:
+# MAGIC             print(f"✓ [{agent_name}] Extracted {len(queries)} quer{'y' if len(queries) == 1 else 'ies'} from 'explanation' field")
+# MAGIC             return queries, labels
+# MAGIC     
+# MAGIC     # Attempt 3: Try combined content (last resort)
+# MAGIC     if sql_query or explanation:
+# MAGIC         combined = f"{explanation}\n\n{sql_query}" if explanation and sql_query else (explanation or sql_query)
+# MAGIC         queries, labels = extract_all_sql_queries(combined)
+# MAGIC         if queries:
+# MAGIC             print(f"✓ [{agent_name}] Extracted {len(queries)} quer{'y' if len(queries) == 1 else 'ies'} from combined content")
+# MAGIC             return queries, labels
+# MAGIC     
+# MAGIC     # No SQL found
+# MAGIC     print(f"⚠ [{agent_name}] No SQL queries extracted from result")
+# MAGIC     return [], []
+# MAGIC
+# MAGIC print("✓ extract_sql_queries_from_agent_result helper function defined")
+# MAGIC
+# MAGIC class SQLExecutionAgent:
+# MAGIC     """
+# MAGIC     Agent responsible for executing SQL queries using Databricks SQL Warehouse.
+# MAGIC     
+# MAGIC     PRODUCTION-READY DESIGN:
+# MAGIC     - Uses databricks-sql-connector with unified authentication (Config + credentials_provider)
+# MAGIC     - Automatically handles OAuth credentials when deployed with registered resources
+# MAGIC     - Supports both development (notebook) and production (Model Serving) environments
+# MAGIC     
+# MAGIC     AUTHENTICATION WITH AUTOMATIC PASSTHROUGH:
+# MAGIC     When you register resources during agent deployment:
+# MAGIC     
+# MAGIC         resources = [
+# MAGIC             DatabricksSQLWarehouse(warehouse_id=SQL_WAREHOUSE_ID),
+# MAGIC             # ... other resources
+# MAGIC         ]
+# MAGIC         mlflow.langchain.log_model(..., resources=resources)
+# MAGIC     
+# MAGIC     Databricks automatically:
+# MAGIC     1. Creates a service principal for your agent
+# MAGIC     2. Manages OAuth token generation and rotation
+# MAGIC     3. Injects credentials into the Model Serving environment
+# MAGIC     
+# MAGIC     The Config() class automatically reads workspace host and injected OAuth credentials,
+# MAGIC     eliminating the need for manual DATABRICKS_HOST/DATABRICKS_TOKEN configuration.
+# MAGIC     
+# MAGIC     Reference: https://docs.databricks.com/generative-ai/agent-framework/agent-authentication
+# MAGIC     
+# MAGIC     LEGACY MANUAL AUTHENTICATION (if not using automatic passthrough):
+# MAGIC     If you're not using resource registration, you can still manually configure:
+# MAGIC     - DATABRICKS_HOST and DATABRICKS_TOKEN via Model Serving environment variables
+# MAGIC     - Config() will still read them from the environment
+# MAGIC     """
+# MAGIC     
+# MAGIC     def __init__(self, warehouse_id: str):
+# MAGIC         """
+# MAGIC         Initialize SQL Execution Agent.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             warehouse_id: Databricks SQL Warehouse ID for query execution
+# MAGIC         """
+# MAGIC         self.name = "SQLExecution"
+# MAGIC         self.warehouse_id = warehouse_id
+# MAGIC     
+# MAGIC     def execute_sql(
+# MAGIC         self, 
+# MAGIC         sql_query: str, 
+# MAGIC         max_rows: int = 100,
+# MAGIC         return_format: str = "dict"
+# MAGIC     ) -> Dict[str, Any]:
+# MAGIC         """
+# MAGIC         Execute SQL query using Databricks SQL Warehouse and return formatted results.
+# MAGIC         
+# MAGIC         PRODUCTION BEST PRACTICES IMPLEMENTED:
+# MAGIC         1. Context Managers: Uses 'with' statements for automatic resource cleanup
+# MAGIC         2. Connection Resilience: Configures timeouts and retry logic for transient failures
+# MAGIC         3. Proper Error Handling: Categorizes errors for better production debugging
+# MAGIC         4. ANSI SQL Mode: Ensures consistent SQL behavior across environments
+# MAGIC         5. Model Serving Compatible: Works without Spark session via REST API
+# MAGIC         
+# MAGIC         Connection Configuration:
+# MAGIC         - Socket timeout: 900s (balances Model Serving 297s limit with warehouse query time)
+# MAGIC         - HTTP retries: 30 attempts with exponential backoff (1-60s)
+# MAGIC         - Session config: ANSI mode enabled for SQL compliance
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             sql_query: Support two types: 
+# MAGIC                 1) The result from invoke the SQL synthesis agent (dict with messages)
+# MAGIC                 2) The SQL query string (can be raw SQL or contain markdown code blocks)
+# MAGIC             max_rows: Maximum number of rows to return (default: 100)
+# MAGIC             return_format: Format of the result - "dict", "json", or "markdown"
+# MAGIC             
+# MAGIC         Returns:
+# MAGIC             Dictionary containing:
+# MAGIC             - success: bool - Whether execution was successful
+# MAGIC             - sql: str - The executed SQL query
+# MAGIC             - result: Any - Query results in requested format
+# MAGIC             - row_count: int - Number of rows returned
+# MAGIC             - columns: List[str] - Column names
+# MAGIC             - error: str - Error message if failed (optional)
+# MAGIC             - error_type: str - Exception type for debugging (only on failure)
+# MAGIC             - error_hint: str - Suggested resolution (only on failure)
+# MAGIC         """
+# MAGIC         from databricks import sql
+# MAGIC         from databricks.sdk.core import Config
+# MAGIC         import json
+# MAGIC         
+# MAGIC         # Step 1: Extract SQL from agent result or markdown code blocks if present
+# MAGIC         if sql_query and isinstance(sql_query, dict) and "messages" in sql_query:
+# MAGIC             sql_query = sql_query["messages"][-1].content
+# MAGIC         
+# MAGIC         extracted_sql = sql_query.strip()
+# MAGIC         
+# MAGIC         if "```sql" in extracted_sql.lower():
+# MAGIC             # Extract content between ```sql and ```
+# MAGIC             sql_match = re.search(r'```sql\s*(.*?)\s*```', extracted_sql, re.IGNORECASE | re.DOTALL)
+# MAGIC             if sql_match:
+# MAGIC                 extracted_sql = sql_match.group(1).strip()
+# MAGIC         elif "```" in extracted_sql:
+# MAGIC             # Extract any code block
+# MAGIC             sql_match = re.search(r'```\s*(.*?)\s*```', extracted_sql, re.DOTALL)
+# MAGIC             if sql_match:
+# MAGIC                 extracted_sql = sql_match.group(1).strip()
+# MAGIC         
+# MAGIC         # Step 2: Enforce LIMIT clause (for safety and token management)
+# MAGIC         # Always enforce max_rows limit, even if query already has LIMIT
+# MAGIC         limit_pattern = re.search(r'\bLIMIT\s+(\d+)\b', extracted_sql, re.IGNORECASE)
+# MAGIC         if limit_pattern:
+# MAGIC             existing_limit = int(limit_pattern.group(1))
+# MAGIC             if existing_limit > max_rows:
+# MAGIC                 # Replace existing LIMIT with max_rows if it exceeds the limit
+# MAGIC                 extracted_sql = re.sub(
+# MAGIC                     r'\bLIMIT\s+\d+\b', 
+# MAGIC                     f'LIMIT {max_rows}', 
+# MAGIC                     extracted_sql, 
+# MAGIC                     flags=re.IGNORECASE
+# MAGIC                 )
+# MAGIC                 print(f"⚠️  Reduced LIMIT from {existing_limit} to {max_rows} (max_rows enforcement)")
+# MAGIC         else:
+# MAGIC             # Add LIMIT if not present
+# MAGIC             extracted_sql = f"{extracted_sql.rstrip(';')} LIMIT {max_rows}"
+# MAGIC         
+# MAGIC         try:
+# MAGIC             # Step 3: Initialize Databricks Config for unified authentication
+# MAGIC             # BEST PRACTICE: Config() automatically reads workspace host and OAuth credentials
+# MAGIC             # - In Model Serving with automatic passthrough: reads injected service principal credentials
+# MAGIC             # - In notebooks: reads from notebook context or environment variables
+# MAGIC             # - With manual config: reads DATABRICKS_HOST and DATABRICKS_TOKEN from environment
+# MAGIC             cfg = Config()
+# MAGIC             
+# MAGIC             # Step 4: Execute the SQL query using SQL Warehouse
+# MAGIC             print(f"\n{'='*80}")
+# MAGIC             print("🔍 EXECUTING SQL QUERY (via SQL Warehouse)")
+# MAGIC             print(f"{'='*80}")
+# MAGIC             print(f"Warehouse ID: {self.warehouse_id}")
+# MAGIC             print(f"SQL:\n{extracted_sql}")
+# MAGIC             print(f"{'='*80}\n")
+# MAGIC             
+# MAGIC             # Connect to SQL Warehouse using context manager (production best practice)
+# MAGIC             # Context managers ensure proper cleanup even if exceptions occur
+# MAGIC             # credentials_provider=cfg lets the connector fetch OAuth tokens transparently
+# MAGIC             with sql.connect(
+# MAGIC                 server_hostname=cfg.host,
+# MAGIC                 http_path=f"/sql/1.0/warehouses/{self.warehouse_id}",
+# MAGIC                 credentials_provider=lambda: cfg.authenticate,  # Unified authentication - handles OAuth automatically
+# MAGIC                 # Production settings for resilience
+# MAGIC                 session_configuration={
+# MAGIC                     "ansi_mode": "true"  # Enable ANSI SQL compliance for consistent behavior
+# MAGIC                 },
+# MAGIC                 socket_timeout=900,  # 15 minutes - Model Serving has 297s limit, warehouse queries can be longer
+# MAGIC                 http_retry_delay_min=1,  # Minimum retry delay in seconds
+# MAGIC                 http_retry_delay_max=60,  # Maximum retry delay in seconds
+# MAGIC                 http_retry_max_redirects=5,  # Max HTTP redirects
+# MAGIC                 http_retry_stop_after_attempts=30,  # Max retry attempts for transient failures
+# MAGIC             ) as connection:
+# MAGIC                 
+# MAGIC                 # Use nested context manager for cursor (ensures cursor cleanup)
+# MAGIC                 with connection.cursor() as cursor:
+# MAGIC                     
+# MAGIC                     # Execute query
+# MAGIC                     cursor.execute(extracted_sql)
+# MAGIC                     
+# MAGIC                     # PHASE 2 OPTIMIZATION: Get row count efficiently
+# MAGIC                     # Try to use cursor.rowcount if available (more efficient than len(fetchall()))
+# MAGIC                     columns = [desc[0] for desc in cursor.description]
+# MAGIC                     
+# MAGIC                     # Fetch results (limited by LIMIT clause already enforced)
+# MAGIC                     results = cursor.fetchall()
+# MAGIC                     
+# MAGIC                     # Use actual result count (fetchall is safe because of LIMIT enforcement)
+# MAGIC                     row_count = len(results)
+# MAGIC                     
+# MAGIC                     print(f"✅ Query executed successfully!")
+# MAGIC                     print(f"📊 Rows returned: {row_count} (LIMIT enforced at {max_rows})")
+# MAGIC                     print(f"📋 Columns: {', '.join(columns)}\n")
+# MAGIC                     print(f"⚡ Optimization: Query has LIMIT {max_rows} - safe to fetch all rows")
+# MAGIC                     
+# MAGIC                     # Step 5: Convert results to list of dicts for compatibility
+# MAGIC                     result_data = [dict(zip(columns, row)) for row in results]
+# MAGIC                     
+# MAGIC                 # Cursor automatically closed here by context manager
+# MAGIC             
+# MAGIC             # Connection automatically closed here by context manager
+# MAGIC             
+# MAGIC             # Step 6: Format results based on return_format
+# MAGIC             if return_format == "json":
+# MAGIC                 # Convert to JSON strings (matching old spark behavior)
+# MAGIC                 result_data = [json.dumps(row) for row in result_data]
+# MAGIC             elif return_format == "markdown":
+# MAGIC                 # Create markdown table
+# MAGIC                 import pandas as pd
+# MAGIC                 pandas_df = pd.DataFrame(result_data)
+# MAGIC                 result_data = pandas_df.to_markdown(index=False)
+# MAGIC             # else: dict format (default) - already in correct format
+# MAGIC             
+# MAGIC             # Step 7: Display preview
+# MAGIC             print(f"{'='*80}")
+# MAGIC             print("📄 RESULTS PREVIEW (first 10 rows)")
+# MAGIC             print(f"{'='*80}")
+# MAGIC             # Preview first 10 rows
+# MAGIC             for i, row in enumerate(result_data[:10]):
+# MAGIC                 if return_format == "markdown":
+# MAGIC                     break  # Don't print individual rows for markdown
+# MAGIC                 print(f"Row {i+1}: {row}")
+# MAGIC             print(f"{'='*80}\n")
+# MAGIC             
+# MAGIC             return {
+# MAGIC                 "success": True,
+# MAGIC                 "sql": extracted_sql,
+# MAGIC                 "result": result_data,
+# MAGIC                 "row_count": row_count,
+# MAGIC                 "columns": columns,
+# MAGIC             }
+# MAGIC             
+# MAGIC         except Exception as e:
+# MAGIC             # Step 8: Handle errors with specific exception types for better diagnostics
+# MAGIC             error_type = type(e).__name__
+# MAGIC             error_msg = str(e)
+# MAGIC             
+# MAGIC             # Provide production-grade error categorization
+# MAGIC             if "DatabaseError" in error_type or "OperationalError" in error_type:
+# MAGIC                 error_category = "SQL Execution Error"
+# MAGIC                 error_hint = "Check SQL syntax and table/column permissions"
+# MAGIC             elif "ConnectionError" in error_type or "timeout" in error_msg.lower():
+# MAGIC                 error_category = "Connection Error"
+# MAGIC                 error_hint = "Verify SQL Warehouse is running and network connectivity"
+# MAGIC             elif "Authentication" in error_msg or "Unauthorized" in error_msg:
+# MAGIC                 error_category = "Authentication Error"
+# MAGIC                 error_hint = "Verify access token and warehouse permissions"
+# MAGIC             else:
+# MAGIC                 error_category = "General Error"
+# MAGIC                 error_hint = "Review full error details below"
+# MAGIC             
+# MAGIC             print(f"\n{'='*80}")
+# MAGIC             print(f"❌ SQL EXECUTION FAILED - {error_category}")
+# MAGIC             print(f"{'='*80}")
+# MAGIC             print(f"Error Type: {error_type}")
+# MAGIC             print(f"Error Message: {error_msg}")
+# MAGIC             print(f"Hint: {error_hint}")
+# MAGIC             print(f"Warehouse ID: {self.warehouse_id}")
+# MAGIC             print(f"{'='*80}\n")
+# MAGIC             
+# MAGIC             return {
+# MAGIC                 "success": False,
+# MAGIC                 "sql": extracted_sql,
+# MAGIC                 "result": None,
+# MAGIC                 "row_count": 0,
+# MAGIC                 "columns": [],
+# MAGIC                 "error": f"{error_category}: {error_msg}",
+# MAGIC                 "error_type": error_type,
+# MAGIC                 "error_hint": error_hint
+# MAGIC             }
+# MAGIC     
+# MAGIC     def execute_sql_parallel(
+# MAGIC         self,
+# MAGIC         sql_queries: List[str],
+# MAGIC         max_rows: int = 100,
+# MAGIC         return_format: str = "dict",
+# MAGIC         max_workers: int = 4
+# MAGIC     ) -> List[Dict[str, Any]]:
+# MAGIC         """
+# MAGIC         Execute multiple SQL queries in parallel using ThreadPoolExecutor.
+# MAGIC         
+# MAGIC         Each query runs in its own thread with an independent sql.connect() connection,
+# MAGIC         so there is no shared state between threads. This is safe because execute_sql()
+# MAGIC         creates and closes its own connection/cursor via context managers per call.
+# MAGIC         
+# MAGIC         ThreadPoolExecutor is used instead of asyncio because databricks-sql-connector
+# MAGIC         is synchronous (no native async API), and the work is I/O-bound (waiting on
+# MAGIC         SQL Warehouse HTTP responses), so the GIL is not a bottleneck.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             sql_queries: List of SQL query strings to execute
+# MAGIC             max_rows: Maximum rows per query (default: 100)
+# MAGIC             return_format: Result format - "dict", "json", or "markdown"
+# MAGIC             max_workers: Maximum concurrent threads (default: 4, tune to warehouse concurrency)
+# MAGIC         
+# MAGIC         Returns:
+# MAGIC             List of result dicts (same format as execute_sql), ordered to match input queries.
+# MAGIC             Each result includes a "query_number" field (1-indexed).
+# MAGIC         """
+# MAGIC         import concurrent.futures
+# MAGIC         
+# MAGIC         # Fast path: skip threading overhead for single query
+# MAGIC         if len(sql_queries) <= 1:
+# MAGIC             if sql_queries:
+# MAGIC                 result = self.execute_sql(sql_queries[0], max_rows, return_format)
+# MAGIC                 result["query_number"] = 1
+# MAGIC                 return [result]
+# MAGIC             return []
+# MAGIC         
+# MAGIC         print(f"⚡ Executing {len(sql_queries)} queries in parallel (max_workers={min(len(sql_queries), max_workers)})")
+# MAGIC         
+# MAGIC         results = [None] * len(sql_queries)  # Pre-allocate to preserve ordering
+# MAGIC         
+# MAGIC         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(sql_queries), max_workers)) as executor:
+# MAGIC             future_to_idx = {
+# MAGIC                 executor.submit(self.execute_sql, query, max_rows, return_format): idx
+# MAGIC                 for idx, query in enumerate(sql_queries)
+# MAGIC             }
+# MAGIC             
+# MAGIC             for future in concurrent.futures.as_completed(future_to_idx):
+# MAGIC                 idx = future_to_idx[future]
+# MAGIC                 try:
+# MAGIC                     result = future.result()
+# MAGIC                 except Exception as e:
+# MAGIC                     # Catch unexpected errors not handled inside execute_sql
+# MAGIC                     result = {
+# MAGIC                         "success": False,
+# MAGIC                         "sql": sql_queries[idx],
+# MAGIC                         "result": None,
+# MAGIC                         "row_count": 0,
+# MAGIC                         "columns": [],
+# MAGIC                         "error": f"Parallel execution error: {type(e).__name__}: {str(e)}"
+# MAGIC                     }
+# MAGIC                 result["query_number"] = idx + 1
+# MAGIC                 results[idx] = result
+# MAGIC         
+# MAGIC         succeeded = sum(1 for r in results if r["success"])
+# MAGIC         print(f"⚡ Parallel execution complete: {succeeded}/{len(sql_queries)} succeeded")
+# MAGIC         
+# MAGIC         return results
+# MAGIC     
+# MAGIC     def __call__(self, sql_query: str, max_rows: int = 100, return_format: str = "dict") -> Dict[str, Any]:
+# MAGIC         """Make agent callable."""
+# MAGIC         return self.execute_sql(sql_query, max_rows, return_format)
+# MAGIC
+# MAGIC print("✓ SQLExecutionAgent class defined")
+# MAGIC class ResultSummarizeAgent:
+# MAGIC     """
+# MAGIC     Agent responsible for generating a final summary of the workflow execution.
+# MAGIC     
+# MAGIC     Analyzes the entire workflow state and produces a natural language summary
+# MAGIC     of what was accomplished, whether successful or not.
+# MAGIC     
+# MAGIC     OOP design for clean summarization logic.
+# MAGIC     """
+# MAGIC     
+# MAGIC     def __init__(self, llm: Runnable):
+# MAGIC         self.name = "ResultSummarize"
+# MAGIC         self.llm = llm
+# MAGIC     
+# MAGIC     @staticmethod
+# MAGIC     def _safe_json_dumps(obj: Any, indent: int = 2) -> str:
+# MAGIC         """
+# MAGIC         Safely serialize objects to JSON, converting dates/datetime to strings.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             obj: Object to serialize
+# MAGIC             indent: JSON indentation level
+# MAGIC             
+# MAGIC         Returns:
+# MAGIC             JSON string with date/datetime objects converted to ISO format strings
+# MAGIC         """
+# MAGIC         from datetime import date, datetime
+# MAGIC         from decimal import Decimal
+# MAGIC         
+# MAGIC         def default_handler(o):
+# MAGIC             if isinstance(o, (date, datetime)):
+# MAGIC                 return o.isoformat()
+# MAGIC             elif isinstance(o, Decimal):
+# MAGIC                 return float(o)
+# MAGIC             else:
+# MAGIC                 raise TypeError(f'Object of type {o.__class__.__name__} is not JSON serializable')
+# MAGIC         
+# MAGIC         return json.dumps(obj, indent=indent, default=default_handler)
+# MAGIC     
+# MAGIC     def generate_summary(self, state: AgentState) -> str:
+# MAGIC         """
+# MAGIC         Generate a natural language summary of the workflow execution.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             state: The complete workflow state
+# MAGIC             
+# MAGIC         Returns:
+# MAGIC             String containing natural language summary
+# MAGIC         """
+# MAGIC         # Build context from state
+# MAGIC         summary_prompt = self._build_summary_prompt(state)
+# MAGIC         
+# MAGIC         # Stream LLM response for immediate first token emission
+# MAGIC         print("🤖 Streaming summary generation...")
+# MAGIC         summary = ""
+# MAGIC         for chunk in self.llm.stream(summary_prompt):
+# MAGIC             if chunk.content:
+# MAGIC                 summary += chunk.content
+# MAGIC         
+# MAGIC         summary = summary.strip()
+# MAGIC         print(f"✓ Summary stream complete ({len(summary)} chars)")
+# MAGIC         
+# MAGIC         # Append Option B downloadable tables if query execution was successful
+# MAGIC         # Support multiple results
+# MAGIC         execution_results = state.get('execution_results', [])
+# MAGIC         exec_result = state.get('execution_result', {})
+# MAGIC         
+# MAGIC         if not execution_results and exec_result:
+# MAGIC             execution_results = [exec_result]
+# MAGIC         
+# MAGIC         for idx, result_item in enumerate(execution_results):
+# MAGIC             if result_item and result_item.get('success'):
+# MAGIC                 columns = result_item.get('columns', [])
+# MAGIC                 result = result_item.get('result', [])
+# MAGIC                 
+# MAGIC                 if columns and result:
+# MAGIC                     label_suffix = f" (Query {idx + 1})" if len(execution_results) > 1 else ""
+# MAGIC                     option_b_tables = self._format_option_b_tables(columns, result, display_rows=100)
+# MAGIC                     if len(execution_results) > 1:
+# MAGIC                         option_b_tables = option_b_tables.replace("## 📥 Downloadable Results", f"## 📥 Downloadable Results{label_suffix}")
+# MAGIC                     summary += option_b_tables
+# MAGIC                     print(f"✓ Appended Option B downloadable tables{label_suffix} ({len(option_b_tables)} chars)")
+# MAGIC         
+# MAGIC         return summary
+# MAGIC     
+# MAGIC     def _format_option_b_tables(
+# MAGIC         self,
+# MAGIC         columns: List[str],
+# MAGIC         data: List[Dict[str, Any]],
+# MAGIC         display_rows: int = 100
+# MAGIC     ) -> str:
+# MAGIC         """
+# MAGIC         Generate Option B downloadable table formats for Databricks Playground:
+# MAGIC         - Single scrollable markdown table (all rows in one table)
+# MAGIC         - Full JSON export (all rows in collapsible section)
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             columns: List of column names
+# MAGIC             data: List of row dictionaries
+# MAGIC             display_rows: Number of rows to display (default 100)
+# MAGIC             
+# MAGIC         Returns:
+# MAGIC             Formatted markdown string with collapsible sections
+# MAGIC         """
+# MAGIC         if not data or not columns:
+# MAGIC             return ""
+# MAGIC         
+# MAGIC         # Limit to display_rows
+# MAGIC         display_data = data[:display_rows]
+# MAGIC         total_rows = len(data)
+# MAGIC         
+# MAGIC         markdown = "\n\n---\n\n## 📥 Downloadable Results\n\n"
+# MAGIC         
+# MAGIC         # Part 1: Single Scrollable Markdown Table
+# MAGIC         markdown += "### Markdown Table (Scrollable)\n\n"
+# MAGIC         markdown += f"<details>\n<summary>📄 View Full Table ({len(display_data)} rows) - Click to expand</summary>\n\n"
+# MAGIC         
+# MAGIC         # Generate single markdown table with all rows
+# MAGIC         markdown += "| " + " | ".join(columns) + " |\n"
+# MAGIC         markdown += "| " + " | ".join(["---"] * len(columns)) + " |\n"
+# MAGIC         
+# MAGIC         for row in display_data:
+# MAGIC             row_values = [str(row.get(col, "")) for col in columns]
+# MAGIC             markdown += "| " + " | ".join(row_values) + " |\n"
+# MAGIC         
+# MAGIC         markdown += "\n</details>\n\n"
+# MAGIC         
+# MAGIC         # Part 2: Full JSON Export
+# MAGIC         markdown += "### JSON Format (All Rows)\n\n"
+# MAGIC         markdown += "<details>\n<summary>📋 JSON Export (click to expand)</summary>\n\n"
+# MAGIC         markdown += "```json\n"
+# MAGIC         markdown += self._safe_json_dumps({
+# MAGIC             "columns": columns,
+# MAGIC             "data": display_data,
+# MAGIC             "row_count": len(display_data)
+# MAGIC         }, indent=2)
+# MAGIC         markdown += "\n```\n\n"
+# MAGIC         markdown += "</details>\n\n"
+# MAGIC         
+# MAGIC         if total_rows > display_rows:
+# MAGIC             markdown += f"*Note: Showing top {display_rows} of {total_rows} total rows in downloadable format above.*\n"
+# MAGIC         
+# MAGIC         return markdown
+# MAGIC     
+# MAGIC     def _build_summary_prompt(self, state: AgentState) -> str:
+# MAGIC         """Build the prompt for summary generation based on state."""
+# MAGIC         
+# MAGIC         original_query = state.get('original_query', 'N/A')
+# MAGIC         question_clear = state.get('question_clear', False)
+# MAGIC         pending_clarification = state.get('pending_clarification')
+# MAGIC         execution_plan = state.get('execution_plan')
+# MAGIC         join_strategy = state.get('join_strategy')
+# MAGIC         sql_query = state.get('sql_query')
+# MAGIC         sql_explanation = state.get('sql_synthesis_explanation')
+# MAGIC         exec_result = state.get('execution_result', {})
+# MAGIC         synthesis_error = state.get('synthesis_error')
+# MAGIC         execution_error = state.get('execution_error')
+# MAGIC         
+# MAGIC         prompt = f"""You are a result summarization agent. Generate a concise, natural language summary of what this multi-agent workflow accomplished.
+# MAGIC
+# MAGIC **Original User Query:** {original_query}
+# MAGIC
+# MAGIC **Workflow Execution Details:**
+# MAGIC
+# MAGIC """
+# MAGIC         
+# MAGIC         # Add clarification info
+# MAGIC         if not question_clear and pending_clarification:
+# MAGIC             clarification_reason = pending_clarification.get('reason', 'Query needs clarification')
+# MAGIC             prompt += f"""**Status:** Query needs clarification
+# MAGIC **Clarification Needed:** {clarification_reason}
+# MAGIC **Summary:** The query was too vague or ambiguous. Requested user clarification before proceeding.
+# MAGIC """
+# MAGIC         else:
+# MAGIC             # Add planning info
+# MAGIC             if execution_plan:
+# MAGIC                 prompt += f"""**Planning:** {execution_plan}
+# MAGIC **Strategy:** {join_strategy or 'N/A'}
+# MAGIC
+# MAGIC """
+# MAGIC             
+# MAGIC             # NEW: Check for multiple SQL queries and results
+# MAGIC             sql_queries = state.get('sql_queries', [])
+# MAGIC             query_labels = state.get('sql_query_labels', [])
+# MAGIC             execution_results = state.get('execution_results', [])
+# MAGIC             
+# MAGIC             # Fallback to single query/result for backward compatibility
+# MAGIC             if not sql_queries and sql_query:
+# MAGIC                 sql_queries = [sql_query]
+# MAGIC             if not execution_results and exec_result:
+# MAGIC                 execution_results = [exec_result]
+# MAGIC             
+# MAGIC             # Add SQL synthesis info
+# MAGIC             if sql_queries:
+# MAGIC                 if len(sql_queries) == 1:
+# MAGIC                     # Single query (original behavior)
+# MAGIC                     label = query_labels[0] if query_labels else ""
+# MAGIC                     label_display = f" — {label}" if label else ""
+# MAGIC                     prompt += f"""**SQL Generation:** ✅ Successful{label_display}
+# MAGIC **SQL Query:** 
+# MAGIC ```sql
+# MAGIC {sql_queries[0]}
+# MAGIC ```
+# MAGIC
+# MAGIC """
+# MAGIC                 else:
+# MAGIC                     # Multiple queries
+# MAGIC                     prompt += f"""**SQL Generation:** ✅ Successful ({len(sql_queries)} queries for multi-part question)
+# MAGIC
+# MAGIC """
+# MAGIC                     for i, query in enumerate(sql_queries, 1):
+# MAGIC                         label = query_labels[i-1] if i <= len(query_labels) and query_labels[i-1] else ""
+# MAGIC                         label_display = f" — {label}" if label else ""
+# MAGIC                         prompt += f"""**SQL Query {i}{label_display}:** 
+# MAGIC ```sql
+# MAGIC {query}
+# MAGIC ```
+# MAGIC
+# MAGIC """
+# MAGIC                 
+# MAGIC                 if sql_explanation:
+# MAGIC                     prompt += f"""**SQL Synthesis Explanation:** {sql_explanation[:2000]}{'...' if len(sql_explanation) > 2000 else ''}
+# MAGIC
+# MAGIC """
+# MAGIC                 
+# MAGIC                 # TOKEN PROTECTION: Sample results to prevent huge prompts
+# MAGIC                 MAX_PREVIEW_ROWS = 20
+# MAGIC                 MAX_PREVIEW_COLS = 20
+# MAGIC                 MAX_JSON_CHARS = 2000
+# MAGIC                 
+# MAGIC                 # Add execution info (single or multiple results)
+# MAGIC                 if execution_results:
+# MAGIC                     if len(execution_results) == 1:
+# MAGIC                         # Single result (original behavior with token protection)
+# MAGIC                         result = execution_results[0]
+# MAGIC                         if result.get('success'):
+# MAGIC                             row_count = result.get('row_count', 0)
+# MAGIC                             columns = result.get('columns', [])
+# MAGIC                             result_data = result.get('result', [])
+# MAGIC                             
+# MAGIC                             # Sample rows
+# MAGIC                             result_preview = result_data[:MAX_PREVIEW_ROWS] if len(result_data) > MAX_PREVIEW_ROWS else result_data
+# MAGIC                             
+# MAGIC                             # Sample columns (if result has too many columns)
+# MAGIC                             if result_preview and len(columns) > MAX_PREVIEW_COLS:
+# MAGIC                                 sampled_cols = columns[:MAX_PREVIEW_COLS]
+# MAGIC                                 result_preview = [
+# MAGIC                                     {k: v for k, v in row.items() if k in sampled_cols}
+# MAGIC                                     for row in result_preview
+# MAGIC                                 ]
+# MAGIC                                 col_display = ', '.join(sampled_cols) + f'... (+{len(columns) - MAX_PREVIEW_COLS} more columns)'
+# MAGIC                             else:
+# MAGIC                                 col_display = ', '.join(columns[:10]) + ('...' if len(columns) > 10 else '')
+# MAGIC                             
+# MAGIC                             # Serialize to JSON
+# MAGIC                             result_json = self._safe_json_dumps(result_preview, indent=2)
+# MAGIC                             
+# MAGIC                             # Truncate JSON if too large
+# MAGIC                             if len(result_json) > MAX_JSON_CHARS:
+# MAGIC                                 result_json = result_json[:MAX_JSON_CHARS] + f'\n... (truncated, {len(result_json) - MAX_JSON_CHARS} chars omitted)'
+# MAGIC                             
+# MAGIC                             prompt += f"""**Execution:** ✅ Successful
+# MAGIC **Rows:** {row_count} rows returned{f' (showing first {MAX_PREVIEW_ROWS})' if row_count > MAX_PREVIEW_ROWS else ''}
+# MAGIC **Columns:** {col_display}
+# MAGIC
+# MAGIC **Result Preview:** 
+# MAGIC {result_json}
+# MAGIC {f'... and {row_count - MAX_PREVIEW_ROWS} more rows' if row_count > MAX_PREVIEW_ROWS else ''}
+# MAGIC """
+# MAGIC                         else:
+# MAGIC                             prompt += f"""**Execution:** ❌ Failed
+# MAGIC **Error:** {result.get('error', 'Unknown error')}
+# MAGIC
+# MAGIC """
+# MAGIC                     else:
+# MAGIC                         # Multiple results
+# MAGIC                         all_successful = all(r.get('success') for r in execution_results)
+# MAGIC                         total_rows = sum(r.get('row_count', 0) for r in execution_results if r.get('success'))
+# MAGIC                         
+# MAGIC                         if all_successful:
+# MAGIC                             prompt += f"""**Execution:** ✅ All {len(execution_results)} queries executed successfully
+# MAGIC **Total Rows Returned:** {total_rows}
+# MAGIC
+# MAGIC """
+# MAGIC                         else:
+# MAGIC                             failed_count = sum(1 for r in execution_results if not r.get('success'))
+# MAGIC                             prompt += f"""**Execution:** ⚠️ Partial success ({len(execution_results) - failed_count} succeeded, {failed_count} failed)
+# MAGIC
+# MAGIC """
+# MAGIC                         
+# MAGIC                         # Add details for each result
+# MAGIC                         for i, result in enumerate(execution_results, 1):
+# MAGIC                             if result.get('success'):
+# MAGIC                                 row_count = result.get('row_count', 0)
+# MAGIC                                 columns = result.get('columns', [])
+# MAGIC                                 result_data = result.get('result', [])
+# MAGIC                                 
+# MAGIC                                 # Token protection per result
+# MAGIC                                 result_preview = result_data[:MAX_PREVIEW_ROWS] if len(result_data) > MAX_PREVIEW_ROWS else result_data
+# MAGIC                                 
+# MAGIC                                 if result_preview and len(columns) > MAX_PREVIEW_COLS:
+# MAGIC                                     sampled_cols = columns[:MAX_PREVIEW_COLS]
+# MAGIC                                     result_preview = [
+# MAGIC                                         {k: v for k, v in row.items() if k in sampled_cols}
+# MAGIC                                         for row in result_preview
+# MAGIC                                     ]
+# MAGIC                                     col_display = ', '.join(sampled_cols) + f'... (+{len(columns) - MAX_PREVIEW_COLS} more columns)'
+# MAGIC                                 else:
+# MAGIC                                     col_display = ', '.join(columns[:10]) + ('...' if len(columns) > 10 else '')
+# MAGIC                                 
+# MAGIC                                 result_json = self._safe_json_dumps(result_preview, indent=2)
+# MAGIC                                 if len(result_json) > MAX_JSON_CHARS:
+# MAGIC                                     result_json = result_json[:MAX_JSON_CHARS] + f'\n... (truncated)'
+# MAGIC                                 
+# MAGIC                                 prompt += f"""**Query {i} Result:**
+# MAGIC - Rows: {row_count}{f' (showing first {MAX_PREVIEW_ROWS})' if row_count > MAX_PREVIEW_ROWS else ''}
+# MAGIC - Columns: {col_display}
+# MAGIC - Data: {result_json}
+# MAGIC
+# MAGIC """
+# MAGIC                             else:
+# MAGIC                                 prompt += f"""**Query {i} Result:**
+# MAGIC - Status: ❌ Failed
+# MAGIC - Error: {result.get('error', 'Unknown error')}
+# MAGIC
+# MAGIC """
+# MAGIC                 elif execution_error:
+# MAGIC                     prompt += f"""**Execution:** ❌ Failed
+# MAGIC **Error:** {execution_error}
+# MAGIC
+# MAGIC """
+# MAGIC             elif synthesis_error:
+# MAGIC                 prompt += f"""**SQL Generation:** ❌ Failed
+# MAGIC **Error:** {synthesis_error}
+# MAGIC **Explanation:** {sql_explanation or 'N/A'}
+# MAGIC
+# MAGIC """
+# MAGIC         
+# MAGIC         prompt += """
+# MAGIC **Task:** Generate a comprehensive summary in natural language that:
+# MAGIC 1. Describes what the user asked for
+# MAGIC 2. Explains what the system did (planning, SQL generation, execution)
+# MAGIC 3. For multi-part questions with multiple queries:
+# MAGIC    - Explain each sub-question that was addressed
+# MAGIC    - Show each SQL query in its own code block with a clear label
+# MAGIC    - Present each query's results in a clear, readable format (preferably as a markdown table)
+# MAGIC    - Provide insights and analysis for each result
+# MAGIC    - Synthesize an overall conclusion combining insights from all queries
+# MAGIC 4. For single queries:
+# MAGIC    - Print out SQL synthesis explanation if any SQL was generated
+# MAGIC    - Print out the SQL query in a code block
+# MAGIC    - Print out the result in a readable format (preferably as a markdown table)
+# MAGIC    - Provide insights and analysis for the result
+# MAGIC 5. **Code Annotation for Human Readability:**
+# MAGIC    - For each result table, scan the columns for raw codes (e.g., diagnosis_code, procedure_code, ICD codes, CPT codes, not limited to medical domain)
+# MAGIC    - If you find columns containing raw codes WITHOUT corresponding human-readable description columns:
+# MAGIC      * Add a new column with a descriptive name like "{code_column}_description" 
+# MAGIC      * Populate it with human-readable descriptions/meanings of those codes
+# MAGIC      * Use your knowledge base to translate common codes (ICD-10, CPT, etc.) into plain language
+# MAGIC      * Example: diagnosis_code "I10" → diagnosis_code_description "Essential (primary) hypertension"
+# MAGIC      * Example: procedure_code "99213" → procedure_code_description "Office visit, established patient, 20-29 minutes"
+# MAGIC    - Present the enhanced table with both the original codes and the new description columns
+# MAGIC    - This makes the results more interpretable for non-technical users
+# MAGIC 6. States the outcome (success with X rows, error, needs clarification, etc.)
+# MAGIC
+# MAGIC Use markdown formatting for readability. Keep it clear and user-friendly. 
+# MAGIC """
+# MAGIC         
+# MAGIC         return prompt
+# MAGIC     
+# MAGIC     def __call__(self, state: AgentState) -> str:
+# MAGIC         """Make agent callable."""
+# MAGIC         return self.generate_summary(state)
+# MAGIC
+# MAGIC print("✓ ResultSummarizeAgent class defined")
+# MAGIC
+# MAGIC # ==============================================================================
+# MAGIC # DEPRECATED FUNCTIONS (Replaced by Intent Detection Service)
+# MAGIC # ==============================================================================
+# MAGIC # The following functions have been replaced by the IntentDetectionAgent:
+# MAGIC # - find_most_recent_clarification_context() → Intent detection handles this
+# MAGIC # - is_new_question() → Intent detection provides intent_type classification
+# MAGIC #
+# MAGIC # These have been removed to simplify the codebase.
+# MAGIC # See src/multi_agent/utils/intent_detection_service.py for the replacement
+# MAGIC # See src/multi_agent/core/state.py for the data models
+# MAGIC # ==============================================================================
+# MAGIC
+# MAGIC # ==============================================================================
+# MAGIC # State Extraction Helpers (Token Optimization)
+# MAGIC # ==============================================================================
+# MAGIC """
+# MAGIC Minimal state extraction helpers to reduce token usage.
+# MAGIC
+# MAGIC Instead of passing the entire AgentState (25+ fields) to each agent,
+# MAGIC these helpers extract only the fields each node actually needs.
+# MAGIC
+# MAGIC Expected savings: 60-70% token reduction per node
+# MAGIC """
+# MAGIC
+# MAGIC def extract_intent_detection_context(state: AgentState) -> dict:
+# MAGIC     """
+# MAGIC     Extract minimal context for intent detection.
+# MAGIC     
+# MAGIC     OPTIMIZED: Applies message and turn history truncation
+# MAGIC     """
+# MAGIC     messages = state.get("messages", [])
+# MAGIC     turn_history = state.get("turn_history", [])
+# MAGIC     
+# MAGIC     return {
+# MAGIC         "messages": truncate_message_history(messages, max_turns=5),
+# MAGIC         "turn_history": truncate_turn_history(turn_history, max_turns=10),
+# MAGIC         "user_id": state.get("user_id"),
+# MAGIC         "thread_id": state.get("thread_id"),
+# MAGIC         # For logging: track original sizes
+# MAGIC         "_original_message_count": len(messages),
+# MAGIC         "_original_turn_count": len(turn_history)
+# MAGIC     }
+# MAGIC
+# MAGIC def extract_clarification_context(state: AgentState) -> dict:
+# MAGIC     """
+# MAGIC     Extract minimal context for clarification.
+# MAGIC     
+# MAGIC     OPTIMIZED: Applies message and turn history truncation
+# MAGIC     """
+# MAGIC     messages = state.get("messages", [])
+# MAGIC     turn_history = state.get("turn_history", [])
+# MAGIC     
+# MAGIC     return {
+# MAGIC         "current_turn": state.get("current_turn"),
+# MAGIC         "turn_history": truncate_turn_history(turn_history, max_turns=10),
+# MAGIC         "intent_metadata": state.get("intent_metadata"),
+# MAGIC         "messages": truncate_message_history(messages, max_turns=5),
+# MAGIC         # For logging: track original sizes
+# MAGIC         "_original_message_count": len(messages),
+# MAGIC         "_original_turn_count": len(turn_history)
+# MAGIC     }
+# MAGIC
+# MAGIC def extract_planning_context(state: AgentState) -> dict:
+# MAGIC     """Extract minimal context for planning."""
+# MAGIC     return {
+# MAGIC         "current_turn": state.get("current_turn"),
+# MAGIC         "intent_metadata": state.get("intent_metadata"),
+# MAGIC         "original_query": state.get("original_query")  # Backward compat
+# MAGIC     }
+# MAGIC
+# MAGIC def extract_synthesis_table_context(state: AgentState) -> dict:
+# MAGIC     """Extract minimal context for table-based SQL synthesis."""
+# MAGIC     return {
+# MAGIC         "plan": state.get("plan", {}),
+# MAGIC         "relevant_space_ids": state.get("relevant_space_ids", [])
+# MAGIC     }
+# MAGIC
+# MAGIC def extract_synthesis_genie_context(state: AgentState) -> dict:
+# MAGIC     """Extract minimal context for genie-based SQL synthesis."""
+# MAGIC     return {
+# MAGIC         "plan": state.get("plan", {}),
+# MAGIC         "relevant_spaces": state.get("relevant_spaces", []),
+# MAGIC         "genie_route_plan": state.get("genie_route_plan")
+# MAGIC     }
+# MAGIC
+# MAGIC def extract_execution_context(state: AgentState) -> dict:
+# MAGIC     """Extract minimal context for SQL execution."""
+# MAGIC     return {
+# MAGIC         "sql_query": state.get("sql_query"),
+# MAGIC         "sql_queries": state.get("sql_queries", []),
+# MAGIC         "sql_query_labels": state.get("sql_query_labels", [])
+# MAGIC     }
+# MAGIC
+# MAGIC def extract_summarize_context(state: AgentState) -> dict:
+# MAGIC     """
+# MAGIC     Extract minimal context for result summarization.
+# MAGIC     
+# MAGIC     OPTIMIZED: Applies message history truncation
+# MAGIC     """
+# MAGIC     messages = state.get("messages", [])
+# MAGIC     
+# MAGIC     return {
+# MAGIC         "messages": truncate_message_history(messages, max_turns=5),
+# MAGIC         "sql_query": state.get("sql_query"),
+# MAGIC         "sql_queries": state.get("sql_queries", []),
+# MAGIC         "sql_query_labels": state.get("sql_query_labels", []),
+# MAGIC         "execution_result": state.get("execution_result"),
+# MAGIC         "execution_results": state.get("execution_results", []),
+# MAGIC         "execution_error": state.get("execution_error"),
+# MAGIC         "sql_synthesis_explanation": state.get("sql_synthesis_explanation"),
+# MAGIC         "synthesis_error": state.get("synthesis_error"),
+# MAGIC         # For logging: track original size
+# MAGIC         "_original_message_count": len(messages)
+# MAGIC     }
+# MAGIC
+# MAGIC print("✓ State extraction helpers defined (for token optimization)")
+# MAGIC
+# MAGIC # ==============================================================================
+# MAGIC # Message History Truncation (Token Optimization - Priority 3)
+# MAGIC # ==============================================================================
+# MAGIC """
+# MAGIC Smart message history truncation to keep only recent turns.
+# MAGIC
+# MAGIC Reduces token usage in long conversations by keeping only:
+# MAGIC - All SystemMessage instances (prompts)
+# MAGIC - Last N HumanMessage/AIMessage pairs
+# MAGIC
+# MAGIC Example: After 10 turns (20 messages):
+# MAGIC - Before: 18K tokens
+# MAGIC - After: 6K tokens (67% reduction)
+# MAGIC """
+# MAGIC
+# MAGIC def truncate_message_history(
+# MAGIC     messages: List, 
+# MAGIC     max_turns: int = 5,
+# MAGIC     keep_system: bool = True
+# MAGIC ) -> List:
+# MAGIC     """
+# MAGIC     Keep only recent turns + system messages.
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         messages: Full message history
+# MAGIC         max_turns: Number of recent turns to keep (default 5)
+# MAGIC         keep_system: Whether to preserve all SystemMessage instances
+# MAGIC         
+# MAGIC     Returns:
+# MAGIC         Truncated message list
+# MAGIC     """
+# MAGIC     if not messages:
+# MAGIC         return []
+# MAGIC     
+# MAGIC     # Separate system messages from conversation
+# MAGIC     system_msgs = []
+# MAGIC     conversation_msgs = []
+# MAGIC     
+# MAGIC     for msg in messages:
+# MAGIC         if isinstance(msg, SystemMessage) and keep_system:
+# MAGIC             system_msgs.append(msg)
+# MAGIC         else:
+# MAGIC             conversation_msgs.append(msg)
+# MAGIC     
+# MAGIC     # Keep only last N turns (each turn = HumanMessage + AIMessage pair)
+# MAGIC     recent_msgs = conversation_msgs[-(max_turns * 2):] if len(conversation_msgs) > max_turns * 2 else conversation_msgs
+# MAGIC     
+# MAGIC     return system_msgs + recent_msgs
+# MAGIC
+# MAGIC
+# MAGIC def truncate_turn_history(
+# MAGIC     turn_history: List, 
+# MAGIC     max_turns: int = 10
+# MAGIC ) -> List:
+# MAGIC     """
+# MAGIC     Keep only recent turns in turn_history.
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         turn_history: Full turn history
+# MAGIC         max_turns: Number of recent turns to keep (default 10)
+# MAGIC         
+# MAGIC     Returns:
+# MAGIC         Truncated turn history list
+# MAGIC     """
+# MAGIC     if not turn_history:
+# MAGIC         return []
+# MAGIC     
+# MAGIC     # Keep only last N turns
+# MAGIC     return turn_history[-max_turns:] if len(turn_history) > max_turns else turn_history
+# MAGIC
+# MAGIC
+# MAGIC print("✓ Message truncation functions defined (keeps last 5 message turns, 10 turn_history)")
+# MAGIC
+# MAGIC # ==============================================================================
+# MAGIC # Unified Intent, Context, and Clarification Node (Simplified - self-contained)
+# MAGIC # ==============================================================================
+# MAGIC
+# MAGIC def check_clarification_rate_limit(turn_history: List[ConversationTurn], window_size: int = 5) -> bool:
+# MAGIC     """
+# MAGIC     Check if clarification was triggered in the last N turns (sliding window).
+# MAGIC     OPTIMIZED: Fast-path checks for common cases.
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         turn_history: List of conversation turns
+# MAGIC         window_size: Number of recent turns to check (default: 5)
+# MAGIC     
+# MAGIC     Returns:
+# MAGIC         True if rate limited (skip clarification), False if ok to clarify
+# MAGIC     """
+# MAGIC     # PHASE 3 OPTIMIZATION: Fast-path for empty history
+# MAGIC     if not turn_history:
+# MAGIC         return False  # No history = no rate limit
+# MAGIC     
+# MAGIC     # PHASE 3 OPTIMIZATION: Fast-path check most recent turn first (most likely)
+# MAGIC     if turn_history[-1].get("triggered_clarification", False):
+# MAGIC         return True  # Rate limited (most recent turn had clarification)
+# MAGIC     
+# MAGIC     # PHASE 3 OPTIMIZATION: Fast-path for short history
+# MAGIC     if len(turn_history) < 2:
+# MAGIC         return False  # Only 1 turn and it doesn't have clarification
+# MAGIC     
+# MAGIC     # Look at remaining recent turns (skip last one, already checked)
+# MAGIC     recent_turns = turn_history[max(0, len(turn_history) - window_size):-1]
+# MAGIC     
+# MAGIC     # Check remaining turns
+# MAGIC     for turn in recent_turns:
+# MAGIC         if turn.get("triggered_clarification", False):
+# MAGIC             return True  # Rate limited
+# MAGIC     
+# MAGIC     return False  # OK to clarify
+# MAGIC
+# MAGIC print("✓ Clarification rate limit function optimized with fast-path checks (-100 to -200ms)")
+# MAGIC
+# MAGIC
+# MAGIC @measure_node_time("unified_intent_context_clarification")
+# MAGIC def unified_intent_context_clarification_node(state: AgentState) -> dict:
+# MAGIC     """
+# MAGIC     Unified node that combines intent detection, context generation, and clarity check.
+# MAGIC     
+# MAGIC     Uses STREAMING LLM call with HYBRID OUTPUT FORMAT for immediate user feedback:
+# MAGIC     - For meta-questions: Markdown answer streamed FIRST, then JSON metadata parsed
+# MAGIC     - For clarifications: Markdown request streamed FIRST, then JSON metadata parsed
+# MAGIC     - For regular queries: JSON ONLY (no markdown streaming needed)
+# MAGIC     
+# MAGIC     Single LLM call for:
+# MAGIC     1. Intent classification (new_question, refinement, continuation, clarification_response)
+# MAGIC     2. Context summary generation
+# MAGIC     3. Clarity assessment with rate limiting (max 1 per 5 turns)
+# MAGIC     4. Meta-question detection and direct answering
+# MAGIC     
+# MAGIC     Streaming behavior:
+# MAGIC     - Markdown content is streamed to UI as LLM generates it (better TTFT)
+# MAGIC     - JSON metadata is parsed after streaming completes for routing decisions
+# MAGIC     
+# MAGIC     Returns: Dictionary with state updates
+# MAGIC     """
+# MAGIC     from langgraph.config import get_stream_writer
+# MAGIC     
+# MAGIC     writer = get_stream_writer()
+# MAGIC     
+# MAGIC     def stream_markdown_response(content: str, label: str = "Response"):
+# MAGIC         """
+# MAGIC         DEPRECATED: For local/notebook testing only.
+# MAGIC         In production, use writer() events instead for UI display.
+# MAGIC         This function only prints to console/logs, not to model serving UI.
+# MAGIC         """
+# MAGIC         print(f"\n✨ {label}:")
+# MAGIC         print("-" * 80)
+# MAGIC         
+# MAGIC         # Print content immediately without character-by-character delay
+# MAGIC         print(content)
+# MAGIC         
+# MAGIC         print("-" * 80)
+# MAGIC     
+# MAGIC     def format_clarification_markdown(reason: str, options: list = None) -> str:
+# MAGIC         """
+# MAGIC         Format clarification reason and options as professional markdown.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             reason: The clarification reason text
+# MAGIC             options: List of clarification options
+# MAGIC             
+# MAGIC         Returns:
+# MAGIC             Formatted markdown string
+# MAGIC         """
+# MAGIC         # Start with heading and reason
+# MAGIC         markdown = f"### Clarification Needed\n\n{reason}\n\n"
+# MAGIC         
+# MAGIC         # Add options if provided
+# MAGIC         if options and len(options) > 0:
+# MAGIC             markdown += "**Please choose from the following options:**\n\n"
+# MAGIC             for i, option in enumerate(options, 1):
+# MAGIC                 markdown += f"{i}. {option}\n\n"
+# MAGIC         
+# MAGIC         return markdown.strip()
+# MAGIC     
+# MAGIC     def format_meta_answer_markdown(answer: str) -> str:
+# MAGIC         """
+# MAGIC         Format meta-answer as professional markdown if not already formatted.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             answer: The meta answer text
+# MAGIC             
+# MAGIC         Returns:
+# MAGIC             Formatted markdown string
+# MAGIC         """
+# MAGIC         # Check if already formatted (has markdown headings)
+# MAGIC         if answer.startswith("#") or "**" in answer:
+# MAGIC             return answer  # Already formatted
+# MAGIC         
+# MAGIC         # Add basic formatting
+# MAGIC         markdown = f"## Available Capabilities\n\n{answer}"
+# MAGIC         return markdown
+# MAGIC     
+# MAGIC     print("\n" + "="*80)
+# MAGIC     print("🎯 UNIFIED INTENT, CONTEXT & CLARIFICATION AGENT")
+# MAGIC     print("="*80)
+# MAGIC     
+# MAGIC     # Get current query from messages
+# MAGIC     messages = state.get("messages", [])
+# MAGIC     turn_history = state.get("turn_history", [])
+# MAGIC     
+# MAGIC     human_messages = [m for m in messages if isinstance(m, HumanMessage)]
+# MAGIC     current_query = human_messages[-1].content if human_messages else ""
+# MAGIC     
+# MAGIC     writer({"type": "agent_start", "agent": "unified_intent_context_clarification", "query": current_query})
+# MAGIC     
+# MAGIC     print(f"Query: {current_query}")
+# MAGIC     print(f"Turn history: {len(turn_history)} turns")
+# MAGIC     
+# MAGIC     # Analyze query with full LLM (intent + context + clarity + meta-question detection)
+# MAGIC     print("🔄 Analyzing query with LLM (intent + context + clarity + meta-question detection)")
+# MAGIC     
+# MAGIC     # Format conversation context
+# MAGIC     conversation_context = ""
+# MAGIC     if turn_history:
+# MAGIC         conversation_context = "Previous conversation:\n"
+# MAGIC         for i, turn in enumerate(turn_history[-5:], 1):  # Last 5 turns
+# MAGIC             intent_label = turn['intent_type'].replace('_', ' ').title()
+# MAGIC             conversation_context += f"{i}. [{intent_label}] {turn['query']}\n"
+# MAGIC             if turn.get('context_summary'):
+# MAGIC                 conversation_context += f"   Context: {turn['context_summary']}...\n"
+# MAGIC     else:
+# MAGIC         conversation_context = "No previous conversation (first query)."
+# MAGIC     
+# MAGIC     # Load space context for clarity check
+# MAGIC     space_context = load_space_context(TABLE_NAME)
+# MAGIC     
+# MAGIC     # Single unified prompt for intent + context + clarity + meta-question detection
+# MAGIC     unified_prompt = f"""Analyze the user's query in the context of the conversation history.
+# MAGIC
+# MAGIC Current Query: {current_query}
+# MAGIC
+# MAGIC Conversation History:
+# MAGIC {conversation_context}
+# MAGIC
+# MAGIC Available Data Sources:
+# MAGIC {json.dumps(space_context, indent=2)}
+# MAGIC
+# MAGIC ## Task 0: Detect Irrelevant Questions (NEW)
+# MAGIC FIRST, determine if this is an IRRELEVANT question completely unrelated to data analytics:
+# MAGIC - Greetings, small talk, casual conversation (e.g., "Hello", "How are you?", "What's up?")
+# MAGIC - Questions about weather, sports, politics, entertainment, current events
+# MAGIC - Personal questions about the AI/system itself (e.g., "Who created you?", "Are you sentient?")
+# MAGIC - Jokes, riddles, creative writing requests, role-playing
+# MAGIC - Questions about topics outside of data analysis and business intelligence
+# MAGIC - Programming help, homework, recipes, travel advice, etc.
+# MAGIC
+# MAGIC Examples of irrelevant questions (all should set is_irrelevant=true):
+# MAGIC - "What's the weather like today?"
+# MAGIC - "Tell me a joke"
+# MAGIC - "Who won the Super Bowl?"
+# MAGIC - "How do I make pasta?"
+# MAGIC - "What are your thoughts on politics?"
+# MAGIC
+# MAGIC If it's irrelevant, you MUST:
+# MAGIC 1. Set "is_irrelevant": true
+# MAGIC 2. Provide a polite refusal explaining you're a data analytics assistant
+# MAGIC 3. Redirect the user to ask questions about the available data sources
+# MAGIC
+# MAGIC NOTE: If a question mentions data but in an irrelevant context (e.g., "What's the weather like in my data?"), treat it as irrelevant.
+# MAGIC
+# MAGIC ## Task 1: Detect Meta-Questions
+# MAGIC Next, determine if this is a META-QUESTION about the system itself:
+# MAGIC - Questions about available tables, data sources, spaces, schemas
+# MAGIC - Questions about system capabilities, what data is available
+# MAGIC - Questions about the structure or organization of data
+# MAGIC
+# MAGIC If it's a meta-question, you MUST:
+# MAGIC 1. Set "is_meta_question": true
+# MAGIC 2. Generate a direct answer using the Available Data Sources above
+# MAGIC 3. Provide a clear, informative response about what's available
+# MAGIC
+# MAGIC ## Task 2: Classify Intent
+# MAGIC Classify the query into ONE of these categories:
+# MAGIC 1. **new_question**: A completely different topic/domain from previous queries
+# MAGIC 2. **refinement**: Narrowing/filtering/modifying the previous query on same topic
+# MAGIC 3. **continuation**: Follow-up exploring same topic from different angle
+# MAGIC 4. **clarification_response**: User is providing the clarification response to the clarification request
+# MAGIC
+# MAGIC ## Task 3: Generate Context Summary
+# MAGIC Create a 2-3 sentence summary that:
+# MAGIC - Synthesizes the conversation history
+# MAGIC - States clearly what the user wants
+# MAGIC - Is actionable for SQL query planning
+# MAGIC
+# MAGIC ## Task 4: Check Clarity
+# MAGIC Determine if the query is clear enough to generate SQL:
+# MAGIC - Is the question clear and answerable as-is? (BE LENIENT - default to TRUE)
+# MAGIC - ONLY mark as unclear if CRITICAL information is missing
+# MAGIC - If unclear, provide 2-3 specific clarification options
+# MAGIC - Never mark as unclear if the question is a clarification response to a previous clarification request
+# MAGIC - Meta-questions should always be marked as clear
+# MAGIC
+# MAGIC ## OUTPUT FORMAT (HYBRID - IMPORTANT!)
+# MAGIC
+# MAGIC Your response format depends on the situation:
+# MAGIC
+# MAGIC **CASE 0: Irrelevant Question** (is_irrelevant=true)
+# MAGIC Output polite refusal markdown FIRST, then JSON metadata:
+# MAGIC
+# MAGIC I'm a data analytics assistant focused on helping you analyze and query the available data sources.
+# MAGIC
+# MAGIC I can help you with questions about the data domains available in the system. To see what data is available, you can ask:
+# MAGIC - "What data sources are available?"
+# MAGIC - "What tables can I query?"
+# MAGIC - "Show me example questions I can ask"
+# MAGIC
+# MAGIC Could you rephrase your question to focus on analyzing the available data?
+# MAGIC
+# MAGIC ```json
+# MAGIC {{{{
+# MAGIC   "is_irrelevant": true,
+# MAGIC   "is_meta_question": false,
+# MAGIC   "meta_answer": null,
+# MAGIC   "intent_type": "new_question",
+# MAGIC   "confidence": 0.95,
+# MAGIC   "context_summary": "User asked an irrelevant question unrelated to data analytics",
+# MAGIC   "question_clear": true,
+# MAGIC   "clarification_reason": null,
+# MAGIC   "clarification_options": null,
+# MAGIC   "metadata": {{{{"domain": "irrelevant", "complexity": "simple", "topic_change_score": 1.0}}}}
+# MAGIC }}}}
+# MAGIC ```
+# MAGIC
+# MAGIC **CASE 1: Meta-Question** (is_meta_question=true)
+# MAGIC Output markdown answer FIRST, then JSON metadata:
+# MAGIC
+# MAGIC ## Available Data Sources
+# MAGIC
+# MAGIC [Your detailed markdown answer here with headings, bullets, bold keywords]
+# MAGIC
+# MAGIC ```json
+# MAGIC {{
+# MAGIC   "is_irrelevant": false,
+# MAGIC   "is_meta_question": true,
+# MAGIC   "meta_answer": null,
+# MAGIC   "intent_type": "new_question",
+# MAGIC   "confidence": 0.95,
+# MAGIC   "context_summary": "User asking about available data sources",
+# MAGIC   "question_clear": true,
+# MAGIC   "clarification_reason": null,
+# MAGIC   "clarification_options": null,
+# MAGIC   "metadata": {{"domain": "system", "complexity": "simple", "topic_change_score": 0.5}}
+# MAGIC }}
+# MAGIC ```
+# MAGIC
+# MAGIC **CASE 2: Unclear Query** (question_clear=false)
+# MAGIC Output clarification markdown FIRST, then JSON metadata:
+# MAGIC
+# MAGIC ### Clarification Needed
+# MAGIC
+# MAGIC [Explain what's unclear with headings, bullets, and numbered options]
+# MAGIC
+# MAGIC ```json
+# MAGIC {{
+# MAGIC   "is_irrelevant": false,
+# MAGIC   "is_meta_question": false,
+# MAGIC   "meta_answer": null,
+# MAGIC   "intent_type": "new_question",
+# MAGIC   "confidence": 0.85,
+# MAGIC   "context_summary": "2-3 sentence summary",
+# MAGIC   "question_clear": false,
+# MAGIC   "clarification_reason": null,
+# MAGIC   "clarification_options": ["Option 1", "Option 2", "Option 3"],
+# MAGIC   "metadata": {{"domain": "...", "complexity": "...", "topic_change_score": 0.8}}
+# MAGIC }}
+# MAGIC ```
+# MAGIC
+# MAGIC **CASE 3: Clear Regular Query** (question_clear=true, is_meta_question=false)
+# MAGIC Output ONLY JSON (no markdown prefix):
+# MAGIC
+# MAGIC ```json
+# MAGIC {{
+# MAGIC   "is_irrelevant": false,
+# MAGIC   "is_meta_question": false,
+# MAGIC   "meta_answer": null,
+# MAGIC   "intent_type": "new_question" | "refinement" | "continuation" | "clarification_response",
+# MAGIC   "confidence": 0.95,
+# MAGIC   "context_summary": "2-3 sentence summary for planning agent",
+# MAGIC   "question_clear": true,
+# MAGIC   "clarification_reason": null,
+# MAGIC   "clarification_options": null,
+# MAGIC   "metadata": {{
+# MAGIC     "domain": "patients | claims | providers | medications | ...",
+# MAGIC     "complexity": "simple | moderate | complex",
+# MAGIC     "topic_change_score": 0.8
+# MAGIC   }}
+# MAGIC }}
+# MAGIC ```
+# MAGIC
+# MAGIC CRITICAL: 
+# MAGIC - For irrelevant questions, meta-questions, and clarifications: markdown FIRST (will be streamed to user), then JSON
+# MAGIC - For regular clear queries: JSON ONLY (no markdown needed)
+# MAGIC - Always use proper markdown formatting with ##/### headings, **bold**, bullet lists
+# MAGIC - Use professional but friendly tone for data analytics
+# MAGIC """
+# MAGIC     
+# MAGIC     # Call LLM with stream for immediate markdown output (using pooled connection)
+# MAGIC     llm = get_pooled_llm(LLM_ENDPOINT_CLARIFICATION)
+# MAGIC     track_agent_model_usage("clarification", LLM_ENDPOINT_CLARIFICATION)
+# MAGIC     
+# MAGIC     # Emit minimal logging message
+# MAGIC     writer({"type": "agent_thinking", "agent": "unified", "content": "Analyzing query context..."})
+# MAGIC     
+# MAGIC     try:
+# MAGIC         print("🤖 Streaming unified LLM response for immediate markdown display...")
+# MAGIC         
+# MAGIC         # Use stream for immediate user feedback on markdown content
+# MAGIC         # Hybrid format: markdown FIRST (streamed), then JSON (parsed)
+# MAGIC         accumulated_content = ""
+# MAGIC         markdown_section = ""
+# MAGIC         in_json_block = False
+# MAGIC         streamed_markdown = False
+# MAGIC         
+# MAGIC         for chunk in llm.stream(unified_prompt):
+# MAGIC             if chunk.content:
+# MAGIC                 accumulated_content += chunk.content
+# MAGIC                 
+# MAGIC                 # Detect if we've hit the JSON block
+# MAGIC                 if "```json" in accumulated_content and not in_json_block:
+# MAGIC                     in_json_block = True
+# MAGIC                     # Extract and stream any remaining markdown before JSON block
+# MAGIC                     if not streamed_markdown:
+# MAGIC                         parts = accumulated_content.split("```json")
+# MAGIC                         markdown_section = parts[0].strip()
+# MAGIC                         if markdown_section:
+# MAGIC                             # Stream the markdown we've accumulated
+# MAGIC                             # Note: This will be picked up by ResponseAgent's "messages" stream mode
+# MAGIC                             print(f"  📄 Streaming markdown section ({len(markdown_section)} chars)...")
+# MAGIC                             streamed_markdown = True
+# MAGIC                 
+# MAGIC                 # Stream markdown chunks if we haven't hit JSON yet
+# MAGIC                 if not in_json_block and chunk.content.strip():
+# MAGIC                     markdown_section += chunk.content
+# MAGIC                     # Emit as AIMessageChunk for ResponseAgent to stream
+# MAGIC                     # The ResponseAgent's predict_stream already handles AIMessageChunk via "messages" mode
+# MAGIC         
+# MAGIC         content = accumulated_content  # Full content for JSON parsing
+# MAGIC         
+# MAGIC         print(f"✓ Stream complete ({len(content)} chars total)")
+# MAGIC         if streamed_markdown:
+# MAGIC             print(f"  ✓ Streamed {len(markdown_section)} chars of markdown to UI")
+# MAGIC         
+# MAGIC         # Parse JSON response from hybrid format
+# MAGIC         # Extract JSON from code block after markdown (if present)
+# MAGIC         if "```json" in content:
+# MAGIC             # Split markdown and JSON sections
+# MAGIC             parts = content.split("```json")
+# MAGIC             markdown_section = parts[0].strip()  # Markdown prefix (if any)
+# MAGIC             json_section = parts[1].split("```")[0].strip()  # JSON content
+# MAGIC         elif "```" in content:
+# MAGIC             # Fallback for generic code block
+# MAGIC             json_section = content.split("```")[1].split("```")[0].strip()
+# MAGIC         else:
+# MAGIC             # Pure JSON (regular clear queries with no markdown)
+# MAGIC             json_section = content.strip()
+# MAGIC         
+# MAGIC         result = json.loads(json_section)
+# MAGIC         
+# MAGIC         # Extract results
+# MAGIC         is_irrelevant = result.get("is_irrelevant", False)
+# MAGIC         is_meta_question = result.get("is_meta_question", False)
+# MAGIC         meta_answer = result.get("meta_answer")
+# MAGIC         intent_type = result["intent_type"].lower()
+# MAGIC         confidence = result["confidence"]
+# MAGIC         context_summary = result["context_summary"]
+# MAGIC         question_clear = result["question_clear"]
+# MAGIC         clarification_reason = result.get("clarification_reason")
+# MAGIC         clarification_options = result.get("clarification_options", [])
+# MAGIC         metadata = result.get("metadata", {})
+# MAGIC         
+# MAGIC         print(f"✓ Intent: {intent_type} (confidence: {confidence:.2f})")
+# MAGIC         print(f"  Context: {context_summary[:100]}...")
+# MAGIC         print(f"  Question clear: {question_clear}")
+# MAGIC         print(f"  Irrelevant: {is_irrelevant}")
+# MAGIC         print(f"  Meta-question: {is_meta_question}")
+# MAGIC         
+# MAGIC         # Create conversation turn
+# MAGIC         turn = create_conversation_turn(
+# MAGIC             query=current_query,
+# MAGIC             intent_type=intent_type,
+# MAGIC             parent_turn_id=None,  # Could extract from history if needed
+# MAGIC             context_summary=context_summary,
+# MAGIC             triggered_clarification=False,  # Will be updated if clarification triggered
+# MAGIC             metadata=metadata
+# MAGIC         )
+# MAGIC         
+# MAGIC         # Create intent metadata
+# MAGIC         intent_metadata = IntentMetadata(
+# MAGIC             intent_type=intent_type,
+# MAGIC             confidence=confidence,
+# MAGIC             reasoning=f"Unified analysis: {intent_type}",
+# MAGIC             topic_change_score=metadata.get("topic_change_score", 0.5),
+# MAGIC             domain=metadata.get("domain"),
+# MAGIC             operation=None,
+# MAGIC             complexity=metadata.get("complexity", "moderate"),
+# MAGIC             parent_turn_id=None
+# MAGIC         )
+# MAGIC         
+# MAGIC         # Emit events
+# MAGIC         writer({
+# MAGIC             "type": "intent_detected",
+# MAGIC             "intent_type": intent_type,
+# MAGIC             "confidence": confidence,
+# MAGIC             "complexity": metadata.get("complexity", "moderate")
+# MAGIC         })
+# MAGIC         
+# MAGIC         # NEW: Check if this is an irrelevant question - handle immediately
+# MAGIC         if is_irrelevant:
+# MAGIC             print("🚫 Irrelevant question detected - providing polite refusal")
+# MAGIC             
+# MAGIC             # Create turn for irrelevant question
+# MAGIC             turn["metadata"]["is_irrelevant"] = True
+# MAGIC             
+# MAGIC             # Emit metadata event (markdown was already streamed during LLM call)
+# MAGIC             writer({
+# MAGIC                 "type": "irrelevant_question_detected",
+# MAGIC                 "note": "Irrelevant refusal markdown already streamed to UI"
+# MAGIC             })
+# MAGIC             
+# MAGIC             # Use the markdown section that was streamed (from hybrid output)
+# MAGIC             # If no markdown section (edge case), format a simple response
+# MAGIC             if markdown_section and markdown_section.strip():
+# MAGIC                 irrelevant_display = markdown_section
+# MAGIC             else:
+# MAGIC                 irrelevant_display = """I'm a data analytics assistant focused on helping you analyze and query the available data sources.
+# MAGIC
+# MAGIC I can help you with questions about the data domains available in the system. To see what data is available, you can ask:
+# MAGIC - "What data sources are available?"
+# MAGIC - "What tables can I query?"
+# MAGIC - "Show me example questions I can ask"
+# MAGIC
+# MAGIC Could you rephrase your question to focus on analyzing the available data?"""
+# MAGIC             
+# MAGIC             # Return with irrelevant flag to skip SQL generation
+# MAGIC             return {
+# MAGIC                 "current_turn": turn,
+# MAGIC                 "turn_history": [turn],
+# MAGIC                 "intent_metadata": IntentMetadata(
+# MAGIC                     intent_type=intent_type,
+# MAGIC                     confidence=confidence,
+# MAGIC                     reasoning=f"Irrelevant question: {intent_type}",
+# MAGIC                     topic_change_score=1.0,
+# MAGIC                     domain="irrelevant",
+# MAGIC                     operation=None,
+# MAGIC                     complexity=metadata.get("complexity", "simple"),
+# MAGIC                     parent_turn_id=None
+# MAGIC                 ),
+# MAGIC                 "question_clear": True,  # Set to True so it doesn't trigger clarification
+# MAGIC                 "is_irrelevant": True,  # Flag for routing
+# MAGIC                 "is_meta_question": False,
+# MAGIC                 "pending_clarification": None,
+# MAGIC                 "messages": [
+# MAGIC                     AIMessage(content=irrelevant_display),
+# MAGIC                     SystemMessage(content="Irrelevant question detected, skipping SQL generation")
+# MAGIC                 ]
+# MAGIC             }
+# MAGIC         
+# MAGIC         # NEW: Check if this is a meta-question - handle immediately
+# MAGIC         if is_meta_question:
+# MAGIC             print("🔍 Meta-question detected - answering directly without SQL")
+# MAGIC             
+# MAGIC             # Create turn for meta-question
+# MAGIC             turn["metadata"]["is_meta_question"] = True
+# MAGIC             
+# MAGIC             # Emit metadata event (markdown was already streamed during LLM call)
+# MAGIC             writer({
+# MAGIC                 "type": "meta_question_detected",
+# MAGIC                 "note": "Meta-answer markdown already streamed to UI"
+# MAGIC             })
+# MAGIC             
+# MAGIC             # Use the markdown section that was streamed (from hybrid output)
+# MAGIC             # If no markdown section (edge case), format a simple response
+# MAGIC             if markdown_section and markdown_section.strip():
+# MAGIC                 meta_answer_display = markdown_section
+# MAGIC             else:
+# MAGIC                 meta_answer_display = format_meta_answer_markdown(
+# MAGIC                     "Meta-question detected. The answer was provided above."
+# MAGIC                 )
+# MAGIC             
+# MAGIC             # Return with meta-answer and flag to skip SQL generation
+# MAGIC             return {
+# MAGIC                 "current_turn": turn,
+# MAGIC                 "turn_history": [turn],
+# MAGIC                 "intent_metadata": IntentMetadata(
+# MAGIC                     intent_type=intent_type,
+# MAGIC                     confidence=confidence,
+# MAGIC                     reasoning=f"Meta-question: {intent_type}",
+# MAGIC                     topic_change_score=metadata.get("topic_change_score", 0.5),
+# MAGIC                     domain=metadata.get("domain"),
+# MAGIC                     operation=None,
+# MAGIC                     complexity=metadata.get("complexity", "simple"),
+# MAGIC                     parent_turn_id=None
+# MAGIC                 ),
+# MAGIC                 "question_clear": True,
+# MAGIC                 "is_meta_question": True,  # Flag for routing
+# MAGIC                 "meta_answer": markdown_section,  # The streamed markdown
+# MAGIC                 "pending_clarification": None,
+# MAGIC                 "messages": [
+# MAGIC                     AIMessage(content=meta_answer_display),
+# MAGIC                     SystemMessage(content="Meta-question answered directly, skipping SQL generation")
+# MAGIC                 ]
+# MAGIC             }
+# MAGIC         
+# MAGIC         # Check if clarification needed
+# MAGIC         if not question_clear:
+# MAGIC             print(f"⚠ Query unclear: {clarification_reason}")
+# MAGIC             
+# MAGIC             # Check rate limit
+# MAGIC             is_rate_limited = check_clarification_rate_limit(turn_history, window_size=5)
+# MAGIC             
+# MAGIC             if is_rate_limited:
+# MAGIC                 print("⚠ Clarification rate limit reached (1 per 5 turns)")
+# MAGIC                 print("  Proceeding with best-effort interpretation")
+# MAGIC                 
+# MAGIC                 writer({"type": "clarification_skipped", "reason": "Rate limited (1 per 5 turns)"})
+# MAGIC                 
+# MAGIC                 # Force proceed to planning
+# MAGIC                 return {
+# MAGIC                     "current_turn": turn,
+# MAGIC                     "turn_history": [turn],
+# MAGIC                     "intent_metadata": intent_metadata,
+# MAGIC                     "question_clear": True,  # Force clear
+# MAGIC                     "pending_clarification": None,
+# MAGIC                     "messages": [
+# MAGIC                         SystemMessage(content=f"Clarification rate limited. Proceeding with: {context_summary}")
+# MAGIC                     ]
+# MAGIC                 }
+# MAGIC             else:
+# MAGIC                 # OK to clarify
+# MAGIC                 print("✓ Requesting clarification from user")
+# MAGIC                 
+# MAGIC                 # Create clarification request
+# MAGIC                 clarification_request = create_clarification_request(
+# MAGIC                     reason=clarification_reason or "Query needs more specificity",
+# MAGIC                     options=clarification_options,
+# MAGIC                     turn_id=turn["turn_id"],
+# MAGIC                     best_guess=context_summary,
+# MAGIC                     best_guess_confidence=confidence
+# MAGIC                 )
+# MAGIC                 
+# MAGIC                 # Mark turn as triggering clarification
+# MAGIC                 turn["triggered_clarification"] = True
+# MAGIC                 
+# MAGIC                 # Emit metadata event (markdown was already streamed during LLM call)
+# MAGIC                 writer({
+# MAGIC                     "type": "clarification_requested", 
+# MAGIC                     "note": "Clarification markdown already streamed to UI"
+# MAGIC                 })
+# MAGIC                 
+# MAGIC                 # Use the markdown section that was streamed (from hybrid output)
+# MAGIC                 # If no markdown section (edge case), format a simple response
+# MAGIC                 if markdown_section and markdown_section.strip():
+# MAGIC                     clarification_display = markdown_section
+# MAGIC                 else:
+# MAGIC                     # Fallback: format clarification with options as markdown
+# MAGIC                     clarification_display = format_clarification_markdown(
+# MAGIC                         reason=clarification_reason or "Query needs more specificity",
+# MAGIC                         options=clarification_options
+# MAGIC                     )
+# MAGIC                 
+# MAGIC                 return {
+# MAGIC                     "current_turn": turn,
+# MAGIC                     "turn_history": [turn],
+# MAGIC                     "intent_metadata": intent_metadata,
+# MAGIC                     "question_clear": False,
+# MAGIC                     "pending_clarification": clarification_request,
+# MAGIC                     "messages": [
+# MAGIC                         AIMessage(content=clarification_display),
+# MAGIC                         SystemMessage(content=f"Clarification requested for turn {turn['turn_id']}")
+# MAGIC                     ]
+# MAGIC                 }
+# MAGIC         else:
+# MAGIC             # Question is clear, proceed to planning
+# MAGIC             print("✓ Query is clear - proceeding to planning")
+# MAGIC             
+# MAGIC             writer({"type": "clarity_analysis", "clear": True, "reasoning": "Query is clear and answerable"})
+# MAGIC             
+# MAGIC             return {
+# MAGIC                 "current_turn": turn,
+# MAGIC                 "turn_history": [turn],
+# MAGIC                 "intent_metadata": intent_metadata,
+# MAGIC                 "question_clear": True,
+# MAGIC                 "pending_clarification": None,
+# MAGIC                 "messages": [
+# MAGIC                     SystemMessage(content=f"Intent: {intent_type}, proceeding to planning")
+# MAGIC                 ]
+# MAGIC             }
+# MAGIC         
+# MAGIC     except Exception as e:
+# MAGIC         print(f"❌ Unified agent error: {e}")
+# MAGIC         import traceback
+# MAGIC         traceback.print_exc()
+# MAGIC         
+# MAGIC         # Fallback: create minimal turn and proceed
+# MAGIC         turn = create_conversation_turn(
+# MAGIC             query=current_query,
+# MAGIC             intent_type="new_question",
+# MAGIC             context_summary=f"Query: {current_query}",
+# MAGIC             triggered_clarification=False,
+# MAGIC             metadata={}
+# MAGIC         )
+# MAGIC         
+# MAGIC         intent_metadata = IntentMetadata(
+# MAGIC             intent_type="new_question",
+# MAGIC             confidence=0.5,
+# MAGIC             reasoning=f"Error fallback: {str(e)}",
+# MAGIC             topic_change_score=1.0,
+# MAGIC             domain=None,
+# MAGIC             operation=None,
+# MAGIC             complexity="moderate",
+# MAGIC             parent_turn_id=None
+# MAGIC         )
+# MAGIC         
+# MAGIC         return {
+# MAGIC             "current_turn": turn,
+# MAGIC             "turn_history": [turn],
+# MAGIC             "intent_metadata": intent_metadata,
+# MAGIC             "question_clear": True,  # Proceed despite error
+# MAGIC             "pending_clarification": None,
+# MAGIC             "messages": [
+# MAGIC                 SystemMessage(content=f"Unified agent error (proceeding anyway): {str(e)}")
+# MAGIC             ]
+# MAGIC         }
+# MAGIC
+# MAGIC print("✓ Unified intent, context, and clarification node defined")
+# MAGIC
+# MAGIC @measure_node_time("planning")
+# MAGIC def planning_node(state: AgentState) -> dict:
+# MAGIC     """
+# MAGIC     Planning node wrapping PlanningAgent class using turn-based context.
+# MAGIC     
+# MAGIC     IMPROVEMENTS:
+# MAGIC     - Uses current_turn.context_summary (LLM-generated) instead of manual combined_query_context
+# MAGIC     - Intent-aware planning (different strategies for refinements vs new questions)
+# MAGIC     - Clean separation from clarification logic
+# MAGIC     
+# MAGIC     OPTIMIZED: Uses minimal state extraction to reduce token usage
+# MAGIC     
+# MAGIC     Returns: Dictionary with only the state updates (for clean MLflow traces)
+# MAGIC     """
+# MAGIC     from langgraph.config import get_stream_writer
+# MAGIC     
+# MAGIC     writer = get_stream_writer()
+# MAGIC     
+# MAGIC     print("\n" + "="*80)
+# MAGIC     print("📋 PLANNING AGENT (Token Optimized)")
+# MAGIC     print("="*80)
+# MAGIC     
+# MAGIC     # OPTIMIZATION: Extract only minimal context needed for planning
+# MAGIC     context = extract_planning_context(state)
+# MAGIC     print(f"📊 State optimization: Using {len(context)} fields (vs {len([k for k in state.keys() if state.get(k) is not None])} in full state)")
+# MAGIC     
+# MAGIC     # Get current turn and intent from state
+# MAGIC     current_turn = context.get("current_turn")
+# MAGIC     if not current_turn:
+# MAGIC         # Fallback for backward compatibility
+# MAGIC         print("⚠ No current_turn found, falling back to legacy behavior")
+# MAGIC         query = context.get("original_query", "")
+# MAGIC         intent_type = "new_question"
+# MAGIC         context_summary = None
+# MAGIC     else:
+# MAGIC         query = current_turn["query"]
+# MAGIC         intent_type = current_turn.get("intent_type", "new_question")
+# MAGIC         context_summary = current_turn.get("context_summary")
+# MAGIC     
+# MAGIC     # Use context_summary if available (LLM-generated from intent detection)
+# MAGIC     # This replaces the manual combined_query_context template
+# MAGIC     planning_query = context_summary or query
+# MAGIC     
+# MAGIC     # Emit agent start event
+# MAGIC     writer({"type": "agent_start", "agent": "planning", "query": planning_query[:100]})
+# MAGIC     
+# MAGIC     print(f"Query: {query}")
+# MAGIC     print(f"Intent: {intent_type}")
+# MAGIC     if context_summary:
+# MAGIC         print(f"✓ Using context summary from intent detection")
+# MAGIC         print(f"  Summary: {context_summary[:200]}...")
+# MAGIC     else:
+# MAGIC         print(f"✓ Using query directly (no context needed)")
+# MAGIC     
+# MAGIC     # OPTIMIZATION: Use cached agent instance
+# MAGIC     planning_agent = get_cached_planning_agent()
+# MAGIC     track_agent_model_usage("planning", LLM_ENDPOINT_PLANNING)
+# MAGIC     
+# MAGIC     # PHASE 2 OPTIMIZATION: Vector search result caching for refinements
+# MAGIC     thread_id = state.get("thread_id", "default")
+# MAGIC     intent_metadata = state.get("intent_metadata", {})
+# MAGIC     can_reuse_cache = intent_type in ["refinement", "clarification_response", "continuation"]
+# MAGIC     
+# MAGIC     relevant_spaces_full = None
+# MAGIC     cache_hit = False
+# MAGIC     
+# MAGIC     if can_reuse_cache and thread_id in _vector_search_cache:
+# MAGIC         cache_entry = _vector_search_cache[thread_id]
+# MAGIC         cache_age = datetime.now() - cache_entry["timestamp"]
+# MAGIC         
+# MAGIC         if cache_age < _VECTOR_SEARCH_CACHE_TTL:
+# MAGIC             record_cache_hit("vector_search")
+# MAGIC             relevant_spaces_full = cache_entry["results"]
+# MAGIC             cache_hit = True
+# MAGIC             print(f"🚀 VECTOR SEARCH CACHE HIT (thread: {thread_id}, age: {cache_age.seconds}s)")
+# MAGIC             print(f"   Reusing {len(relevant_spaces_full)} spaces for {intent_type} query")
+# MAGIC             print(f"   Expected gain: -300 to -800ms")
+# MAGIC             
+# MAGIC             writer({
+# MAGIC                 "type": "vector_search_cache_hit",
+# MAGIC                 "thread_id": thread_id,
+# MAGIC                 "intent_type": intent_type,
+# MAGIC                 "space_count": len(relevant_spaces_full)
+# MAGIC             })
+# MAGIC         else:
+# MAGIC             print(f"⚠️ Vector search cache expired (age: {cache_age.seconds}s > {_VECTOR_SEARCH_CACHE_TTL.seconds}s)")
+# MAGIC     
+# MAGIC     # If no cache hit, perform vector search
+# MAGIC     if relevant_spaces_full is None:
+# MAGIC         record_cache_miss("vector_search")
+# MAGIC         # Emit vector search start event
+# MAGIC         writer({"type": "vector_search_start", "index": VECTOR_SEARCH_INDEX})
+# MAGIC         
+# MAGIC         # Get relevant spaces with full metadata (for Genie agents)
+# MAGIC         # Use planning_query which includes context_summary if available
+# MAGIC         print(f"🔍 Performing vector search (cache miss or new question)...")
+# MAGIC         relevant_spaces_full = planning_agent.search_relevant_spaces(planning_query)
+# MAGIC         
+# MAGIC         # Cache results for future refinements
+# MAGIC         _vector_search_cache[thread_id] = {
+# MAGIC             "query": planning_query,
+# MAGIC             "results": relevant_spaces_full,
+# MAGIC             "timestamp": datetime.now()
+# MAGIC         }
+# MAGIC         print(f"✓ Cached vector search results for thread: {thread_id}")
+# MAGIC     
+# MAGIC     # Emit vector search results
+# MAGIC     writer({"type": "vector_search_results", "spaces": relevant_spaces_full, "count": len(relevant_spaces_full)})
+# MAGIC     
+# MAGIC     # Emit plan formulation start
+# MAGIC     writer({"type": "agent_thinking", "agent": "planning", "content": "Creating execution plan..."})
+# MAGIC     
+# MAGIC     # Create execution plan
+# MAGIC     # IMPORTANT: Use planning_query (with context_summary) not just query
+# MAGIC     # Pass original_query so it can be shown in the prompt before context_summary
+# MAGIC     plan = planning_agent.create_execution_plan(planning_query, relevant_spaces_full, original_query=query)
+# MAGIC     
+# MAGIC     # Extract plan components
+# MAGIC     join_strategy = plan.get("join_strategy")
+# MAGIC     
+# MAGIC     # Emit plan formulation result
+# MAGIC     writer({"type": "plan_formulation", "strategy": join_strategy, "requires_join": plan.get("requires_join", False)})
+# MAGIC     
+# MAGIC     # Determine next agent
+# MAGIC     if join_strategy == "genie_route":
+# MAGIC         print("✓ Plan complete - using GENIE ROUTE (Genie agents)")
+# MAGIC         next_agent = "sql_synthesis_genie"
+# MAGIC     else:
+# MAGIC         print("✓ Plan complete - using TABLE ROUTE (direct SQL synthesis)")
+# MAGIC         next_agent = "sql_synthesis_table"
+# MAGIC     
+# MAGIC     # Return only updates (no in-place modifications)
+# MAGIC     return {
+# MAGIC         "plan": plan,
+# MAGIC         "sub_questions": plan.get("sub_questions", []),
+# MAGIC         "requires_multiple_spaces": plan.get("requires_multiple_spaces", False),
+# MAGIC         "relevant_space_ids": plan.get("relevant_space_ids", []),
+# MAGIC         "requires_join": plan.get("requires_join", False),
+# MAGIC         "join_strategy": join_strategy,
+# MAGIC         "execution_plan": plan.get("execution_plan", ""),
+# MAGIC         "genie_route_plan": plan.get("genie_route_plan"),
+# MAGIC         "vector_search_relevant_spaces_info": plan.get("vector_search_relevant_spaces_info", []),
+# MAGIC         "relevant_spaces": relevant_spaces_full,
+# MAGIC         "next_agent": next_agent,
+# MAGIC         "messages": [
+# MAGIC             SystemMessage(content=f"Execution plan: {json.dumps(plan, indent=2)}")
+# MAGIC         ]
+# MAGIC     }
+# MAGIC
+# MAGIC
+# MAGIC @measure_node_time("sql_synthesis_table")
+# MAGIC def sql_synthesis_table_node(state: AgentState) -> dict:
+# MAGIC     """
+# MAGIC     Fast SQL synthesis node wrapping SQLSynthesisTableAgent class.
+# MAGIC     Combines OOP modularity with explicit state management.
+# MAGIC     
+# MAGIC     OPTIMIZED: Uses minimal state extraction to reduce token usage
+# MAGIC     
+# MAGIC     Returns: Dictionary with only the state updates (for clean MLflow traces)
+# MAGIC     """
+# MAGIC     from langgraph.config import get_stream_writer
+# MAGIC     
+# MAGIC     writer = get_stream_writer()
+# MAGIC     
+# MAGIC     print("\n" + "="*80)
+# MAGIC     print("⚡ SQL SYNTHESIS AGENT - TABLE ROUTE (Token Optimized)")
+# MAGIC     print("="*80)
+# MAGIC     
+# MAGIC     # OPTIMIZATION: Extract only minimal context needed for table-based synthesis
+# MAGIC     context = extract_synthesis_table_context(state)
+# MAGIC     print(f"📊 State optimization: Using {len(context)} fields (vs {len([k for k in state.keys() if state.get(k) is not None])} in full state)")
+# MAGIC     
+# MAGIC     plan = context.get("plan", {})
+# MAGIC     relevant_space_ids = context.get("relevant_space_ids", [])
+# MAGIC     
+# MAGIC     # Emit synthesis start event
+# MAGIC     writer({"type": "sql_synthesis_start", "route": "table", "spaces": relevant_space_ids})
+# MAGIC     
+# MAGIC     # OPTIMIZATION: Use cached agent instance
+# MAGIC     sql_agent = get_cached_sql_table_agent()
+# MAGIC     track_agent_model_usage("sql_synthesis_table", LLM_ENDPOINT_SQL_SYNTHESIS_TABLE)
+# MAGIC     
+# MAGIC     print("plan loaded from state is:", plan)
+# MAGIC     print(json.dumps(plan, indent=2))
+# MAGIC     
+# MAGIC     try:
+# MAGIC         print("🤖 Invoking SQL synthesis agent...")
+# MAGIC         
+# MAGIC         # Emit detailed start event
+# MAGIC         writer({"type": "agent_thinking", "agent": "sql_synthesis_table", "content": "🧠 Starting SQL synthesis using UC function tools..."})
+# MAGIC         writer({"type": "agent_step", "agent": "sql_synthesis_table", "step": "analyzing_plan", "content": f"📋 Analyzing execution plan for {len(relevant_space_ids)} relevant spaces"})
+# MAGIC         
+# MAGIC         # Emit tool preparation event
+# MAGIC         uc_functions = ["get_space_summary", "get_table_overview", "get_column_detail", "get_space_instructions", "get_space_details"]
+# MAGIC         writer({"type": "tools_available", "agent": "sql_synthesis_table", "tools": uc_functions, "content": f"🔧 Available UC functions: {', '.join(uc_functions)}"})
+# MAGIC         
+# MAGIC         # Emit query strategy
+# MAGIC         writer({"type": "agent_thinking", "agent": "sql_synthesis_table", "content": f"🎯 Strategy: Query metadata for spaces {relevant_space_ids} then synthesize SQL"})
+# MAGIC         
+# MAGIC         # Call the agent
+# MAGIC         result = sql_agent(plan)
+# MAGIC         
+# MAGIC         # Emit tool completion event
+# MAGIC         writer({"type": "agent_step", "agent": "sql_synthesis_table", "step": "metadata_gathered", "content": "✅ Metadata collection complete, synthesizing SQL query..."})
+# MAGIC         
+# MAGIC         # Extract SQL and explanation
+# MAGIC         sql_query = result.get("sql")
+# MAGIC         explanation = result.get("explanation", "")
+# MAGIC         has_sql = result.get("has_sql", False)
+# MAGIC         
+# MAGIC         # Extract all SQL queries using helper function
+# MAGIC         sql_queries, query_labels = extract_sql_queries_from_agent_result(result, "sql_synthesis_table")
+# MAGIC         
+# MAGIC         if sql_queries:
+# MAGIC             # Multi-query support
+# MAGIC             print(f"✓ Extracted {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
+# MAGIC             for i, query in enumerate(sql_queries, 1):
+# MAGIC                 label_info = f" [{query_labels[i-1]}]" if i <= len(query_labels) and query_labels[i-1] else ""
+# MAGIC                 print(f"  Query {i}{label_info} preview: {query[:100]}...")
+# MAGIC             
+# MAGIC             if explanation:
+# MAGIC                 print(f"Agent Explanation: {explanation[:200]}...")
+# MAGIC             
+# MAGIC             # Emit detailed success events
+# MAGIC             writer({"type": "sql_generated", "agent": "sql_synthesis_table", "query_preview": sql_queries[0][:200], "content": f"💻 {len(sql_queries)} SQL Quer{'y' if len(sql_queries) == 1 else 'ies'} Generated"})
+# MAGIC             writer({"type": "agent_result", "agent": "sql_synthesis_table", "result": "success", "content": f"✅ SQL synthesis complete: {explanation[:150]}..."})
+# MAGIC             
+# MAGIC             # Return updates for successful synthesis
+# MAGIC             return {
+# MAGIC                 "sql_queries": sql_queries,
+# MAGIC                 "sql_query_labels": query_labels,
+# MAGIC                 "sql_query": sql_queries[0],  # For backward compatibility
+# MAGIC                 "has_sql": True,
+# MAGIC                 "sql_synthesis_explanation": explanation,
+# MAGIC                 "next_agent": "sql_execution",
+# MAGIC                 "messages": [
+# MAGIC                     AIMessage(content=f"SQL Synthesis (Table Route):\n{explanation}")
+# MAGIC                 ]
+# MAGIC             }
+# MAGIC         else:
+# MAGIC             print("⚠ No SQL generated - agent explanation:")
+# MAGIC             print(f"  {explanation}")
+# MAGIC             
+# MAGIC             # Emit failure event
+# MAGIC             writer({"type": "agent_result", "agent": "sql_synthesis_table", "result": "no_sql", "content": f"⚠️ Could not generate SQL: {explanation[:150]}..."})
+# MAGIC             
+# MAGIC             # Return updates for failed synthesis
+# MAGIC             return {
+# MAGIC                 "synthesis_error": "Cannot generate SQL query",
+# MAGIC                 "sql_synthesis_explanation": explanation,
+# MAGIC                 "next_agent": "summarize",
+# MAGIC                 "messages": [
+# MAGIC                     AIMessage(content=f"SQL Synthesis Failed (Table Route):\n{explanation}")
+# MAGIC                 ]
+# MAGIC             }
+# MAGIC         
+# MAGIC     except Exception as e:
+# MAGIC         print(f"❌ SQL synthesis failed: {e}")
+# MAGIC         error_msg = str(e)
+# MAGIC         # Return updates for exception
+# MAGIC         return {
+# MAGIC             "synthesis_error": error_msg,
+# MAGIC             "sql_synthesis_explanation": error_msg,
+# MAGIC             "messages": [
+# MAGIC                 AIMessage(content=f"SQL Synthesis Failed (Table Route):\n{error_msg}")
+# MAGIC             ]
+# MAGIC         }
+# MAGIC
+# MAGIC
+# MAGIC @measure_node_time("sql_synthesis_genie")
+# MAGIC def sql_synthesis_genie_node(state: AgentState) -> dict:
+# MAGIC     """
+# MAGIC     Slow SQL synthesis node wrapping SQLSynthesisGenieAgent class.
+# MAGIC     Combines OOP modularity with explicit state management.
+# MAGIC     
+# MAGIC     Uses relevant_spaces from PlanningAgent (no need to re-query all spaces).
+# MAGIC     
+# MAGIC     OPTIMIZED: Uses minimal state extraction to reduce token usage
+# MAGIC     
+# MAGIC     Returns: Dictionary with only the state updates (for clean MLflow traces)
+# MAGIC     """
+# MAGIC     from langgraph.config import get_stream_writer
+# MAGIC     
+# MAGIC     writer = get_stream_writer()
+# MAGIC     
+# MAGIC     print("\n" + "="*80)
+# MAGIC     print("🐢 SQL SYNTHESIS AGENT - GENIE ROUTE (Token Optimized)")
+# MAGIC     print("="*80)
+# MAGIC     
+# MAGIC     # OPTIMIZATION: Extract only minimal context needed for genie-based synthesis
+# MAGIC     context = extract_synthesis_genie_context(state)
+# MAGIC     print(f"📊 State optimization: Using {len(context)} fields (vs {len([k for k in state.keys() if state.get(k) is not None])} in full state)")
+# MAGIC     
+# MAGIC     # Get relevant spaces from state (already discovered by PlanningAgent)
+# MAGIC     relevant_spaces = context.get("relevant_spaces", [])
+# MAGIC     relevant_space_ids = [s.get("space_id") for s in relevant_spaces if s.get("space_id")]
+# MAGIC     
+# MAGIC     # Emit synthesis start event
+# MAGIC     writer({"type": "sql_synthesis_start", "route": "genie", "spaces": relevant_space_ids})
+# MAGIC     
+# MAGIC     # Use dedicated SQL_SYNTHESIS_GENIE endpoint for orchestrating multiple Genie agents
+# MAGIC     # This agent requires stronger reasoning for complex coordination
+# MAGIC     llm = get_pooled_llm(LLM_ENDPOINT_SQL_SYNTHESIS_GENIE, temperature=0.1)
+# MAGIC     
+# MAGIC     if not relevant_spaces:
+# MAGIC         print("❌ No relevant_spaces found in state")
+# MAGIC         # Return error update
+# MAGIC         return {
+# MAGIC             "synthesis_error": "No relevant spaces available for genie route"
+# MAGIC         }
+# MAGIC     
+# MAGIC     # Use OOP agent - only creates Genie agents for relevant spaces
+# MAGIC     sql_agent = SQLSynthesisGenieAgent(llm, relevant_spaces)
+# MAGIC     track_agent_model_usage("sql_synthesis_genie", LLM_ENDPOINT_SQL_SYNTHESIS_GENIE)
+# MAGIC     
+# MAGIC     # Use minimal context (already extracted)
+# MAGIC     plan = context.get("plan", {})
+# MAGIC     genie_route_plan = context.get("genie_route_plan") or plan.get("genie_route_plan", {})
+# MAGIC     
+# MAGIC     if not genie_route_plan:
+# MAGIC         print("❌ No genie_route_plan found in plan")
+# MAGIC         # Return error update
+# MAGIC         return {
+# MAGIC             "synthesis_error": "No routing plan available for genie route"
+# MAGIC         }
+# MAGIC     
+# MAGIC     try:
+# MAGIC         print(f"🤖 Querying {len(genie_route_plan)} Genie agents...")
+# MAGIC         
+# MAGIC         # Emit detailed start event
+# MAGIC         writer({"type": "agent_thinking", "agent": "sql_synthesis_genie", "content": f"🧠 Starting SQL synthesis using {len(genie_route_plan)} Genie agents..."})
+# MAGIC         writer({"type": "agent_step", "agent": "sql_synthesis_genie", "step": "preparing_genie_calls", "content": f"📋 Preparing to query {len(genie_route_plan)} Genie spaces"})
+# MAGIC         
+# MAGIC         # Emit detailed events for each Genie agent call with full context
+# MAGIC         for idx, (space_id, query) in enumerate(genie_route_plan.items(), 1):
+# MAGIC             space_title = next((s.get("space_title", space_id) for s in relevant_spaces if s.get("space_id") == space_id), space_id)
+# MAGIC             writer({
+# MAGIC                 "type": "genie_agent_call", 
+# MAGIC                 "agent": "sql_synthesis_genie",
+# MAGIC                 "space_id": space_id, 
+# MAGIC                 "space_title": space_title,
+# MAGIC                 "query": query,
+# MAGIC                 "content": f"🤖 [{idx}/{len(genie_route_plan)}] Calling Genie agent '{space_title}' with query: {query[:100]}{'...' if len(query) > 100 else ''}"
+# MAGIC             })
+# MAGIC         
+# MAGIC         # Emit execution strategy
+# MAGIC         writer({"type": "agent_thinking", "agent": "sql_synthesis_genie", "content": "⚡ Executing Genie agents in parallel for optimal performance..."})
+# MAGIC         
+# MAGIC         # Call the agent
+# MAGIC         result = sql_agent(plan)
+# MAGIC         
+# MAGIC         # Emit completion event
+# MAGIC         writer({"type": "agent_step", "agent": "sql_synthesis_genie", "step": "combining_results", "content": "🔄 All Genie agents responded, combining SQL fragments..."})
+# MAGIC         
+# MAGIC         # Extract SQL and explanation
+# MAGIC         sql_query = result.get("sql")
+# MAGIC         explanation = result.get("explanation", "")
+# MAGIC         has_sql = result.get("has_sql", False)
+# MAGIC         
+# MAGIC         # Extract all SQL queries using helper function
+# MAGIC         sql_queries, query_labels = extract_sql_queries_from_agent_result(result, "sql_synthesis_genie")
+# MAGIC         
+# MAGIC         if sql_queries:
+# MAGIC             # Multi-query support
+# MAGIC             print(f"✓ Extracted {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
+# MAGIC             for i, query in enumerate(sql_queries, 1):
+# MAGIC                 label_info = f" [{query_labels[i-1]}]" if i <= len(query_labels) and query_labels[i-1] else ""
+# MAGIC                 print(f"  Query {i}{label_info} preview: {query[:100]}...")
+# MAGIC             
+# MAGIC             if explanation:
+# MAGIC                 print(f"Agent Explanation: {explanation[:200]}...")
+# MAGIC             
+# MAGIC             # Emit detailed success events
+# MAGIC             writer({"type": "sql_generated", "agent": "sql_synthesis_genie", "query_preview": sql_queries[0][:200], "content": f"💻 {len(sql_queries)} SQL Quer{'y' if len(sql_queries) == 1 else 'ies'} Generated"})
+# MAGIC             writer({"type": "agent_result", "agent": "sql_synthesis_genie", "result": "success", "content": f"✅ SQL synthesis complete: {explanation[:150]}..."})
+# MAGIC             writer({"type": "agent_thinking", "agent": "sql_synthesis_genie", "content": f"🎯 Successfully extracted {len(sql_queries)} SQL queries from {len(genie_route_plan)} Genie agents"})
+# MAGIC             
+# MAGIC             # Return updates for successful synthesis
+# MAGIC             return {
+# MAGIC                 "sql_queries": sql_queries,
+# MAGIC                 "sql_query_labels": query_labels,
+# MAGIC                 "sql_query": sql_queries[0],  # For backward compatibility
+# MAGIC                 "has_sql": True,
+# MAGIC                 "sql_synthesis_explanation": explanation,
+# MAGIC                 "next_agent": "sql_execution",
+# MAGIC                 "messages": [
+# MAGIC                     AIMessage(content=f"SQL Synthesis (Genie Route):\n{explanation}")
+# MAGIC                 ]
+# MAGIC             }
+# MAGIC         else:
+# MAGIC             print("⚠ No SQL generated - agent explanation:")
+# MAGIC             print(f"  {explanation}")
+# MAGIC             
+# MAGIC             # Emit detailed failure event
+# MAGIC             writer({"type": "agent_result", "agent": "sql_synthesis_genie", "result": "no_sql", "content": f"⚠️ Could not generate SQL from Genie agents: {explanation[:150]}..."})
+# MAGIC             
+# MAGIC             # Return updates for failed synthesis
+# MAGIC             return {
+# MAGIC                 "synthesis_error": "Cannot generate SQL query from Genie agent fragments",
+# MAGIC                 "sql_synthesis_explanation": explanation,
+# MAGIC                 "next_agent": "summarize",
+# MAGIC                 "messages": [
+# MAGIC                     AIMessage(content=f"SQL Synthesis Failed (Genie Route):\n{explanation}")
+# MAGIC                 ]
+# MAGIC             }
+# MAGIC         
+# MAGIC     except Exception as e:
+# MAGIC         print(f"❌ SQL synthesis failed: {e}")
+# MAGIC         error_msg = str(e)
+# MAGIC         # Return updates for exception
+# MAGIC         return {
+# MAGIC             "synthesis_error": error_msg,
+# MAGIC             "sql_synthesis_explanation": error_msg,
+# MAGIC             "messages": [
+# MAGIC                 AIMessage(content=f"SQL Synthesis Failed (Genie Route):\n{error_msg}")
+# MAGIC             ]
+# MAGIC         }
+# MAGIC
+# MAGIC
+# MAGIC @measure_node_time("sql_execution")
+# MAGIC def sql_execution_node(state: AgentState) -> dict:
+# MAGIC     """
+# MAGIC     SQL execution node wrapping SQLExecutionAgent class.
+# MAGIC     Supports executing multiple SQL queries for multi-part questions.
+# MAGIC     Combines OOP modularity with explicit state management.
+# MAGIC     
+# MAGIC     OPTIMIZED: Uses minimal state extraction to reduce token usage
+# MAGIC     
+# MAGIC     Returns: Dictionary with only the state updates (for clean MLflow traces)
+# MAGIC     """
+# MAGIC     from langgraph.config import get_stream_writer
+# MAGIC     
+# MAGIC     writer = get_stream_writer()
+# MAGIC     
+# MAGIC     print("\n" + "="*80)
+# MAGIC     print("🚀 SQL EXECUTION AGENT (Token Optimized)")
+# MAGIC     print("="*80)
+# MAGIC     
+# MAGIC     # NEW: Support multiple queries
+# MAGIC     sql_queries = state.get("sql_queries", [])
+# MAGIC     
+# MAGIC     # Fallback to single query for backward compatibility
+# MAGIC     if not sql_queries:
+# MAGIC         single_query = state.get("sql_query")
+# MAGIC         if single_query:
+# MAGIC             sql_queries = [single_query]
+# MAGIC     
+# MAGIC     if not sql_queries:
+# MAGIC         print("❌ No SQL queries to execute")
+# MAGIC         # Return error update
+# MAGIC         return {
+# MAGIC             "execution_error": "No SQL queries provided",
+# MAGIC             "next_agent": "summarize"
+# MAGIC         }
+# MAGIC     
+# MAGIC     print(f"📊 Executing {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
+# MAGIC     
+# MAGIC     # Use OOP agent with SQL Warehouse
+# MAGIC     execution_agent = SQLExecutionAgent(warehouse_id=SQL_WAREHOUSE_ID)
+# MAGIC     
+# MAGIC     # Emit start events before parallel execution
+# MAGIC     for i, query in enumerate(sql_queries, 1):
+# MAGIC         writer({"type": "sql_validation_start", "query": query[:200], "query_number": i})
+# MAGIC         writer({"type": "sql_execution_start", "estimated_complexity": "standard", "query_number": i})
+# MAGIC     
+# MAGIC     # Execute queries in parallel (ThreadPoolExecutor inside the class)
+# MAGIC     execution_results = execution_agent.execute_sql_parallel(sql_queries)
+# MAGIC     all_successful = all(r["success"] for r in execution_results)
+# MAGIC     
+# MAGIC     # Emit completion events after parallel execution (writer is not thread-safe)
+# MAGIC     for result in execution_results:
+# MAGIC         i = result["query_number"]
+# MAGIC         if result["success"]:
+# MAGIC             print(f"✓ Query {i} succeeded: {result['row_count']} rows")
+# MAGIC             writer({"type": "sql_execution_complete", "rows": result['row_count'], "columns": result['columns'], "query_number": i})
+# MAGIC         else:
+# MAGIC             print(f"❌ Query {i} failed: {result.get('error')}")
+# MAGIC     
+# MAGIC     # Prepare updates (both single and multiple for backward compatibility)
+# MAGIC     updates = {
+# MAGIC         "execution_results": execution_results,
+# MAGIC         "execution_result": execution_results[0],  # For backward compatibility
+# MAGIC         "next_agent": "summarize",
+# MAGIC         "messages": []
+# MAGIC     }
+# MAGIC     
+# MAGIC     if all_successful:
+# MAGIC         total_rows = sum(r["row_count"] for r in execution_results)
+# MAGIC         success_msg = f"Executed {len(sql_queries)} quer{'y' if len(sql_queries) == 1 else 'ies'} successfully. Total rows: {total_rows}"
+# MAGIC         print(f"\n✅ {success_msg}")
+# MAGIC         
+# MAGIC         updates["messages"].append(
+# MAGIC             SystemMessage(content=success_msg)
+# MAGIC         )
+# MAGIC     else:
+# MAGIC         failed_count = sum(1 for r in execution_results if not r["success"])
+# MAGIC         success_count = len(sql_queries) - failed_count
+# MAGIC         error_msg = f"{failed_count} of {len(sql_queries)} queries failed"
+# MAGIC         
+# MAGIC         print(f"\n⚠️ Partial success: {success_count} succeeded, {failed_count} failed")
+# MAGIC         
+# MAGIC         updates["execution_error"] = error_msg
+# MAGIC         updates["messages"].append(
+# MAGIC             SystemMessage(content=f"{success_count} queries succeeded, {failed_count} failed")
+# MAGIC         )
+# MAGIC     
+# MAGIC     return updates
+# MAGIC
+# MAGIC
+# MAGIC @measure_node_time("summarize")
+# MAGIC def summarize_node(state: AgentState) -> dict:
+# MAGIC     """
+# MAGIC     Result summarize node wrapping ResultSummarizeAgent class.
+# MAGIC     
+# MAGIC     This is the final node that all workflow paths go through.
+# MAGIC     Generates a natural language summary AND preserves all workflow data.
+# MAGIC     
+# MAGIC     OPTIMIZED: Uses minimal state extraction to reduce token usage
+# MAGIC     
+# MAGIC     Returns: Dictionary with only the state updates (for clean MLflow traces)
+# MAGIC     """
+# MAGIC     from langgraph.config import get_stream_writer
+# MAGIC     
+# MAGIC     writer = get_stream_writer()
+# MAGIC     
+# MAGIC     print("\n" + "="*80)
+# MAGIC     print("📝 RESULT SUMMARIZE AGENT (Token Optimized)")
+# MAGIC     print("="*80)
+# MAGIC     
+# MAGIC     # OPTIMIZATION: Extract only minimal context needed for summarization
+# MAGIC     context = extract_summarize_context(state)
+# MAGIC     print(f"📊 State optimization: Using {len(context)} fields (vs {len([k for k in state.keys() if state.get(k) is not None])} in full state)")
+# MAGIC     
+# MAGIC     # Emit summary start event
+# MAGIC     writer({"type": "summary_start", "content": "Generating comprehensive summary..."})
+# MAGIC     
+# MAGIC     # OPTIMIZATION: Use cached agent instance
+# MAGIC     summarize_agent = get_cached_summarize_agent()
+# MAGIC     track_agent_model_usage("summarize", LLM_ENDPOINT_SUMMARIZE)
+# MAGIC     summary = summarize_agent(context)
+# MAGIC     
+# MAGIC     # Display what's being returned
+# MAGIC     print(f"\n📦 State Fields Being Returned:")
+# MAGIC     print(f"  ✓ final_summary: {len(summary)} chars")
+# MAGIC     if context.get("sql_query"):
+# MAGIC         print(f"  ✓ sql_query: {len(context['sql_query'])} chars")
+# MAGIC     if context.get("execution_result"):
+# MAGIC         exec_result = context["execution_result"]
+# MAGIC         if exec_result.get("success"):
+# MAGIC             print(f"  ✓ execution_result: {exec_result.get('row_count', 0)} rows")
+# MAGIC         else:
+# MAGIC             print(f"  ✓ execution_result: Failed - {exec_result.get('error', 'Unknown')[:50]}...")
+# MAGIC     if context.get("sql_synthesis_explanation"):
+# MAGIC         print(f"  ✓ sql_synthesis_explanation: {len(context['sql_synthesis_explanation'])} chars")
+# MAGIC     if state.get("execution_plan"):
+# MAGIC         print(f"  ✓ execution_plan: {state['execution_plan'][:80]}...")
+# MAGIC     if state.get("synthesis_error"):
+# MAGIC         print(f"  ⚠ synthesis_error: {state['synthesis_error'][:50]}...")
+# MAGIC     if state.get("execution_error"):
+# MAGIC         print(f"  ⚠ execution_error: {state['execution_error'][:50]}...")
+# MAGIC     
+# MAGIC     print("="*80)
+# MAGIC     
+# MAGIC     # Emit summary completion event
+# MAGIC     writer({"type": "summary_complete", "content": f"✅ Summary generated ({len(summary)} chars)"})
+# MAGIC     
+# MAGIC     # Build a concise final message for AIMessage (avoid duplication with final_summary)
+# MAGIC     # Only include execution results and errors (summary goes to final_summary field)
+# MAGIC     final_message_parts = []
+# MAGIC     
+# MAGIC     # 1. Execution Results (if available)
+# MAGIC     exec_result = state.get("execution_result")
+# MAGIC     if exec_result and exec_result.get("success"):
+# MAGIC         results = exec_result.get("result", [])
+# MAGIC         if results:
+# MAGIC             try:
+# MAGIC                 import pandas as pd
+# MAGIC                 df = pd.DataFrame(results)
+# MAGIC                 
+# MAGIC                 # Display DataFrame in notebook
+# MAGIC                 print("\n" + "="*80)
+# MAGIC                 print("📊 QUERY RESULTS (Pandas DataFrame)")
+# MAGIC                 print("="*80)
+# MAGIC                 try:
+# MAGIC                     display(df)  # Use Databricks display() for interactive view
+# MAGIC                 except:
+# MAGIC                     print(df.to_string())  # Fallback to string representation
+# MAGIC                 print("="*80 + "\n")
+# MAGIC                 
+# MAGIC                 # Add compact results info to message
+# MAGIC                 final_message_parts.append(f"\n📊 **Query Results:** {df.shape[0]} rows × {df.shape[1]} columns")
+# MAGIC                 
+# MAGIC                 # Show top 100 rows in markdown table format
+# MAGIC                 display_rows = min(100, df.shape[0])
+# MAGIC                 df_preview = df.head(display_rows)
+# MAGIC                 
+# MAGIC                 # Convert to markdown table
+# MAGIC                 markdown_table = df_preview.to_markdown(index=False)
+# MAGIC                 
+# MAGIC                 final_message_parts.append(f"\n### Results Table (Top {display_rows} rows)\n\n{markdown_table}")
+# MAGIC                 
+# MAGIC                 # Add note if more rows exist
+# MAGIC                 if df.shape[0] > display_rows:
+# MAGIC                     final_message_parts.append(f"\n*Showing {display_rows} of {df.shape[0]} total rows*")
+# MAGIC                 
+# MAGIC             except Exception as e:
+# MAGIC                 final_message_parts.append(f"\n⚠️ Could not format results: {e}")
+# MAGIC                 final_message_parts.append(f"Raw results (first 3): {results[:3]}")
+# MAGIC     
+# MAGIC     # 2. Error messages (if any) 
+# MAGIC     if state.get("synthesis_error"):
+# MAGIC         final_message_parts.append(f"\n❌ **SQL Synthesis Error:** {state['synthesis_error']}")
+# MAGIC     if state.get("execution_error"):
+# MAGIC         final_message_parts.append(f"\n❌ **Execution Error:** {state['execution_error']}")
+# MAGIC     
+# MAGIC     # Combine into final message (results/errors only - summary in final_summary field)
+# MAGIC     # If no results or errors, use a simple completion message
+# MAGIC     final_message = "\n".join(final_message_parts) if final_message_parts else "✅ Execution complete"
+# MAGIC     
+# MAGIC     print(f"\n✅ AIMessage created with results/errors ({len(final_message)} chars)")
+# MAGIC     print(f"✅ Summary stored in final_summary field ({len(summary)} chars)")
+# MAGIC     
+# MAGIC     # Route to END via fixed edge (summarize → END)
+# MAGIC     # Return: final_summary (displayed once) + AIMessage (results/errors only)
+# MAGIC     return {
+# MAGIC         "final_summary": summary,
+# MAGIC         "messages": [
+# MAGIC             AIMessage(content=final_message)
+# MAGIC         ]
+# MAGIC     }
+# MAGIC
+# MAGIC print("✓ All node wrappers defined (including summarize)")
+# MAGIC
+# MAGIC # ==============================================================================
+# MAGIC # Business Logic Integration Hooks (NEW)
+# MAGIC # ==============================================================================
+# MAGIC
+# MAGIC class BusinessLogicIntegration:
+# MAGIC     """
+# MAGIC     Example integration points for business logic using intent metadata.
+# MAGIC     
+# MAGIC     This demonstrates how to use the intent_metadata from intent detection
+# MAGIC     for billing, analytics, routing, and personalization.
+# MAGIC     """
+# MAGIC     
+# MAGIC     @staticmethod
+# MAGIC     def calculate_usage_cost(state: AgentState) -> Dict[str, Any]:
+# MAGIC         """Calculate usage cost based on intent type and complexity."""
+# MAGIC         intent_metadata = state.get("intent_metadata", {})
+# MAGIC         intent_type = intent_metadata.get("intent_type", "new_question")
+# MAGIC         complexity = intent_metadata.get("complexity", "moderate")
+# MAGIC         
+# MAGIC         base_rates = {
+# MAGIC             "new_question": 0.10,
+# MAGIC             "refinement": 0.05,
+# MAGIC             "continuation": 0.07,
+# MAGIC             "clarification_response": 0.00
+# MAGIC         }
+# MAGIC         complexity_multipliers = {"simple": 1.0, "moderate": 1.5, "complex": 2.0}
+# MAGIC         
+# MAGIC         base_cost = base_rates.get(intent_type, 0.10)
+# MAGIC         multiplier = complexity_multipliers.get(complexity, 1.5)
+# MAGIC         
+# MAGIC         return {
+# MAGIC             "total_cost": base_cost * multiplier,
+# MAGIC             "intent_type": intent_type,
+# MAGIC             "complexity": complexity
+# MAGIC         }
+# MAGIC     
+# MAGIC     @staticmethod
+# MAGIC     def log_analytics_event(state: AgentState) -> Dict[str, Any]:
+# MAGIC         """Log analytics event for conversation analysis."""
+# MAGIC         intent_metadata = state.get("intent_metadata", {})
+# MAGIC         current_turn = state.get("current_turn", {})
+# MAGIC         turn_history = state.get("turn_history", [])
+# MAGIC         
+# MAGIC         event = {
+# MAGIC             "event_type": "query_processed",
+# MAGIC             "intent_type": intent_metadata.get("intent_type"),
+# MAGIC             "complexity": intent_metadata.get("complexity"),
+# MAGIC             "turn_count": len(turn_history),
+# MAGIC             "clarification_requested": state.get("pending_clarification") is not None
+# MAGIC         }
+# MAGIC         print(f"📊 Analytics: {event['intent_type']} | {event['complexity']}")
+# MAGIC         return event
+# MAGIC
+# MAGIC print("✓ Business logic integration hooks defined")
+# MAGIC
+# MAGIC def create_super_agent_hybrid():
+# MAGIC     """
+# MAGIC     Create the Hybrid Super Agent LangGraph workflow.
+# MAGIC     
+# MAGIC     Combines:
+# MAGIC     - OOP agent classes for modularity
+# MAGIC     - Explicit state management for observability
+# MAGIC     """
+# MAGIC     print("\n" + "="*80)
+# MAGIC     print("🏗️ BUILDING HYBRID SUPER AGENT WORKFLOW")
+# MAGIC     print("="*80)
+# MAGIC     
+# MAGIC     # Create the graph with explicit state
+# MAGIC     workflow = StateGraph(AgentState)
+# MAGIC     
+# MAGIC     # Add nodes - SIMPLIFIED with unified node
+# MAGIC     workflow.add_node("unified_intent_context_clarification", unified_intent_context_clarification_node)  # NEW: Unified node
+# MAGIC     workflow.add_node("planning", planning_node)
+# MAGIC     workflow.add_node("sql_synthesis_table", sql_synthesis_table_node)
+# MAGIC     workflow.add_node("sql_synthesis_genie", sql_synthesis_genie_node)
+# MAGIC     workflow.add_node("sql_execution", sql_execution_node)
+# MAGIC     workflow.add_node("summarize", summarize_node)  # Final summarization node
+# MAGIC     
+# MAGIC     # Define routing logic based on explicit state
+# MAGIC     def route_after_unified(state: AgentState) -> str:
+# MAGIC         """Route after unified node: planning or END (clarification/meta-question/irrelevant)"""
+# MAGIC         # Check if irrelevant question - go directly to END with refusal
+# MAGIC         if state.get("is_irrelevant", False):
+# MAGIC             return END
+# MAGIC         
+# MAGIC         # Check if meta-question - go directly to END with answer
+# MAGIC         if state.get("is_meta_question", False):
+# MAGIC             return END
+# MAGIC         
+# MAGIC         # Check if question is clear - proceed to planning
+# MAGIC         if state.get("question_clear", False):
+# MAGIC             return "planning"
+# MAGIC         
+# MAGIC         # Otherwise, end for clarification
+# MAGIC         return END
+# MAGIC     
+# MAGIC     def route_after_planning(state: AgentState) -> str:
+# MAGIC         next_agent = state.get("next_agent", "summarize")
+# MAGIC         if next_agent == "sql_synthesis_table":
+# MAGIC             return "sql_synthesis_table"
+# MAGIC         elif next_agent == "sql_synthesis_genie":
+# MAGIC             return "sql_synthesis_genie"
+# MAGIC         return "summarize"
+# MAGIC     
+# MAGIC     def route_after_synthesis(state: AgentState) -> str:
+# MAGIC         next_agent = state.get("next_agent", "summarize")
+# MAGIC         if next_agent == "sql_execution":
+# MAGIC             return "sql_execution"
+# MAGIC         return "summarize"  # Summarize if synthesis error
+# MAGIC     
+# MAGIC     # Add edges with conditional routing
+# MAGIC     # NEW: Entry point is now unified node
+# MAGIC     workflow.set_entry_point("unified_intent_context_clarification")
+# MAGIC     
+# MAGIC     # Route from unified node to planning or END (clarification)
+# MAGIC     workflow.add_conditional_edges(
+# MAGIC         "unified_intent_context_clarification",
+# MAGIC         route_after_unified,
+# MAGIC         {
+# MAGIC             "planning": "planning",
+# MAGIC             END: END
+# MAGIC         }
+# MAGIC     )
+# MAGIC     
+# MAGIC     workflow.add_conditional_edges(
+# MAGIC         "planning",
+# MAGIC         route_after_planning,
+# MAGIC         {
+# MAGIC             "sql_synthesis_table": "sql_synthesis_table",
+# MAGIC             "sql_synthesis_genie": "sql_synthesis_genie",
+# MAGIC             "summarize": "summarize"
+# MAGIC         }
+# MAGIC     )
+# MAGIC     
+# MAGIC     workflow.add_conditional_edges(
+# MAGIC         "sql_synthesis_table",
+# MAGIC         route_after_synthesis,
+# MAGIC         {
+# MAGIC             "sql_execution": "sql_execution",
+# MAGIC             "summarize": "summarize"
+# MAGIC         }
+# MAGIC     )
+# MAGIC     
+# MAGIC     workflow.add_conditional_edges(
+# MAGIC         "sql_synthesis_genie",
+# MAGIC         route_after_synthesis,
+# MAGIC         {
+# MAGIC             "sql_execution": "sql_execution",
+# MAGIC             "summarize": "summarize"
+# MAGIC         }
+# MAGIC     )
+# MAGIC     
+# MAGIC     # SQL execution always goes to summarize
+# MAGIC     workflow.add_edge("sql_execution", "summarize")
+# MAGIC     
+# MAGIC     # Summarize is the final node before END
+# MAGIC     workflow.add_edge("summarize", END)
+# MAGIC     
+# MAGIC     # NOTE: Workflow compiled WITHOUT checkpointer here
+# MAGIC     # Checkpointer will be added at runtime in SuperAgentHybridResponsesAgent
+# MAGIC     # This allows distributed Model Serving with CheckpointSaver
+# MAGIC     app_graph = workflow
+# MAGIC     
+# MAGIC     print("✓ Workflow nodes added:")
+# MAGIC     print("  1. Unified Intent+Context+Clarification Node (SIMPLIFIED - self-contained)")
+# MAGIC     print("  2. Planning Agent (OOP)")
+# MAGIC     print("  3. SQL Synthesis Agent - Table Route (OOP)")
+# MAGIC     print("  4. SQL Synthesis Agent - Genie Route (OOP)")
+# MAGIC     print("  5. SQL Execution Agent (OOP)")
+# MAGIC     print("  6. Result Summarize Agent (OOP) - FINAL NODE")
+# MAGIC     print("\n✓ Single LLM call for intent + context + clarity (faster, cheaper)")
+# MAGIC     print("✓ Smart clarification rate limiting (1 per 5 turns, sliding window)")
+# MAGIC     print("✓ Self-contained implementation (no external imports)")
+# MAGIC     print("✓ Conditional routing configured")
+# MAGIC     print("✓ All paths route to summarize node before END")
+# MAGIC     print("✓ Checkpointer will be added at runtime (distributed serving)")
+# MAGIC     print("\n✅ Simplified Hybrid Super Agent workflow created successfully!")
+# MAGIC     print("="*80)
+# MAGIC     
+# MAGIC     return app_graph
+# MAGIC
+# MAGIC # Create the Hybrid Super Agent
+# MAGIC super_agent_hybrid = create_super_agent_hybrid()
+# MAGIC class SuperAgentHybridResponsesAgent(ResponsesAgent):
+# MAGIC     """
+# MAGIC     Enhanced ResponsesAgent with both short-term and long-term memory for distributed Model Serving.
+# MAGIC     
+# MAGIC     Features:
+# MAGIC     - Short-term memory (CheckpointSaver): Multi-turn conversations within a session
+# MAGIC     - Long-term memory (DatabricksStore): User preferences across sessions with semantic search
+# MAGIC     - Connection pooling and automatic credential rotation
+# MAGIC     - Works seamlessly in distributed Model Serving (multiple instances)
+# MAGIC     
+# MAGIC     Memory Architecture:
+# MAGIC     - Short-term: Stored per thread_id in Lakebase checkpoints table
+# MAGIC     - Long-term: Stored per user_id in Lakebase store table with vector embeddings
+# MAGIC     """
+# MAGIC     
+# MAGIC     def __init__(self, workflow: StateGraph):
+# MAGIC         """
+# MAGIC         Initialize the ResponsesAgent wrapper.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             workflow: The uncompiled LangGraph StateGraph workflow
+# MAGIC         """
+# MAGIC         self.workflow = workflow
+# MAGIC         self.lakebase_instance_name = LAKEBASE_INSTANCE_NAME
+# MAGIC         self._store = None
+# MAGIC         self._memory_tools = None
+# MAGIC         print("✓ SuperAgentHybridResponsesAgent initialized with memory support")
+# MAGIC     
+# MAGIC     @property
+# MAGIC     def store(self):
+# MAGIC         """Lazy initialization of DatabricksStore for long-term memory."""
+# MAGIC         if self._store is None:
+# MAGIC             logger.info(f"Initializing DatabricksStore with instance: {self.lakebase_instance_name}")
+# MAGIC             self._store = DatabricksStore(
+# MAGIC                 instance_name=self.lakebase_instance_name,
+# MAGIC                 embedding_endpoint=EMBEDDING_ENDPOINT,
+# MAGIC                 embedding_dims=EMBEDDING_DIMS,
+# MAGIC             )
+# MAGIC             self._store.setup()  # Creates store table if not exists
+# MAGIC             logger.info("✓ DatabricksStore initialized")
+# MAGIC         return self._store
+# MAGIC     
+# MAGIC     @property
+# MAGIC     def memory_tools(self):
+# MAGIC         """Create memory tools for long-term memory access."""
+# MAGIC         if self._memory_tools is None:
+# MAGIC             logger.info("Creating memory tools for long-term memory")
+# MAGIC             
+# MAGIC             @tool
+# MAGIC             def get_user_memory(query: str, config: RunnableConfig) -> str:
+# MAGIC                 """Search for relevant user information using semantic search.
+# MAGIC                 
+# MAGIC                 Use this tool to retrieve previously saved information about the user,
+# MAGIC                 such as their preferences, facts they've shared, or other personal details.
+# MAGIC                 
+# MAGIC                 Args:
+# MAGIC                     query: The search query to find relevant memories
+# MAGIC                     config: Runtime configuration containing user_id
+# MAGIC                 """
+# MAGIC                 user_id = config.get("configurable", {}).get("user_id")
+# MAGIC                 if not user_id:
+# MAGIC                     return "Memory not available - no user_id provided."
+# MAGIC                 
+# MAGIC                 namespace = ("user_memories", user_id.replace(".", "-"))
+# MAGIC                 results = self.store.search(namespace, query=query, limit=5)
+# MAGIC                 
+# MAGIC                 if not results:
+# MAGIC                     return "No memories found for this user."
+# MAGIC                 
+# MAGIC                 memory_items = [f"- [{item.key}]: {json.dumps(item.value)}" for item in results]
+# MAGIC                 return f"Found {len(results)} relevant memories (ranked by similarity):\n" + "\n".join(memory_items)
+# MAGIC             
+# MAGIC             @tool
+# MAGIC             def save_user_memory(memory_key: str, memory_data_json: str, config: RunnableConfig) -> str:
+# MAGIC                 """Save information about the user to long-term memory.
+# MAGIC                 
+# MAGIC                 Use this tool to remember important information the user shares,
+# MAGIC                 such as preferences, facts, or other personal details.
+# MAGIC                 
+# MAGIC                 Args:
+# MAGIC                     memory_key: A descriptive key for this memory (e.g., "preferences", "favorite_visualization")
+# MAGIC                     memory_data_json: JSON string with the information to remember. 
+# MAGIC                         Example: '{"preferred_chart_type": "bar", "default_spaces": ["patient_data"]}'
+# MAGIC                     config: Runtime configuration containing user_id
+# MAGIC                 """
+# MAGIC                 user_id = config.get("configurable", {}).get("user_id")
+# MAGIC                 if not user_id:
+# MAGIC                     return "Cannot save memory - no user_id provided."
+# MAGIC                 
+# MAGIC                 namespace = ("user_memories", user_id.replace(".", "-"))
+# MAGIC                 
+# MAGIC                 try:
+# MAGIC                     memory_data = json.loads(memory_data_json)
+# MAGIC                     if not isinstance(memory_data, dict):
+# MAGIC                         return f"Failed: memory_data must be a JSON object, not {type(memory_data).__name__}"
+# MAGIC                     self.store.put(namespace, memory_key, memory_data)
+# MAGIC                     return f"Successfully saved memory with key '{memory_key}' for user"
+# MAGIC                 except json.JSONDecodeError as e:
+# MAGIC                     return f"Failed to save memory: Invalid JSON format - {str(e)}"
+# MAGIC             
+# MAGIC             @tool
+# MAGIC             def delete_user_memory(memory_key: str, config: RunnableConfig) -> str:
+# MAGIC                 """Delete a specific memory from the user's long-term memory.
+# MAGIC                 
+# MAGIC                 Use this when the user asks you to forget something or remove
+# MAGIC                 a piece of information from their memory.
+# MAGIC                 
+# MAGIC                 Args:
+# MAGIC                     memory_key: The key of the memory to delete
+# MAGIC                     config: Runtime configuration containing user_id
+# MAGIC                 """
+# MAGIC                 user_id = config.get("configurable", {}).get("user_id")
+# MAGIC                 if not user_id:
+# MAGIC                     return "Cannot delete memory - no user_id provided."
+# MAGIC                 
+# MAGIC                 namespace = ("user_memories", user_id.replace(".", "-"))
+# MAGIC                 self.store.delete(namespace, memory_key)
+# MAGIC                 return f"Successfully deleted memory with key '{memory_key}' for user"
+# MAGIC             
+# MAGIC             self._memory_tools = [get_user_memory, save_user_memory, delete_user_memory]
+# MAGIC             logger.info(f"✓ Created {len(self._memory_tools)} memory tools")
+# MAGIC         
+# MAGIC         return self._memory_tools
+# MAGIC     
+# MAGIC     def _get_or_create_thread_id(self, request: ResponsesAgentRequest) -> str:
+# MAGIC         """Get thread_id from request or create a new one.
+# MAGIC         
+# MAGIC         Priority:
+# MAGIC         1. Use thread_id from custom_inputs if present
+# MAGIC         2. Use conversation_id from chat context if available
+# MAGIC         3. Generate a new UUID
+# MAGIC         """
+# MAGIC         ci = dict(request.custom_inputs or {})
+# MAGIC         
+# MAGIC         if "thread_id" in ci:
+# MAGIC             return ci["thread_id"]
+# MAGIC         
+# MAGIC         # Use conversation_id from ChatContext as thread_id
+# MAGIC         if request.context and getattr(request.context, "conversation_id", None):
+# MAGIC             return request.context.conversation_id
+# MAGIC         
+# MAGIC         # Generate new thread_id
+# MAGIC         return str(uuid4())
+# MAGIC     
+# MAGIC     def _get_user_id(self, request: ResponsesAgentRequest) -> Optional[str]:
+# MAGIC         """Extract user_id from request context.
+# MAGIC         
+# MAGIC         Priority:
+# MAGIC         1. Use user_id from chat context (preferred for Model Serving)
+# MAGIC         2. Use user_id from custom_inputs
+# MAGIC         """
+# MAGIC         if request.context and getattr(request.context, "user_id", None):
+# MAGIC             return request.context.user_id
+# MAGIC         
+# MAGIC         if request.custom_inputs and "user_id" in request.custom_inputs:
+# MAGIC             return request.custom_inputs["user_id"]
+# MAGIC         
+# MAGIC         return None
+# MAGIC     
+# MAGIC     def make_json_serializable(self, obj):
+# MAGIC         """
+# MAGIC         Convert LangChain objects and other non-serializable objects to JSON-serializable format.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             obj: Object to convert
+# MAGIC             
+# MAGIC         Returns:
+# MAGIC             JSON-serializable version of the object
+# MAGIC         """
+# MAGIC         from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, SystemMessage, ToolMessage, AIMessageChunk
+# MAGIC         from uuid import UUID
+# MAGIC         
+# MAGIC         # Handle None
+# MAGIC         if obj is None:
+# MAGIC             return None
+# MAGIC         
+# MAGIC         # Handle UUID objects
+# MAGIC         if isinstance(obj, UUID):
+# MAGIC             return str(obj)
+# MAGIC         
+# MAGIC         # Handle bytes
+# MAGIC         if isinstance(obj, bytes):
+# MAGIC             try:
+# MAGIC                 return obj.decode('utf-8', errors='ignore')
+# MAGIC             except:
+# MAGIC                 return f"<bytes:{len(obj)}>"
+# MAGIC         
+# MAGIC         # Handle set
+# MAGIC         if isinstance(obj, set):
+# MAGIC             return [self.make_json_serializable(item) for item in obj]
+# MAGIC         
+# MAGIC         # Handle LangChain message objects
+# MAGIC         if isinstance(obj, BaseMessage):
+# MAGIC             msg_dict = {
+# MAGIC                 "type": obj.__class__.__name__,
+# MAGIC                 "content": str(obj.content) if obj.content else ""
+# MAGIC             }
+# MAGIC             if hasattr(obj, 'id') and obj.id:
+# MAGIC                 msg_dict["id"] = str(obj.id)
+# MAGIC             if hasattr(obj, 'name') and obj.name:
+# MAGIC                 msg_dict["name"] = obj.name
+# MAGIC             if hasattr(obj, 'tool_calls') and obj.tool_calls:
+# MAGIC                 # Recursively serialize tool calls
+# MAGIC                 msg_dict["tool_calls"] = [
+# MAGIC                     self.make_json_serializable(tc) for tc in obj.tool_calls[:2]
+# MAGIC                 ]  # Limit to 2 for brevity
+# MAGIC             return msg_dict
+# MAGIC         
+# MAGIC         # Handle dictionaries recursively
+# MAGIC         if isinstance(obj, dict):
+# MAGIC             return {str(k): self.make_json_serializable(v) for k, v in obj.items()}
+# MAGIC         
+# MAGIC         # Handle lists and tuples recursively
+# MAGIC         if isinstance(obj, (list, tuple)):
+# MAGIC             return [self.make_json_serializable(item) for item in obj]
+# MAGIC         
+# MAGIC         # Handle primitives
+# MAGIC         if isinstance(obj, (str, int, float, bool)):
+# MAGIC             return obj
+# MAGIC         
+# MAGIC         # For anything else, convert to string representation
+# MAGIC         try:
+# MAGIC             return str(obj)
+# MAGIC         except Exception:
+# MAGIC             return f"<{type(obj).__name__}>"
+# MAGIC     
+# MAGIC     def format_custom_event(self, custom_data: dict) -> str:
+# MAGIC         """
+# MAGIC         Format custom streaming events for user-friendly display.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             custom_data: Dictionary containing custom event data with 'type' key
+# MAGIC             
+# MAGIC         Returns:
+# MAGIC             Formatted string with emoji and readable event description
+# MAGIC         """
+# MAGIC         event_type = custom_data.get("type", "unknown")
+# MAGIC         
+# MAGIC         formatters = {
+# MAGIC             # Existing formatters
+# MAGIC             "agent_thinking": lambda d: f"💭 {d['agent'].upper()}: {d['content']}",
+# MAGIC             "agent_start": lambda d: f"🚀 Starting {d['agent']} agent for: {d.get('query', '')[:50]}...",
+# MAGIC             "intent_detection": lambda d: f"🎯 Intent: {d['result']} - {d.get('reasoning', '')}",
+# MAGIC             "clarity_analysis": lambda d: f"✓ Query {'clear' if d['clear'] else 'unclear'}: {d.get('reasoning', '')}",
+# MAGIC             "vector_search_start": lambda d: f"🔍 Searching vector index: {d['index']}",
+# MAGIC             "vector_search_results": lambda d: f"📊 Found {d['count']} relevant spaces: {[s.get('space_id', 'unknown') for s in d.get('spaces', [])]}",
+# MAGIC             "plan_formulation": lambda d: f"📋 Execution plan: {d.get('strategy', 'unknown')} strategy",
+# MAGIC             "uc_function_call": lambda d: f"🔧 Calling UC function: {d['function']}",
+# MAGIC             "sql_generated": lambda d: f"📝 SQL generated: {d.get('query_preview', '')}...",
+# MAGIC             "sql_validation_start": lambda d: f"✅ Validating SQL query...",
+# MAGIC             "sql_execution_start": lambda d: f"⚡ Executing SQL query...",
+# MAGIC             "sql_execution_complete": lambda d: f"✓ Query complete: {d.get('rows', 0)} rows, {len(d.get('columns', []))} columns",
+# MAGIC             "summary_start": lambda d: f"📄 Generating summary...",
+# MAGIC             "genie_agent_call": lambda d: f"🤖 Calling Genie agent for space: {d.get('space_id', 'unknown')}",
+# MAGIC             
+# MAGIC             # New clean streaming formatters
+# MAGIC             "llm_streaming_start": lambda d: f"🤖 Streaming response from {d.get('agent', 'LLM')}...",
+# MAGIC             "llm_token": lambda d: d.get('content', ''),  # Just the token content, no decoration
+# MAGIC             "intent_detected": lambda d: f"\n🎯 Intent: {d.get('intent_type', 'unknown')} (confidence: {d.get('confidence', 0):.0%})",
+# MAGIC             "meta_question_detected": lambda d: f"\n💡 Meta-question detected",
+# MAGIC             "clarification_requested": lambda d: f"\n❓ Clarification needed: {d.get('reason', 'unknown')}",
+# MAGIC             "clarification_skipped": lambda d: f"\n⏭️ Clarification skipped: {d.get('reason', 'unknown')}",
+# MAGIC             "agent_step": lambda d: f"\n📍 {d.get('agent', 'agent').upper()}: {d.get('content', d.get('step', 'processing'))}",
+# MAGIC             "agent_result": lambda d: f"\n✅ {d.get('agent', 'agent').upper()}: {d.get('result', 'completed')} - {d.get('content', '')}",
+# MAGIC             "sql_synthesis_start": lambda d: f"\n🔧 Starting SQL synthesis via {d.get('route', 'unknown')} route for {len(d.get('spaces', []))} space(s)",
+# MAGIC             "tools_available": lambda d: f"\n🛠️ Tools ready: {', '.join(d.get('tools', []))}",
+# MAGIC             "summary_complete": lambda d: f"\n✅ Summary complete",
+# MAGIC             
+# MAGIC             # Markdown content formatters - return content directly for UI display
+# MAGIC             "meta_answer_content": lambda d: f"\n\n{d.get('content', '')}",
+# MAGIC             "clarification_content": lambda d: f"\n\n{d.get('content', '')}",
+# MAGIC         }
+# MAGIC         
+# MAGIC         # Bulletproof JSON fallback handler
+# MAGIC         def json_fallback(obj):
+# MAGIC             """Final fallback for json.dumps() - converts anything to string."""
+# MAGIC             try:
+# MAGIC                 return str(obj)
+# MAGIC             except:
+# MAGIC                 return f"<{type(obj).__name__}>"
+# MAGIC         
+# MAGIC         # Fallback formatter now uses make_json_serializable with json_fallback
+# MAGIC         formatter = formatters.get(
+# MAGIC             event_type,
+# MAGIC             lambda d: f"ℹ️ {event_type}: {json.dumps(self.make_json_serializable(d), indent=2, default=json_fallback)}"
+# MAGIC         )
+# MAGIC         
+# MAGIC         try:
+# MAGIC             return formatter(custom_data)
+# MAGIC         except Exception as e:
+# MAGIC             logger.warning(f"Error formatting custom event {event_type}: {e}")
+# MAGIC             # Enhanced error handling with serialization fallback
+# MAGIC             try:
+# MAGIC                 serialized = self.make_json_serializable(custom_data)
+# MAGIC                 return f"ℹ️ {event_type}: {json.dumps(serialized, indent=2, default=json_fallback)}"
+# MAGIC             except Exception as e2:
+# MAGIC                 logger.warning(f"Error serializing custom event {event_type}: {e2}")
+# MAGIC                 return f"ℹ️ {event_type}: {str(custom_data)}"
+# MAGIC     
+# MAGIC     def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
+# MAGIC         """
+# MAGIC         Make a prediction (non-streaming).
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             request: The request containing input messages
+# MAGIC             
+# MAGIC         Returns:
+# MAGIC             ResponsesAgentResponse with output items
+# MAGIC         """
+# MAGIC         outputs = [
+# MAGIC             event.item
+# MAGIC             for event in self.predict_stream(request)
+# MAGIC             if event.type == "response.output_item.done"
+# MAGIC         ]
+# MAGIC         return ResponsesAgentResponse(output=outputs, custom_outputs=request.custom_inputs)
+# MAGIC     
+# MAGIC     def predict_stream(
+# MAGIC         self,
+# MAGIC         request: ResponsesAgentRequest,
+# MAGIC     ) -> Generator[ResponsesAgentStreamEvent, None, None]:
+# MAGIC         """
+# MAGIC         Make a streaming prediction with both short-term and long-term memory.
+# MAGIC         
+# MAGIC         SIMPLIFIED API: All conversation turns use the same simple format.
+# MAGIC         The agent auto-detects clarification responses and follow-ups from message history.
+# MAGIC         
+# MAGIC         Memory Systems:
+# MAGIC         - Short-term (CheckpointSaver): Preserves conversation state across distributed instances
+# MAGIC         - Long-term (DatabricksStore): User preferences accessible via memory tools
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             request: The request containing:
+# MAGIC                 - input: List of messages (user query is the last message)
+# MAGIC                 - context.conversation_id: Used as thread_id (preferred)
+# MAGIC                 - context.user_id: Used for long-term memory (preferred)
+# MAGIC                 - custom_inputs: Dict with optional keys:
+# MAGIC                     - thread_id (str): Thread identifier override
+# MAGIC                     - user_id (str): User identifier override
+# MAGIC             
+# MAGIC         Yields:
+# MAGIC             ResponsesAgentStreamEvent for each step in the workflow
+# MAGIC             
+# MAGIC         Usage in Model Serving (ALL scenarios use same format):
+# MAGIC             # First query in a conversation
+# MAGIC             POST /invocations
+# MAGIC             {
+# MAGIC                 "messages": [{"role": "user", "content": "Show me patient data"}],
+# MAGIC                 "context": {
+# MAGIC                     "conversation_id": "session_001",
+# MAGIC                     "user_id": "user@example.com"
+# MAGIC                 }
+# MAGIC             }
+# MAGIC             
+# MAGIC             # Clarification response (SIMPLIFIED - auto-detected!)
+# MAGIC             POST /invocations
+# MAGIC             {
+# MAGIC                 "messages": [{"role": "user", "content": "Patient count by age group"}],
+# MAGIC                 "context": {
+# MAGIC                     "conversation_id": "session_001",  # Same thread_id
+# MAGIC                     "user_id": "user@example.com"
+# MAGIC                 }
+# MAGIC             }
+# MAGIC             
+# MAGIC             # Follow-up query (agent remembers context automatically)
+# MAGIC             POST /invocations
+# MAGIC             {
+# MAGIC                 "messages": [{"role": "user", "content": "Now show by gender"}],
+# MAGIC                 "context": {
+# MAGIC                     "conversation_id": "session_001",  # Same thread_id
+# MAGIC                     "user_id": "user@example.com"
+# MAGIC                 }
+# MAGIC             }
+# MAGIC         """
+# MAGIC         # Get identifiers
+# MAGIC         thread_id = self._get_or_create_thread_id(request)
+# MAGIC         user_id = self._get_user_id(request)
+# MAGIC         
+# MAGIC         # Update custom_inputs with resolved identifiers
+# MAGIC         ci = dict(request.custom_inputs or {})
+# MAGIC         ci["thread_id"] = thread_id
+# MAGIC         if user_id:
+# MAGIC             ci["user_id"] = user_id
+# MAGIC         request.custom_inputs = ci
+# MAGIC         
+# MAGIC         logger.info(f"Processing request - thread_id: {thread_id}, user_id: {user_id}")
+# MAGIC         
+# MAGIC         # PHASE 3 OPTIMIZATION: Track workflow timing (TTFT and TTCL)
+# MAGIC         workflow_start_time = time.time()
+# MAGIC         first_token_time = None
+# MAGIC         _performance_metrics["workflow_metrics"]["total_requests"] += 1
+# MAGIC         
+# MAGIC         # Ensure MLflow tracing doesn't cause issues in streaming context
+# MAGIC         # This safeguard prevents NonRecordingSpan context attribute errors
+# MAGIC         try:
+# MAGIC             import mlflow.tracing
+# MAGIC             # Verify tracing is properly initialized, otherwise disable to prevent errors
+# MAGIC             if not hasattr(mlflow.tracing, '_is_enabled') or not mlflow.tracing._is_enabled():
+# MAGIC                 logger.debug("MLflow tracing not enabled, continuing without tracing")
+# MAGIC         except Exception as e:
+# MAGIC             logger.debug(f"MLflow tracing check skipped: {e}")
+# MAGIC         
+# MAGIC         # Convert request input to chat completions format
+# MAGIC         cc_msgs = to_chat_completions_input([i.model_dump() for i in request.input])
+# MAGIC         
+# MAGIC         # Get the latest user message
+# MAGIC         latest_query = cc_msgs[-1]["content"] if cc_msgs else ""
+# MAGIC         
+# MAGIC         # Configure runtime with thread_id and user_id
+# MAGIC         run_config = {"configurable": {"thread_id": thread_id}}
+# MAGIC         if user_id:
+# MAGIC             run_config["configurable"]["user_id"] = user_id
+# MAGIC         
+# MAGIC         # SIMPLIFIED: Unified state initialization for all scenarios
+# MAGIC         # CheckpointSaver will restore previous conversation context automatically
+# MAGIC         # The intent_detection_node runs first and creates current_turn
+# MAGIC         initial_state = {
+# MAGIC             **RESET_STATE_TEMPLATE,  # Reset all per-query execution fields
+# MAGIC             "original_query": latest_query,
+# MAGIC             "messages": [
+# MAGIC                 SystemMessage(content="""You are a multi-agent Q&A analysis system.
+# MAGIC Your role is to help users query and analyze cross-domain data.
+# MAGIC
+# MAGIC Guidelines:
+# MAGIC - Always explain your reasoning and execution plan
+# MAGIC - Validate SQL queries before execution
+# MAGIC - Provide clear, comprehensive summaries
+# MAGIC - If information is missing, ask for clarification (max once)
+# MAGIC - Use UC functions and Genie agents to generate accurate SQL
+# MAGIC - Return results with proper context and explanations"""),
+# MAGIC                 HumanMessage(content=latest_query)
+# MAGIC             ]
+# MAGIC             # NOTE: current_turn, intent_metadata, turn_history are NOT in RESET_STATE_TEMPLATE
+# MAGIC             # They are managed by unified_intent_context_clarification_node and persist via CheckpointSaver
+# MAGIC         }
+# MAGIC         
+# MAGIC         # Add user_id to state for long-term memory access
+# MAGIC         if user_id:
+# MAGIC             initial_state["user_id"] = user_id
+# MAGIC             initial_state["thread_id"] = thread_id
+# MAGIC         
+# MAGIC         first_message = True
+# MAGIC         seen_ids = set()
+# MAGIC         
+# MAGIC         # Execute workflow with CheckpointSaver for distributed serving
+# MAGIC         # CRITICAL: CheckpointSaver as context manager ensures all instances share state
+# MAGIC         with CheckpointSaver(instance_name=self.lakebase_instance_name) as checkpointer:
+# MAGIC             # Compile graph with checkpointer at runtime
+# MAGIC             # This allows distributed Model Serving to access shared state
+# MAGIC             app = self.workflow.compile(checkpointer=checkpointer)
+# MAGIC             
+# MAGIC             logger.info(f"Executing workflow with checkpointer (thread: {thread_id})")
+# MAGIC             
+# MAGIC             # Stream the workflow execution with enhanced visibility modes
+# MAGIC             # CheckpointSaver will:
+# MAGIC             # 1. Restore previous state from thread_id (if exists) from Lakebase
+# MAGIC             # 2. Merge with initial_state (initial_state takes precedence)
+# MAGIC             # 3. Preserve conversation history across distributed instances
+# MAGIC             # Stream modes:
+# MAGIC             # - updates: State changes after each node
+# MAGIC             # - messages: LLM token-by-token streaming
+# MAGIC             # - custom: Agent-specific events (thinking, decisions, progress)
+# MAGIC             # - tasks: Task lifecycle events (start, finish, errors) for node execution tracking
+# MAGIC             for event in app.stream(initial_state, run_config, stream_mode=["updates", "messages", "custom", "tasks"]):
+# MAGIC                 event_type = event[0]
+# MAGIC                 event_data = event[1]
+# MAGIC                 
+# MAGIC                 # Handle streaming text deltas (messages mode)
+# MAGIC                 if event_type == "messages":
+# MAGIC                     try:
+# MAGIC                         # Extract the message chunk
+# MAGIC                         chunk = event_data[0] if isinstance(event_data, (list, tuple)) else event_data
+# MAGIC                         
+# MAGIC                         # Stream text content as deltas for real-time visibility in Playground
+# MAGIC                         if isinstance(chunk, AIMessageChunk) and (content := chunk.content):
+# MAGIC                             # PHASE 3: Track TTFT (Time To First Token)
+# MAGIC                             if first_token_time is None:
+# MAGIC                                 first_token_time = time.time()
+# MAGIC                                 ttft = first_token_time - workflow_start_time
+# MAGIC                                 _performance_metrics["workflow_metrics"]["ttft_seconds"].append(ttft)
+# MAGIC                                 logger.info(f"⚡ TTFT: {ttft:.3f}s")
+# MAGIC                             
+# MAGIC                             yield ResponsesAgentStreamEvent(
+# MAGIC                                 **self.create_text_delta(delta=content, item_id=chunk.id),
+# MAGIC                             )
+# MAGIC                     except Exception as e:
+# MAGIC                         logger.warning(f"Error processing message chunk: {e}")
+# MAGIC                 
+# MAGIC                 # Handle node updates (updates mode)
+# MAGIC                 elif event_type == "updates":
+# MAGIC                     events = event_data
+# MAGIC                     new_msgs = [
+# MAGIC                         msg
+# MAGIC                         for v in events.values()
+# MAGIC                         for msg in v.get("messages", [])
+# MAGIC                         if hasattr(msg, 'id') and msg.id not in seen_ids
+# MAGIC                     ]
+# MAGIC                     
+# MAGIC                     if first_message:
+# MAGIC                         seen_ids.update(msg.id for msg in new_msgs[: len(cc_msgs)])
+# MAGIC                         new_msgs = new_msgs[len(cc_msgs) :]
+# MAGIC                         first_message = False
+# MAGIC                     else:
+# MAGIC                         seen_ids.update(msg.id for msg in new_msgs)
+# MAGIC                         # Emit node name as a step indicator with enhanced details
+# MAGIC                         if events:
+# MAGIC                             node_name = tuple(events.keys())[0]
+# MAGIC                             node_update = events[node_name]
+# MAGIC                             updated_keys = [k for k in node_update.keys() if k != "messages"]
+# MAGIC                             
+# MAGIC                             # Enhanced step indicator with state keys
+# MAGIC                             step_text = f"🔹 Step: {node_name}"
+# MAGIC                             if updated_keys:
+# MAGIC                                 step_text += f" | Keys updated: {', '.join(updated_keys)}"
+# MAGIC                             
+# MAGIC                             yield ResponsesAgentStreamEvent(
+# MAGIC                                 type="response.output_item.done",
+# MAGIC                                 item=self.create_text_output_item(
+# MAGIC                                     text=step_text, id=str(uuid4())
+# MAGIC                                 ),
+# MAGIC                             )
+# MAGIC                             
+# MAGIC                             # Emit routing decision if next_agent changed
+# MAGIC                             if "next_agent" in node_update:
+# MAGIC                                 next_agent = node_update["next_agent"]
+# MAGIC                                 yield ResponsesAgentStreamEvent(
+# MAGIC                                     type="response.output_item.done",
+# MAGIC                                     item=self.create_text_output_item(
+# MAGIC                                         text=f"🔀 Routing decision: Next agent = {next_agent}",
+# MAGIC                                         id=str(uuid4())
+# MAGIC                                     ),
+# MAGIC                                 )
+# MAGIC                     
+# MAGIC                     # Process messages for tool calls, tool results, and final text
+# MAGIC                     for msg in new_msgs:
+# MAGIC                         # Check if message has tool calls
+# MAGIC                         if hasattr(msg, 'tool_calls') and msg.tool_calls:
+# MAGIC                             # Emit function call items for tool invocations
+# MAGIC                             for tool_call in msg.tool_calls:
+# MAGIC                                 try:
+# MAGIC                                     yield ResponsesAgentStreamEvent(
+# MAGIC                                         type="response.output_item.done",
+# MAGIC                                         item=self.create_function_call_item(
+# MAGIC                                             id=str(uuid4()),
+# MAGIC                                             call_id=tool_call.get("id", str(uuid4())),
+# MAGIC                                             name=tool_call.get("name", "unknown"),
+# MAGIC                                             arguments=json.dumps(tool_call.get("args", {})),
+# MAGIC                                         ),
+# MAGIC                                     )
+# MAGIC                                 except Exception as e:
+# MAGIC                                     logger.warning(f"Error emitting tool call: {e}")
+# MAGIC                         # Handle ToolMessage for tool results
+# MAGIC                         elif hasattr(msg, '__class__') and msg.__class__.__name__ == 'ToolMessage':
+# MAGIC                             try:
+# MAGIC                                 tool_name = getattr(msg, 'name', 'unknown')
+# MAGIC                                 tool_content = str(msg.content)[:200] if msg.content else "No content"
+# MAGIC                                 yield ResponsesAgentStreamEvent(
+# MAGIC                                     type="response.output_item.done",
+# MAGIC                                     item=self.create_text_output_item(
+# MAGIC                                         text=f"🔨 Tool result ({tool_name}): {tool_content}...",
+# MAGIC                                         id=str(uuid4())
+# MAGIC                                     ),
+# MAGIC                                 )
+# MAGIC                             except Exception as e:
+# MAGIC                                 logger.warning(f"Error emitting tool result: {e}")
+# MAGIC                         else:
+# MAGIC                             # Emit regular message content
+# MAGIC                             yield from output_to_responses_items_stream([msg])
+# MAGIC                 
+# MAGIC                 # Handle custom mode (agent-specific events)
+# MAGIC                 elif event_type == "custom":
+# MAGIC                     try:
+# MAGIC                         custom_data = event_data
+# MAGIC                         formatted_text = self.format_custom_event(custom_data)
+# MAGIC                         yield ResponsesAgentStreamEvent(
+# MAGIC                             type="response.output_item.done",
+# MAGIC                             item=self.create_text_output_item(
+# MAGIC                                 text=formatted_text,
+# MAGIC                                 id=str(uuid4())
+# MAGIC                             ),
+# MAGIC                         )
+# MAGIC                     except Exception as e:
+# MAGIC                         logger.warning(f"Error processing custom event: {e}")
+# MAGIC                 
+# MAGIC                 # Handle tasks mode (node lifecycle events)
+# MAGIC                 elif event_type == "tasks":
+# MAGIC                     try:
+# MAGIC                         task_event = event_data
+# MAGIC                         # Task events include: 'event' (start/finish/error), 'name', 'node', 'timestamp', etc.
+# MAGIC                         event_name = task_event.get("event", "unknown")
+# MAGIC                         node_name = task_event.get("name", "unknown")
+# MAGIC                         
+# MAGIC                         if event_name == "start":
+# MAGIC                             # Task started
+# MAGIC                             logger.debug(f"⏳ Task started: {node_name}")
+# MAGIC                             # Optionally emit to UI:
+# MAGIC                             # yield ResponsesAgentStreamEvent(
+# MAGIC                             #     type="response.output_item.done",
+# MAGIC                             #     item=self.create_text_output_item(
+# MAGIC                             #         text=f"⏳ Starting: {node_name}",
+# MAGIC                             #         id=str(uuid4())
+# MAGIC                             #     ),
+# MAGIC                             # )
+# MAGIC                         
+# MAGIC                         elif event_name == "end":
+# MAGIC                             # Task completed successfully
+# MAGIC                             duration = task_event.get("duration")
+# MAGIC                             if duration:
+# MAGIC                                 logger.info(f"✅ Task completed: {node_name} ({duration:.3f}s)")
+# MAGIC                                 # Track node execution times for performance metrics
+# MAGIC                                 if "node_timings" not in _performance_metrics["workflow_metrics"]:
+# MAGIC                                     _performance_metrics["workflow_metrics"]["node_timings"] = {}
+# MAGIC                                 _performance_metrics["workflow_metrics"]["node_timings"][node_name] = duration
+# MAGIC                             else:
+# MAGIC                                 logger.info(f"✅ Task completed: {node_name}")
+# MAGIC                         
+# MAGIC                         elif event_name == "error":
+# MAGIC                             # Task failed with error
+# MAGIC                             error = task_event.get("error", "Unknown error")
+# MAGIC                             logger.error(f"❌ Task failed: {node_name} - {error}")
+# MAGIC                             # Emit error to UI
+# MAGIC                             yield ResponsesAgentStreamEvent(
+# MAGIC                                 type="response.output_item.done",
+# MAGIC                                 item=self.create_text_output_item(
+# MAGIC                                     text=f"❌ Error in {node_name}: {error}",
+# MAGIC                                     id=str(uuid4())
+# MAGIC                                 ),
+# MAGIC                             )
+# MAGIC                     
+# MAGIC                     except Exception as e:
+# MAGIC                         logger.warning(f"Error processing task event: {e}")
+# MAGIC         
+# MAGIC         # PHASE 3: Track TTCL (Time To Completion)
+# MAGIC         workflow_end_time = time.time()
+# MAGIC         ttcl = workflow_end_time - workflow_start_time
+# MAGIC         _performance_metrics["workflow_metrics"]["ttcl_seconds"].append(ttcl)
+# MAGIC         
+# MAGIC         logger.info(f"Workflow execution completed (thread: {thread_id})")
+# MAGIC         logger.info(f"⏱️  Performance: TTFT={first_token_time - workflow_start_time if first_token_time else 'N/A'}s, TTCL={ttcl:.3f}s")
+# MAGIC
+# MAGIC
+# MAGIC # Create the deployable agent
+# MAGIC AGENT = SuperAgentHybridResponsesAgent(super_agent_hybrid)
+# MAGIC
+# MAGIC print("\n" + "="*80)
+# MAGIC print("✅ HYBRID SUPER AGENT RESPONSES AGENT CREATED")
+# MAGIC print("="*80)
+# MAGIC print("Architecture: OOP Agents + Explicit State Management")
+# MAGIC print("Benefits:")
+# MAGIC print("  ✓ Modular and testable agent classes")
+# MAGIC print("  ✓ Full state observability for debugging")
+# MAGIC print("  ✓ Production-ready with development-friendly design")
+# MAGIC print("\nThis agent is now ready for:")
+# MAGIC print("  1. Local testing with AGENT.predict()")
+# MAGIC print("  2. Logging with mlflow.pyfunc.log_model()")
+# MAGIC print("  3. Deployment to Databricks Model Serving")
+# MAGIC print("\nMemory Features:")
+# MAGIC print("  ✓ Short-term memory: Multi-turn conversations (CheckpointSaver)")
+# MAGIC print("  ✓ Long-term memory: User preferences (DatabricksStore)")
+# MAGIC print("  ✓ Works in distributed Model Serving (shared state via Lakebase)")
+# MAGIC print("="*80)
+# MAGIC print("\n🎉 Enhanced Granular Streaming Features:")
+# MAGIC print("  ✓ Agent thinking and reasoning visibility")
+# MAGIC print("  ✓ Intent detection (new question vs follow-up)")
+# MAGIC print("  ✓ Clarity analysis with reasoning")
+# MAGIC print("  ✓ Vector search progress and results")
+# MAGIC print("  ✓ Execution plan formulation")
+# MAGIC print("  ✓ UC function calls and Genie agent invocations")
+# MAGIC print("  ✓ SQL generation progress")
+# MAGIC print("  ✓ SQL validation and execution progress")
+# MAGIC print("  ✓ Tool calls and tool results")
+# MAGIC print("  ✓ Routing decisions between agents")
+# MAGIC print("  ✓ Summary generation progress")
+# MAGIC print("  ✓ Custom events for detailed execution tracking")
+# MAGIC print("  ✓ Task lifecycle monitoring (start/finish/errors)")
+# MAGIC print("  ✓ Per-node execution timing for performance analysis")
+# MAGIC print("="*80)
+# MAGIC
+# MAGIC # Set the agent for MLflow tracking
+# MAGIC # Enable autologging with run_tracer_inline for proper async context propagation
+# MAGIC try:
+# MAGIC     mlflow.langchain.autolog(run_tracer_inline=True)
+# MAGIC     logger.info("✓ MLflow LangChain autologging enabled with async context support")
+# MAGIC except Exception as e:
+# MAGIC     logger.warning(f"⚠️ MLflow autolog initialization failed: {e}")
+# MAGIC     logger.warning("Continuing without MLflow tracing...")
+# MAGIC
+# MAGIC mlflow.models.set_model(AGENT)
 
 # COMMAND ----------
 
@@ -6268,7 +6112,7 @@ resources = [
 
 
 input_example = {
-    "input": [{"role": "user", "content": "Show me patient data"}],
+    "input": [{"role": "user", "content": "How many diabetes patients we have?"}],
     "custom_inputs": {"thread_id": "example-123"},
     "context": {"conversation_id": "sess-001", "user_id": "user@example.com"}
 }
