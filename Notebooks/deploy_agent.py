@@ -22,50 +22,74 @@ Original Super_Agent_hybrid.py (6,833 lines) archived in archive/ for reference.
 
 # COMMAND ----------
 
-# DBTITLE 1,Load Configuration from YAML
-"""
-Load configuration from prod_config.yaml.
+# DBTITLE 1,Initialize ModelConfig and Load Environment Configurati ...
+from mlflow.models import ModelConfig
+import logging
+# Setup logging
+logger = logging.getLogger(__name__)
 
-For deployment, we use YAML configuration which gets packaged with the model.
-For local development, use config.py + .env instead.
-"""
 
-import yaml
-import os
+# Initialize ModelConfig
+# For local development: Uses development_config above
+# For Model Serving: Uses config passed during mlflow.pyfunc.log_model(model_config=...)
+model_config = ModelConfig(development_config="../prod_config.yaml")
 
-# Load prod_config.yaml
-config_path = "../prod_config.yaml"
-with open(config_path, 'r') as f:
-    yaml_config = yaml.safe_load(f)
+logger.info("="*80)
+logger.info("CONFIGURATION LOADED via ModelConfig")
+logger.info("="*80)
 
 # Extract configuration values
-CATALOG = yaml_config['catalog_name']
-SCHEMA = yaml_config['schema_name']
+CATALOG = model_config.get("catalog_name")
+SCHEMA = model_config.get("schema_name")
 TABLE_NAME = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks"
 VECTOR_SEARCH_INDEX = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks_vs_index"
 
 # LLM Endpoints - Diversified by Agent Role
-LLM_ENDPOINT_CLARIFICATION = yaml_config.get('llm_endpoint_clarification', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_PLANNING = yaml_config.get('llm_endpoint_planning', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = yaml_config.get('llm_endpoint_sql_synthesis_table', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = yaml_config.get('llm_endpoint_sql_synthesis_genie', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_EXECUTION = yaml_config.get('llm_endpoint_execution', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_SUMMARIZE = yaml_config.get('llm_endpoint_summarize', yaml_config['llm_endpoint'])
+default_endpoint = model_config.get("llm_endpoint")
+LLM_ENDPOINT_CLARIFICATION = model_config.get("llm_endpoint_clarification") or default_endpoint
+LLM_ENDPOINT_PLANNING = model_config.get("llm_endpoint_planning") or default_endpoint
+LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = model_config.get("llm_endpoint_sql_synthesis_table") or default_endpoint
+LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = model_config.get("llm_endpoint_sql_synthesis_genie") or default_endpoint
+LLM_ENDPOINT_EXECUTION = model_config.get("llm_endpoint_execution") or default_endpoint
+LLM_ENDPOINT_SUMMARIZE = model_config.get("llm_endpoint_summarize") or default_endpoint
 
-# Lakebase configuration
-LAKEBASE_INSTANCE_NAME = yaml_config['lakebase_instance_name']
-EMBEDDING_ENDPOINT = yaml_config['lakebase_embedding_endpoint']
-EMBEDDING_DIMS = yaml_config['lakebase_embedding_dims']
+# Lakebase configuration for state management
+LAKEBASE_INSTANCE_NAME = model_config.get("lakebase_instance_name")
+EMBEDDING_ENDPOINT = model_config.get("lakebase_embedding_endpoint")
+EMBEDDING_DIMS = model_config.get("lakebase_embedding_dims")
 
-# SQL Warehouse
-SQL_WAREHOUSE_ID = yaml_config['sql_warehouse_id']
+# Genie space IDs
+GENIE_SPACE_IDS = model_config.get("genie_space_ids")
 
-# Genie Spaces
-GENIE_SPACE_IDS = yaml_config['genie_space_ids']
+# SQL Warehouse ID (required for SQLExecutionAgent)
+SQL_WAREHOUSE_ID = model_config.get("sql_warehouse_id")
 
-# Validate SQL_WAREHOUSE_ID
+# UC Functions
+UC_FUNCTION_NAMES = [
+    f"{CATALOG}.{SCHEMA}.get_space_summary",
+    f"{CATALOG}.{SCHEMA}.get_table_overview",
+    f"{CATALOG}.{SCHEMA}.get_column_detail",
+    f"{CATALOG}.{SCHEMA}.get_space_instructions",
+    f"{CATALOG}.{SCHEMA}.get_space_details",
+]
+
+logger.info(f"Catalog: {CATALOG}, Schema: {SCHEMA}")
+logger.info(f"Lakebase: {LAKEBASE_INSTANCE_NAME}")
+logger.info(f"Genie Spaces: {len(GENIE_SPACE_IDS)} spaces configured")
+logger.info(f"SQL Warehouse ID: {SQL_WAREHOUSE_ID}")
+
+# Validate SQL_WAREHOUSE_ID is configured
 if not SQL_WAREHOUSE_ID:
-    raise ValueError("SQL_WAREHOUSE_ID must be configured in prod_config.yaml")
+    error_msg = (
+        "SQL_WAREHOUSE_ID is not configured! "
+        "Ensure 'sql_warehouse_id' is set in prod_config.yaml or development_config."
+    )
+    logger.error(error_msg)
+    raise ValueError(error_msg)
+
+logger.info("="*80)
+logger.info(f"Configuration loaded: Catalog={CATALOG}, Schema={SCHEMA}, Lakebase={LAKEBASE_INSTANCE_NAME}")
+
 
 print("="*80)
 print("CONFIGURATION LOADED FROM prod_config.yaml")
@@ -84,6 +108,73 @@ print(f"  SQL Synthesis Genie: {LLM_ENDPOINT_SQL_SYNTHESIS_GENIE}")
 print(f"  Execution: {LLM_ENDPOINT_EXECUTION}")
 print(f"  Summarize: {LLM_ENDPOINT_SUMMARIZE}")
 print("="*80)
+print("✓ All dependencies imported successfully (including memory support)")
+
+
+# COMMAND ----------
+
+# DBTITLE 1,(deprecated syntax) Load Configuration from YAML
+# """
+# Load configuration from prod_config.yaml.
+
+# For deployment, we use YAML configuration which gets packaged with the model.
+# For local development, use config.py + .env instead.
+# """
+
+# import yaml
+# import os
+
+# # Load prod_config.yaml
+# config_path = "../prod_config.yaml"
+# with open(config_path, 'r') as f:
+#     yaml_config = yaml.safe_load(f)
+
+# # Extract configuration values
+# CATALOG = yaml_config['catalog_name']
+# SCHEMA = yaml_config['schema_name']
+# TABLE_NAME = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks"
+# VECTOR_SEARCH_INDEX = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks_vs_index"
+
+# # LLM Endpoints - Diversified by Agent Role
+# LLM_ENDPOINT_CLARIFICATION = yaml_config.get('llm_endpoint_clarification', yaml_config['llm_endpoint'])
+# LLM_ENDPOINT_PLANNING = yaml_config.get('llm_endpoint_planning', yaml_config['llm_endpoint'])
+# LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = yaml_config.get('llm_endpoint_sql_synthesis_table', yaml_config['llm_endpoint'])
+# LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = yaml_config.get('llm_endpoint_sql_synthesis_genie', yaml_config['llm_endpoint'])
+# LLM_ENDPOINT_EXECUTION = yaml_config.get('llm_endpoint_execution', yaml_config['llm_endpoint'])
+# LLM_ENDPOINT_SUMMARIZE = yaml_config.get('llm_endpoint_summarize', yaml_config['llm_endpoint'])
+
+# # Lakebase configuration
+# LAKEBASE_INSTANCE_NAME = yaml_config['lakebase_instance_name']
+# EMBEDDING_ENDPOINT = yaml_config['lakebase_embedding_endpoint']
+# EMBEDDING_DIMS = yaml_config['lakebase_embedding_dims']
+
+# # SQL Warehouse
+# SQL_WAREHOUSE_ID = yaml_config['sql_warehouse_id']
+
+# # Genie Spaces
+# GENIE_SPACE_IDS = yaml_config['genie_space_ids']
+
+# # Validate SQL_WAREHOUSE_ID
+# if not SQL_WAREHOUSE_ID:
+#     raise ValueError("SQL_WAREHOUSE_ID must be configured in prod_config.yaml")
+
+# print("="*80)
+# print("CONFIGURATION LOADED FROM prod_config.yaml")
+# print("="*80)
+# print(f"Catalog: {CATALOG}")
+# print(f"Schema: {SCHEMA}")
+# print(f"Vector Search Index: {VECTOR_SEARCH_INDEX}")
+# print(f"SQL Warehouse ID: {SQL_WAREHOUSE_ID}")
+# print(f"Genie Spaces: {len(GENIE_SPACE_IDS)} spaces")
+# print(f"Lakebase Instance: {LAKEBASE_INSTANCE_NAME}")
+# print("\nLLM Endpoints (Diversified by Agent):")
+# print(f"  Clarification: {LLM_ENDPOINT_CLARIFICATION}")
+# print(f"  Planning: {LLM_ENDPOINT_PLANNING}")
+# print(f"  SQL Synthesis Table: {LLM_ENDPOINT_SQL_SYNTHESIS_TABLE}")
+# print(f"  SQL Synthesis Genie: {LLM_ENDPOINT_SQL_SYNTHESIS_GENIE}")
+# print(f"  Execution: {LLM_ENDPOINT_EXECUTION}")
+# print(f"  Summarize: {LLM_ENDPOINT_SUMMARIZE}")
+# print("="*80)
 
 # COMMAND ----------
 
@@ -95,6 +186,7 @@ The modular code must be uploaded before deployment.
 """
 
 import sys
+import os
 
 # Add src to path
 notebook_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
@@ -262,6 +354,14 @@ All functions use LANGUAGE SQL for better performance and compatibility.
 IMPORTANT: This registration is now centralized in src/multi_agent/tools/uc_functions.py
 and should be called before creating agents.
 """
+from databricks_langchain import (
+    DatabricksFunctionClient,
+    UCFunctionToolkit,
+    set_uc_function_client,
+)
+# Initialize UC Function Client
+client = DatabricksFunctionClient()
+set_uc_function_client(client)
 
 # Import the registration function from the centralized module
 from src.multi_agent.tools import register_uc_functions, check_uc_functions_exist
