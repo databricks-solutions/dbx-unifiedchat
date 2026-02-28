@@ -89,7 +89,7 @@ def get_cached_planning_agent():
                 LLM_ENDPOINT_PLANNING = config.llm.planning_endpoint
             if VECTOR_SEARCH_INDEX is None:
                 # Construct the full index name
-                VECTOR_SEARCH_INDEX = f"{config.unity_catalog.catalog_name}.{config.unity_catalog.schema_name}.{config.vector_search.endpoint_name}"
+                VECTOR_SEARCH_INDEX = f"{config.unity_catalog.catalog_name}.{config.unity_catalog.schema_name}.{'enriched_genie_docs_chunks_vs_index'}"
         except Exception as e:
             print(f"⚠️ Failed to load config: {e}")
             

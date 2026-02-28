@@ -13,6 +13,11 @@ Original Super_Agent_hybrid.py (6,833 lines) archived in archive/ for reference.
 
 # COMMAND ----------
 
+# MAGIC %load_ext autoreload
+# MAGIC %autoreload 2
+
+# COMMAND ----------
+
 # DBTITLE 1,Install Packages
 # MAGIC %pip install python-dotenv databricks-sdk==0.84.0 databricks-sql-connector==4.2.4 databricks-langchain[memory]==0.12.1 databricks-vectorsearch==0.63 databricks-agents==1.9.3 mlflow[databricks]>=3.6.0 pyyaml
 

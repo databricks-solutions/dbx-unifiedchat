@@ -20,6 +20,7 @@ llm_endpoint_summarize: databricks-claude-haiku-4-5
 
 # Vector Search Configuration
 vs_endpoint_name: genie_multi_agent_vs
+vector_search_index: serverless_dbx_unifiedchat_catalog.multi_agent_genie.enriched_genie_docs_chunks_vs_index
 embedding_model: databricks-gte-large-en
 
 # Lakebase Configuration (for State Management)

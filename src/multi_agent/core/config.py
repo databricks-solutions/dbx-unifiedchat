@@ -26,10 +26,10 @@ class DatabricksConfig:
         host = os.getenv("DATABRICKS_HOST", "")
         token = os.getenv("DATABRICKS_TOKEN", "")
         
-        if not host or not token:
-            raise ValueError(
-                "DATABRICKS_HOST and DATABRICKS_TOKEN must be set in environment"
-            )
+        # if not host or not token:
+        #     raise ValueError(
+        #         "DATABRICKS_HOST and DATABRICKS_TOKEN must be set in environment"
+        #     )
         
         return cls(host=host.rstrip("/"), token=token)
 
@@ -224,9 +224,9 @@ class AgentConfig:
     
     def validate(self) -> None:
         """Validate configuration."""
-        # Check Databricks connectivity
-        if not self.databricks.host.startswith("https://"):
-            raise ValueError("DATABRICKS_HOST must start with https://")
+        # # Check Databricks connectivity
+        # if not self.databricks.host.startswith("https://"):
+        #     raise ValueError("DATABRICKS_HOST must start with https://")
         
         # Check catalog/schema names
         if not self.unity_catalog.catalog_name:
