@@ -89,20 +89,17 @@ def get_cached_summarize_agent():
         # Create LLM instance
         try:
             from databricks_langchain import ChatDatabricks
+            from .summarize_agent import ResultSummarizeAgent
             llm = ChatDatabricks(endpoint=llm_endpoint, temperature=0.1, max_tokens=5000)
-        except ImportError:
-            raise ImportError(
-                "databricks_langchain is required. Install with: pip install databricks-langchain"
-            )
-        
-        # Create ResultSummarizeAgent
-        try:
-            from ..agents.summarize_agent import ResultSummarizeAgent
             get_cached_summarize_agent._cached_agent = ResultSummarizeAgent(llm)
         except ImportError:
             # Fallback: Create a simple wrapper
+            llm = ChatDatabricks(endpoint=llm_endpoint, temperature=0.1, max_tokens=5000)
             get_cached_summarize_agent._cached_agent = _SimpleSummarizeAgent(llm)
-        
+        except Exception as e:
+             raise ImportError(
+                f"databricks_langchain is required or Error: {e}. Install with: pip install databricks-langchain"
+            )
         print("✓ ResultSummarizeAgent cached")
     else:
         print("✓ Using cached ResultSummarizeAgent")

@@ -318,6 +318,16 @@ class AgentConfig:
 _config: Optional[AgentConfig] = None
 
 
+def is_databricks() -> bool:
+    """Detect if running on Databricks (Notebook, Job, or Model Serving)"""
+    return (
+        "DATABRICKS_RUNTIME_VERSION" in os.environ or 
+        os.environ.get("IS_MODEL_SERVING") == "true" or
+        os.environ.get("DATABRICKS_MODEL_SERVING_ENVIRONMENT") == "true" or
+        os.path.exists("/databricks")
+    )
+
+
 def get_config(reload: bool = False) -> AgentConfig:
     """
     Get or create the global configuration instance.
@@ -331,9 +341,59 @@ def get_config(reload: bool = False) -> AgentConfig:
     global _config
     
     if _config is None or reload:
-        # Reload .env file if reloading (override existing env vars)
-        if reload:
-            load_dotenv(override=True)
+        if is_databricks():
+            print("Detected Databricks environment. Attempting to load configuration via ModelConfig...")
+            try:
+                from mlflow.models import ModelConfig
+                # Note: ModelConfig uses dev_config.yaml for dev in databricks workspace or prod_config.yaml when deployed or explicitly passed
+                model_config = ModelConfig(development_config="../dev_config.yaml")
+                
+                # Map model_config keys to environment variables so from_env() works
+                mapping = {
+                    "catalog_name": "CATALOG_NAME",
+                    "schema_name": "SCHEMA_NAME",
+                    "llm_endpoint": "LLM_ENDPOINT",
+                    "llm_endpoint_clarification": "LLM_ENDPOINT_CLARIFICATION",
+                    "llm_endpoint_planning": "LLM_ENDPOINT_PLANNING",
+                    "llm_endpoint_sql_synthesis_table": "LLM_ENDPOINT_SQL_SYNTHESIS_TABLE",
+                    "llm_endpoint_sql_synthesis_genie": "LLM_ENDPOINT_SQL_SYNTHESIS_GENIE",
+                    "llm_endpoint_execution": "LLM_ENDPOINT_EXECUTION",
+                    "llm_endpoint_summarize": "LLM_ENDPOINT_SUMMARIZE",
+                    "lakebase_instance_name": "LAKEBASE_INSTANCE_NAME",
+                    "lakebase_embedding_endpoint": "LAKEBASE_EMBEDDING_ENDPOINT",
+                    "lakebase_embedding_dims": "LAKEBASE_EMBEDDING_DIMS",
+                    "genie_space_ids": "GENIE_SPACE_IDS",
+                    "sql_warehouse_id": "SQL_WAREHOUSE_ID",
+                    "vector_search_function": "VECTOR_SEARCH_FUNCTION",
+                    "vs_endpoint_name": "VS_ENDPOINT_NAME",
+                    "embedding_model": "EMBEDDING_MODEL",
+                    "pipeline_type": "PIPELINE_TYPE",
+                    "sample_size": "SAMPLE_SIZE",
+                    "max_unique_values": "MAX_UNIQUE_VALUES",
+                    "genie_exports_volume": "GENIE_EXPORTS_VOLUME",
+                    "enriched_docs_table": "ENRICHED_DOCS_TABLE",
+                    "model_name": "MODEL_NAME",
+                    "endpoint_name": "ENDPOINT_NAME",
+                    "workload_size": "WORKLOAD_SIZE",
+                    "scale_to_zero": "SCALE_TO_ZERO",
+                }
+                
+                for yaml_key, env_key in mapping.items():
+                    val = model_config.get(yaml_key)
+                    if val is not None:
+                        if isinstance(val, list):
+                            val = ",".join(str(x) for x in val)
+                        os.environ[env_key] = str(val)
+                print("✓ Configuration loaded via ModelConfig")
+            except Exception as e:
+                print(f"Warning: Failed to load ModelConfig: {e}. Falling back to env vars.")
+                if reload:
+                    load_dotenv(override=True)
+        else:
+            # Reload .env file if reloading (override existing env vars)
+            if reload:
+                load_dotenv(override=True)
+                
         _config = AgentConfig.from_env()
         _config.validate()
     

@@ -13,7 +13,7 @@ from langchain_core.messages import SystemMessage
 
 from ..core.state import AgentState
 from ..core.config import get_config
-
+from .sql_execution_agent import SQLExecutionAgent
 
 def extract_execution_context(state: AgentState) -> dict:
     """Extract minimal context for SQL execution."""
@@ -72,10 +72,10 @@ def sql_execution_node(state: AgentState) -> dict:
     
     # Use OOP agent with SQL Warehouse
     try:
-        from ..agents.sql_execution_agent import SQLExecutionAgent
         execution_agent = SQLExecutionAgent(warehouse_id=sql_warehouse_id)
-    except ImportError:
+    except Exception as e:
         # Fallback for single query if SQLExecutionAgent not available
+        print(f"Failed to load SQLExecutionAgent: {e}")
         result = _execute_sql_fallback(sql_queries[0], sql_warehouse_id)
         return {
             "execution_result": result,
