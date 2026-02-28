@@ -501,7 +501,7 @@ resources = [
 
 # Input example for schema inference
 input_example = {
-    "input": [{"role": "user", "content": "What is the average medical cost of diabetes patients?"}],
+    "input": [{"role": "user", "content": "What is the average medical cost of diabetes patients? Use Genie route"}],
     "custom_inputs": {"thread_id": "example-123"},
     "context": {"conversation_id": "sess-001", "user_id": "user@example.com"}
 }
@@ -560,6 +560,7 @@ print(f"✓ Model registered: {UC_MODEL_NAME} version {uc_model_info.version}")
 # DBTITLE 1,Deploy Agent to Model Serving
 # Deploy to Model Serving
 from databricks import agents
+import os
 
 deployment_info = agents.deploy(
     UC_MODEL_NAME,
@@ -589,24 +590,54 @@ print("="*80)
 
 # COMMAND ----------
 
-# DBTITLE 1,Test Deployed Endpoint
-"""
-Test the deployed endpoint with a sample query.
-"""
-
+# DBTITLE 1,Test Deployed Endpoint with Readiness Check
 from databricks.sdk import WorkspaceClient
+import time
 
 w = WorkspaceClient()
 
-# Test query
+# Wait for endpoint to be ready
+print("Waiting for endpoint to be ready...")
+max_wait_time = 1800
+wait_interval = 30
+elapsed_time = 0
+
+while elapsed_time < max_wait_time:
+    try:
+        endpoint_status = w.serving_endpoints.get(name=deployment_info.endpoint_name)
+        state = endpoint_status.state.config_update if endpoint_status.state.config_update else endpoint_status.state.ready
+        
+        print(f"  Endpoint state: {state} (elapsed: {elapsed_time}s)")
+        
+        if state == "READY":
+            print("\n✓ Endpoint is ready!")
+            break
+        elif state in ["UPDATE_FAILED", "CRASHED"]:
+            print(f"\n✗ Endpoint deployment failed with state: {state}")
+            raise RuntimeError(f"Endpoint failed to deploy: {state}")
+        
+        time.sleep(wait_interval)
+        elapsed_time += wait_interval
+        
+    except Exception as e:
+        if elapsed_time == 0:
+            print(f"  Initial status check failed: {e}")
+            print(f"  This is normal for new deployments. Waiting...")
+        time.sleep(wait_interval)
+        elapsed_time += wait_interval
+
+if elapsed_time >= max_wait_time:
+    print(f"\n⚠ Timeout: Endpoint not ready after {max_wait_time}s")
+    print("Check Model Serving UI for details.")
+    raise TimeoutError(f"Endpoint not ready after {max_wait_time}s")
+
+print("\nTesting endpoint with sample query...")
 test_input = {
-    "input": [{"role": "user", "content": "Show me patient demographics"}],
+    "input": [{"role": "user", "content": "How many total patients are there? Give me patient demographics distribution."}],
     "custom_inputs": {"thread_id": "test-123"}
 }
 
-# Query endpoint
 try:
-    print("Testing endpoint...")
     response = w.serving_endpoints.query(
         name=deployment_info.endpoint_name,
         inputs=[test_input]
@@ -614,8 +645,8 @@ try:
     print("\n✓ Endpoint responding successfully")
     print(f"Response preview: {str(response)[:200]}...")
 except Exception as e:
-    print(f"⚠️ Error testing endpoint: {e}")
-    print("The endpoint may still be initializing. Check Model Serving UI.")
+    print(f"\n✗ Error querying endpoint: {e}")
+    print("Check Model Serving UI and logs for details.")
 
 # COMMAND ----------
 
