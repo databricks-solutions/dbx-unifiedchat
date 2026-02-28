@@ -48,114 +48,6 @@ try:
 except ImportError:
     ChatDatabricks = None  # type: ignore
 
-# Configuration constants - these should be imported from config or passed as parameters
-# For standalone usage, these should be provided via function parameters or environment
-# They can be initialized using initialize_config() function below
-LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = None  # Should be set from config
-LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = None  # Should be set from config
-CATALOG = None  # Should be set from config
-SCHEMA = None  # Should be set from config
-
-
-def initialize_config(
-    llm_endpoint_sql_synthesis_table: str,
-    llm_endpoint_sql_synthesis_genie: str,
-    catalog: str,
-    schema: str,
-    table_name: Optional[str] = None,
-    register_uc_functions_flag: bool = False,
-    check_uc_functions: bool = True
-):
-    """
-    Initialize module-level configuration constants and optionally register UC functions.
-    
-    This function should be called before using the SQL synthesis nodes,
-    or the constants can be set directly.
-    
-    IMPORTANT: UC functions must exist before creating SQLSynthesisTableAgent.
-    - Set register_uc_functions_flag=True to register them automatically
-    - Or register manually before calling this function
-    - Set check_uc_functions=True to verify functions exist
-    
-    Args:
-        llm_endpoint_sql_synthesis_table: LLM endpoint for table route SQL synthesis
-        llm_endpoint_sql_synthesis_genie: LLM endpoint for genie route SQL synthesis
-        catalog: Unity Catalog catalog name
-        schema: Unity Catalog schema name
-        table_name: Fully qualified table name (required if register_uc_functions_flag=True)
-        register_uc_functions_flag: If True, register UC functions before initializing
-        check_uc_functions: If True, check that UC functions exist (default: True)
-    """
-    global LLM_ENDPOINT_SQL_SYNTHESIS_TABLE
-    global LLM_ENDPOINT_SQL_SYNTHESIS_GENIE
-    global CATALOG
-    global SCHEMA
-    
-    LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = llm_endpoint_sql_synthesis_table
-    LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = llm_endpoint_sql_synthesis_genie
-    CATALOG = catalog
-    SCHEMA = schema
-    
-    # Register UC functions if requested
-    if register_uc_functions_flag:
-        if not table_name:
-            raise ValueError("table_name is required when register_uc_functions_flag=True")
-        
-        from ..tools.uc_functions import register_uc_functions
-        
-        print("\n" + "=" * 80)
-        print("🔧 REGISTERING UC FUNCTIONS (required for SQL Synthesis Table Agent)")
-        print("=" * 80)
-        
-        result = register_uc_functions(
-            catalog=catalog,
-            schema=schema,
-            table_name=table_name,
-            verbose=True
-        )
-        
-        if not result["success"]:
-            raise RuntimeError(f"Failed to register UC functions: {result['errors']}")
-    
-    # Check UC functions exist
-    if check_uc_functions:
-        from ..tools.uc_functions import check_uc_functions_exist
-        
-        result = check_uc_functions_exist(catalog=catalog, schema=schema, verbose=True)
-        
-        if not result["all_exist"]:
-            print("\n⚠️ WARNING: Some UC functions are missing!")
-            print("Missing functions:", result["missing_functions"])
-            print("\nTo register them, call:")
-            print(f"  from src.multi_agent.tools.uc_functions import register_uc_functions")
-            print(f"  register_uc_functions(catalog='{catalog}', schema='{schema}', table_name='...')")
-            print("\nOr set register_uc_functions_flag=True when calling initialize_config()")
-            print("=" * 80)
-
-
-def initialize_config_from_module():
-    """
-    Initialize configuration from the config module.
-    
-    Attempts to load configuration from config.get_config().
-    This is useful when running in environments where config.py is available.
-    """
-    try:
-        from config import get_config
-        config = get_config()
-        
-        initialize_config(
-            llm_endpoint_sql_synthesis_table=config.llm.sql_synthesis_table_endpoint,
-            llm_endpoint_sql_synthesis_genie=config.llm.sql_synthesis_genie_endpoint,
-            catalog=config.unity_catalog.catalog_name,
-            schema=config.unity_catalog.schema_name
-        )
-        print("✓ Configuration initialized from config module")
-    except ImportError:
-        print("⚠️ config module not available. Set configuration manually using initialize_config()")
-    except Exception as e:
-        print(f"⚠️ Failed to initialize config: {e}. Set configuration manually using initialize_config()")
-
 # Performance metrics storage (module-level)
 _performance_metrics = {
     "node_timings": {},
@@ -294,7 +186,7 @@ def measure_node_time(node_name: str):
     return decorator
 
 
-def get_cached_sql_table_agent():
+def get_cached_sql_table_agent(llm_endpoint=None, catalog=None, schema=None):
     """
     Get or create cached SQLSynthesisTableAgent instance.
     Expected gain: -500ms to -1s per request
@@ -302,17 +194,27 @@ def get_cached_sql_table_agent():
     if SQLSynthesisTableAgent is None:
         raise ImportError("SQLSynthesisTableAgent is not available. Import it from the appropriate module.")
     
-    if LLM_ENDPOINT_SQL_SYNTHESIS_TABLE is None:
+    if llm_endpoint is None or catalog is None or schema is None:
+        from ..core.config import get_config
+        config = get_config()
+        if llm_endpoint is None:
+            llm_endpoint = config.llm.sql_synthesis_table_endpoint
+        if catalog is None:
+            catalog = config.unity_catalog.catalog_name
+        if schema is None:
+            schema = config.unity_catalog.schema_name
+            
+    if llm_endpoint is None:
         raise ValueError("LLM_ENDPOINT_SQL_SYNTHESIS_TABLE must be configured")
     
-    if CATALOG is None or SCHEMA is None:
+    if catalog is None or schema is None:
         raise ValueError("CATALOG and SCHEMA must be configured")
     
     if "sql_table" not in _agent_cache:
         record_cache_miss("agent_cache")
         print("⚡ Creating SQLSynthesisTableAgent (first use)...")
-        llm = get_pooled_llm(LLM_ENDPOINT_SQL_SYNTHESIS_TABLE)
-        _agent_cache["sql_table"] = SQLSynthesisTableAgent(llm, CATALOG, SCHEMA)
+        llm = get_pooled_llm(llm_endpoint)
+        _agent_cache["sql_table"] = SQLSynthesisTableAgent(llm, catalog, schema)
         print("✓ SQLSynthesisTableAgent cached")
     else:
         record_cache_hit("agent_cache")
@@ -350,9 +252,16 @@ def sql_synthesis_table_node(state: AgentState) -> dict:
     # Emit synthesis start event
     writer({"type": "sql_synthesis_start", "route": "table", "spaces": relevant_space_ids})
     
+    # Get configuration
+    from ..core.config import get_config
+    config = get_config()
+    llm_endpoint = config.llm.sql_synthesis_table_endpoint
+    catalog = config.unity_catalog.catalog_name
+    schema = config.unity_catalog.schema_name
+    
     # OPTIMIZATION: Use cached agent instance
-    sql_agent = get_cached_sql_table_agent()
-    track_agent_model_usage("sql_synthesis_table", LLM_ENDPOINT_SQL_SYNTHESIS_TABLE)
+    sql_agent = get_cached_sql_table_agent(llm_endpoint, catalog, schema)
+    track_agent_model_usage("sql_synthesis_table", llm_endpoint)
     
     print("plan loaded from state is:", plan)
     print(json.dumps(plan, indent=2))
@@ -470,12 +379,14 @@ def sql_synthesis_genie_node(state: AgentState) -> dict:
     # Emit synthesis start event
     writer({"type": "sql_synthesis_start", "route": "genie", "spaces": relevant_space_ids})
     
+    # Get configuration
+    from ..core.config import get_config
+    config = get_config()
+    llm_endpoint = config.llm.sql_synthesis_genie_endpoint
+    
     # Use dedicated SQL_SYNTHESIS_GENIE endpoint for orchestrating multiple Genie agents
     # This agent requires stronger reasoning for complex coordination
-    if LLM_ENDPOINT_SQL_SYNTHESIS_GENIE is None:
-        raise ValueError("LLM_ENDPOINT_SQL_SYNTHESIS_GENIE must be configured")
-    
-    llm = get_pooled_llm(LLM_ENDPOINT_SQL_SYNTHESIS_GENIE, temperature=0.1)
+    llm = get_pooled_llm(llm_endpoint, temperature=0.1)
     
     if not relevant_spaces:
         print("❌ No relevant_spaces found in state")
@@ -489,7 +400,7 @@ def sql_synthesis_genie_node(state: AgentState) -> dict:
         raise ImportError("SQLSynthesisGenieAgent is not available. Import it from the appropriate module.")
     
     sql_agent = SQLSynthesisGenieAgent(llm, relevant_spaces)
-    track_agent_model_usage("sql_synthesis_genie", LLM_ENDPOINT_SQL_SYNTHESIS_GENIE)
+    track_agent_model_usage("sql_synthesis_genie", llm_endpoint)
     
     # Use minimal context (already extracted)
     plan = context.get("plan", {})
@@ -604,7 +515,5 @@ __all__ = [
     "get_cached_sql_table_agent",
     "get_pooled_llm",
     "track_agent_model_usage",
-    "measure_node_time",
-    "initialize_config",
-    "initialize_config_from_module",
+    "measure_node_time"
 ]
