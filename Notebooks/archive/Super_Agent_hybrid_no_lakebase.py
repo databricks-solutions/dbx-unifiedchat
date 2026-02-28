@@ -148,6 +148,8 @@ EMBEDDING_DIMS = 1024
 
 # COMMAND ----------
 
+
+
 # COMMAND ----------
 
 # DBTITLE 1,ONE-TIME SETUP: Register Unity Catalog Functions for Metadata Querying
@@ -6045,6 +6047,8 @@ print("  ✓ Type-safe and structured")
 print("="*80)
 
 # COMMAND ----------
+
+
 
 # COMMAND ----------
 
