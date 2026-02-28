@@ -38,38 +38,37 @@ but loads it for testing purposes.
 """
 
 import yaml
+from notebook_utils import load_deployment_config
 
-# Load dev_config.yaml
-config_path = os.path.join(os.path.dirname(notebook_dir), "dev_config.yaml")
-with open(config_path, 'r') as f:
-    yaml_config = yaml.safe_load(f)
+# Load dev_config.yaml via notebook_utils
+config_dict = load_deployment_config("../dev_config.yaml")
 
 # Extract key configuration values
-CATALOG = yaml_config['catalog_name']
-SCHEMA = yaml_config['schema_name']
-TABLE_NAME = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks"
-VECTOR_SEARCH_INDEX = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks_vs_index"
+CATALOG = config_dict['CATALOG']
+SCHEMA = config_dict['SCHEMA']
+TABLE_NAME = config_dict['TABLE_NAME']
+VECTOR_SEARCH_INDEX = config_dict['VECTOR_SEARCH_INDEX']
 
 # LLM Endpoints
-LLM_ENDPOINT_CLARIFICATION = yaml_config.get('llm_endpoint_clarification', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_PLANNING = yaml_config.get('llm_endpoint_planning', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = yaml_config.get('llm_endpoint_sql_synthesis_table', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = yaml_config.get('llm_endpoint_sql_synthesis_genie', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_EXECUTION = yaml_config.get('llm_endpoint_execution', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_SUMMARIZE = yaml_config.get('llm_endpoint_summarize', yaml_config['llm_endpoint'])
+LLM_ENDPOINT_CLARIFICATION = config_dict['LLM_ENDPOINT_CLARIFICATION']
+LLM_ENDPOINT_PLANNING = config_dict['LLM_ENDPOINT_PLANNING']
+LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = config_dict['LLM_ENDPOINT_SQL_SYNTHESIS_TABLE']
+LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = config_dict['LLM_ENDPOINT_SQL_SYNTHESIS_GENIE']
+LLM_ENDPOINT_EXECUTION = config_dict['LLM_ENDPOINT_EXECUTION']
+LLM_ENDPOINT_SUMMARIZE = config_dict['LLM_ENDPOINT_SUMMARIZE']
 
 # Lakebase
-LAKEBASE_INSTANCE_NAME = yaml_config['lakebase_instance_name']
-EMBEDDING_ENDPOINT = yaml_config['lakebase_embedding_endpoint']
+LAKEBASE_INSTANCE_NAME = config_dict['LAKEBASE_INSTANCE_NAME']
+EMBEDDING_ENDPOINT = config_dict['EMBEDDING_ENDPOINT']
 
 # SQL Warehouse
-SQL_WAREHOUSE_ID = yaml_config['sql_warehouse_id']
+SQL_WAREHOUSE_ID = config_dict['SQL_WAREHOUSE_ID']
 
 # Genie Spaces
-GENIE_SPACE_IDS = yaml_config['genie_space_ids']
+GENIE_SPACE_IDS = config_dict['GENIE_SPACE_IDS']
 
 print("="*80)
-print("CONFIGURATION LOADED FROM dev_config.yaml")
+print("CONFIGURATION LOADED FROM dev_config.yaml via notebook_utils")
 print("="*80)
 print(f"Catalog: {CATALOG}")
 print(f"Schema: {SCHEMA}")

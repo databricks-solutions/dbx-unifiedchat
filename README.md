@@ -73,21 +73,17 @@ See [Architecture Documentation](docs/ARCHITECTURE.md) for detailed design.
 
 ### Installation
 
+Please see the [**Development Guide**](docs/DEVELOPMENT_GUIDE.md) for detailed instructions on the three supported workflows:
+1. **Local Development**: Fastest iteration for unit tests and logic changes.
+2. **Databricks Notebook Dev**: Integration testing with real services.
+3. **Production Deployment (CI/CD)**: Final deployment to Model Serving endpoints.
+
 ```bash
-# Clone repository
+# Quick clone
 git clone https://github.com/databricks-solutions/dbx-unifiedchat.git
 cd dbx-unifiedchat
 
-# Create virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure environment
-cp .env.example .env
-# Edit .env with your Databricks credentials and configuration
+# See docs/DEVELOPMENT_GUIDE.md for next steps
 ```
 
 ### Configuration
@@ -172,6 +168,7 @@ See [Deployment Guide](docs/DEPLOYMENT.md) for complete instructions.
 
 ### Getting Started
 
+* [**Development Guide**](docs/DEVELOPMENT_GUIDE.md) - Comprehensive guide for local, notebook, and CI/CD development workflows
 * [**Local Development Guide**](docs/LOCAL_DEVELOPMENT.md) - Set up your local development environment
 * [**ETL Pipeline Guide**](etl/README.md) - Prepare metadata for the agent system
 * [**Configuration Reference**](docs/CONFIGURATION.md) - Configure for different environments

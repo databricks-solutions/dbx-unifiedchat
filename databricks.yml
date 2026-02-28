@@ -141,6 +141,32 @@ resources:
               pipeline_type: ${var.pipeline_type}
           timeout_seconds: 3600
 
+    agent_integration_test:
+      name: multi_agent_integration_test
+      description: Test agent code before deployment
+      tasks:
+        - task_key: test_agent
+          notebook_task:
+            notebook_path: ./Notebooks/test_agent_databricks.py
+            source: WORKSPACE
+          timeout_seconds: 1200
+
+    agent_deploy:
+      name: multi_agent_deploy
+      description: Deploy agent to Model Serving
+      tasks:
+        - task_key: validate_agent
+          notebook_task:
+            notebook_path: ./Notebooks/test_agent_databricks.py
+            source: WORKSPACE
+        - task_key: deploy_agent
+          depends_on:
+            - task_key: validate_agent
+          notebook_task:
+            notebook_path: ./Notebooks/deploy_agent.py
+            source: WORKSPACE
+          timeout_seconds: 1800
+
 # ---------------------------------------------------------------------------
 # Targets — dev & prod
 # ---------------------------------------------------------------------------

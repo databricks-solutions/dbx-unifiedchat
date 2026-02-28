@@ -28,76 +28,39 @@ Original Super_Agent_hybrid.py (6,833 lines) archived in archive/ for reference.
 # COMMAND ----------
 
 # DBTITLE 1,Initialize ModelConfig and Load Environment Configurati ...
-from mlflow.models import ModelConfig
-import logging
-# Setup logging
-logger = logging.getLogger(__name__)
-
-
-# Initialize ModelConfig
-# For local development: Uses development_config above
-# For Model Serving: Uses config passed during mlflow.pyfunc.log_model(model_config=...)
-model_config = ModelConfig(development_config="../prod_config.yaml")
-
-logger.info("="*80)
-logger.info("CONFIGURATION LOADED via ModelConfig")
-logger.info("="*80)
+from notebook_utils import load_deployment_config
+config_dict = load_deployment_config("../prod_config.yaml")
 
 # Extract configuration values
-CATALOG = model_config.get("catalog_name")
-SCHEMA = model_config.get("schema_name")
-TABLE_NAME = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks"
-VECTOR_SEARCH_INDEX = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks_vs_index"
+CATALOG = config_dict["CATALOG"]
+SCHEMA = config_dict["SCHEMA"]
+TABLE_NAME = config_dict["TABLE_NAME"]
+VECTOR_SEARCH_INDEX = config_dict["VECTOR_SEARCH_INDEX"]
 
 # LLM Endpoints - Diversified by Agent Role
-default_endpoint = model_config.get("llm_endpoint")
-LLM_ENDPOINT_CLARIFICATION = model_config.get("llm_endpoint_clarification") or default_endpoint
-LLM_ENDPOINT_PLANNING = model_config.get("llm_endpoint_planning") or default_endpoint
-LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = model_config.get("llm_endpoint_sql_synthesis_table") or default_endpoint
-LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = model_config.get("llm_endpoint_sql_synthesis_genie") or default_endpoint
-LLM_ENDPOINT_EXECUTION = model_config.get("llm_endpoint_execution") or default_endpoint
-LLM_ENDPOINT_SUMMARIZE = model_config.get("llm_endpoint_summarize") or default_endpoint
+LLM_ENDPOINT_CLARIFICATION = config_dict["LLM_ENDPOINT_CLARIFICATION"]
+LLM_ENDPOINT_PLANNING = config_dict["LLM_ENDPOINT_PLANNING"]
+LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = config_dict["LLM_ENDPOINT_SQL_SYNTHESIS_TABLE"]
+LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = config_dict["LLM_ENDPOINT_SQL_SYNTHESIS_GENIE"]
+LLM_ENDPOINT_EXECUTION = config_dict["LLM_ENDPOINT_EXECUTION"]
+LLM_ENDPOINT_SUMMARIZE = config_dict["LLM_ENDPOINT_SUMMARIZE"]
 
 # Lakebase configuration for state management
-LAKEBASE_INSTANCE_NAME = model_config.get("lakebase_instance_name")
-EMBEDDING_ENDPOINT = model_config.get("lakebase_embedding_endpoint")
-EMBEDDING_DIMS = model_config.get("lakebase_embedding_dims")
+LAKEBASE_INSTANCE_NAME = config_dict["LAKEBASE_INSTANCE_NAME"]
+EMBEDDING_ENDPOINT = config_dict["EMBEDDING_ENDPOINT"]
+EMBEDDING_DIMS = config_dict["EMBEDDING_DIMS"]
 
 # Genie space IDs
-GENIE_SPACE_IDS = model_config.get("genie_space_ids")
+GENIE_SPACE_IDS = config_dict["GENIE_SPACE_IDS"]
 
 # SQL Warehouse ID (required for SQLExecutionAgent)
-SQL_WAREHOUSE_ID = model_config.get("sql_warehouse_id")
+SQL_WAREHOUSE_ID = config_dict["SQL_WAREHOUSE_ID"]
 
 # UC Functions
-UC_FUNCTION_NAMES = [
-    f"{CATALOG}.{SCHEMA}.get_space_summary",
-    f"{CATALOG}.{SCHEMA}.get_table_overview",
-    f"{CATALOG}.{SCHEMA}.get_column_detail",
-    f"{CATALOG}.{SCHEMA}.get_space_instructions",
-    f"{CATALOG}.{SCHEMA}.get_space_details",
-]
-
-logger.info(f"Catalog: {CATALOG}, Schema: {SCHEMA}")
-logger.info(f"Lakebase: {LAKEBASE_INSTANCE_NAME}")
-logger.info(f"Genie Spaces: {len(GENIE_SPACE_IDS)} spaces configured")
-logger.info(f"SQL Warehouse ID: {SQL_WAREHOUSE_ID}")
-
-# Validate SQL_WAREHOUSE_ID is configured
-if not SQL_WAREHOUSE_ID:
-    error_msg = (
-        "SQL_WAREHOUSE_ID is not configured! "
-        "Ensure 'sql_warehouse_id' is set in prod_config.yaml or development_config."
-    )
-    logger.error(error_msg)
-    raise ValueError(error_msg)
-
-logger.info("="*80)
-logger.info(f"Configuration loaded: Catalog={CATALOG}, Schema={SCHEMA}, Lakebase={LAKEBASE_INSTANCE_NAME}")
-
+UC_FUNCTION_NAMES = config_dict["UC_FUNCTION_NAMES"]
 
 print("="*80)
-print("CONFIGURATION LOADED FROM prod_config.yaml")
+print("CONFIGURATION LOADED FROM prod_config.yaml via notebook_utils")
 print("="*80)
 print(f"Catalog: {CATALOG}")
 print(f"Schema: {SCHEMA}")
