@@ -14,11 +14,11 @@ Original Super_Agent_hybrid.py (6,833 lines) archived in archive/ for reference.
 # COMMAND ----------
 
 # DBTITLE 1,Install Packages
-%pip install python-dotenv databricks-sdk==0.84.0 databricks-sql-connector==4.2.4 databricks-langchain[memory]==0.12.1 databricks-vectorsearch==0.63 databricks-agents==1.9.3 mlflow[databricks]>=3.6.0 pyyaml
+# MAGIC %pip install python-dotenv databricks-sdk==0.84.0 databricks-sql-connector==4.2.4 databricks-langchain[memory]==0.12.1 databricks-vectorsearch==0.63 databricks-agents==1.9.3 mlflow[databricks]>=3.6.0 pyyaml
 
 # COMMAND ----------
 
-%restart_python
+# MAGIC %restart_python
 
 # COMMAND ----------
 
@@ -118,6 +118,180 @@ except ImportError as e:
 
 # COMMAND ----------
 
+# DBTITLE 1,ONE-TIME SETUP: Initialize Lakebase Tables for State Management
+"""
+IMPORTANT: Run this cell ONCE to set up Lakebase instance and tables for state management.
+
+This creates:
+1. Lakebase Postgres instance (if it doesn't exist)
+2. checkpoints table - For short-term memory (multi-turn conversations)
+3. store table - For long-term memory (user preferences with semantic search)
+"""
+
+from databricks_langchain import CheckpointSaver, DatabricksStore
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.database import DatabaseInstance
+import time
+
+print("="*80)
+print("LAKEBASE INSTANCE SETUP")
+print("="*80)
+print(f"Instance name: {LAKEBASE_INSTANCE_NAME}")
+
+# Initialize Databricks workspace client
+w = WorkspaceClient()
+
+# Check if Lakebase instance exists, create if not
+instance_exists = False
+try:
+    instance = w.database.get_database_instance(LAKEBASE_INSTANCE_NAME)
+    print(f"✓ Lakebase instance '{LAKEBASE_INSTANCE_NAME}' already exists")
+    instance_exists = True
+except Exception as e:
+    print(f"Instance not found. Creating new Lakebase instance...")
+    try:
+        # Create Lakebase instance with DatabaseInstance object
+        instance = w.database.create_database_instance(
+            DatabaseInstance(
+                name=LAKEBASE_INSTANCE_NAME,
+                capacity="CU_1"  # Start with smallest capacity (1 compute unit)
+            )
+        )
+        print(f"✓ Lakebase instance '{LAKEBASE_INSTANCE_NAME}' creation initiated")
+        print(f"  Capacity: CU_1")
+        print("  Waiting for instance to become available...")
+        
+        # Wait for instance to be ready (can take 2-5 minutes)
+        max_wait_time = 300  # 5 minutes
+        wait_interval = 10  # Check every 10 seconds
+        elapsed_time = 0
+        
+        while elapsed_time < max_wait_time:
+            try:
+                instance = w.database.get_database_instance(LAKEBASE_INSTANCE_NAME)
+                # If we can get the instance without error, it's ready
+                print(f"✓ Instance is now available (waited {elapsed_time}s)")
+                instance_exists = True
+                break
+            except:
+                time.sleep(wait_interval)
+                elapsed_time += wait_interval
+                print(f"  Still waiting... ({elapsed_time}s elapsed)")
+        
+        if not instance_exists:
+            print(f"⚠️ Instance creation is taking longer than expected.")
+            print(f"   Please wait a few more minutes and re-run this cell.")
+            raise TimeoutError(f"Instance not ready after {max_wait_time}s")
+            
+    except Exception as create_error:
+        print(f"❌ Error creating Lakebase instance: {create_error}")
+        raise
+
+if instance_exists:
+    # Check if instance is in RUNNING state before proceeding
+    print("\n" + "="*80)
+    print("CHECKING INSTANCE STATUS")
+    print("="*80)
+    
+    max_status_wait = 600  # 10 minutes max wait for RUNNING state
+    status_check_interval = 60  # Check every 1 minute
+    status_elapsed = 0
+    
+    while status_elapsed < max_status_wait:
+        instance = w.database.get_database_instance(LAKEBASE_INSTANCE_NAME)
+        instance_state = instance.state.value if instance.state else "UNKNOWN"
+        
+        print(f"Instance state: {instance_state}")
+        
+        if instance_state == "AVAILABLE":
+            print("✓ Instance is AVAILABLE and ready for table setup")
+            break
+        elif instance_state in ["FAILED", "DELETED"]:
+            raise RuntimeError(f"Instance is in {instance_state} state. Cannot proceed.")
+        else:
+            print(f"Instance {instance_state} not ready yet. Waiting 1 minute before rechecking...")
+            time.sleep(status_check_interval)
+            status_elapsed += status_check_interval
+            print(f"  Total wait time: {status_elapsed}s")
+    
+    if status_elapsed >= max_status_wait:
+        raise TimeoutError(f"Instance did not reach RUNNING state after {max_status_wait}s")
+
+    print("\n" + "="*80)
+    print("INITIALIZING LAKEBASE TABLES")
+    print("="*80)
+
+    # Setup checkpoint table for short-term memory
+    print("Setting up checkpoint table...")
+    with CheckpointSaver(instance_name=LAKEBASE_INSTANCE_NAME) as saver:
+        saver.setup()
+        print("✓ Checkpoint table created/verified")
+
+    # Setup store table for long-term memory
+    print("Setting up store table...")
+    store = DatabricksStore(
+        instance_name=LAKEBASE_INSTANCE_NAME,
+        embedding_endpoint=EMBEDDING_ENDPOINT,
+        embedding_dims=EMBEDDING_DIMS,
+    )
+    store.setup()
+    print("✓ Store table created/verified")
+
+    print("\n" + "="*80)
+    print("✅ LAKEBASE SETUP COMPLETE!")
+    print("="*80)
+    print(f"Instance: {LAKEBASE_INSTANCE_NAME}")
+    print("Tables: checkpoints, store")
+    print("="*80)
+
+# COMMAND ----------
+
+# DBTITLE 1,ONE-TIME SETUP: Register Unity Catalog Functions for Metadata Querying
+"""
+Register UC functions that will be used as tools by the SQL Synthesis Agent.
+
+These UC functions query different levels of the enriched genie docs chunks table:
+1. get_space_summary: High-level space information
+2. get_table_overview: Table-level metadata
+3. get_column_detail: Column-level metadata
+4. get_space_instructions: Extract raw SQL instructions JSON (any structure within instructions field) from space metadata (REQUIRED FINAL STEP)
+5. get_space_details: Complete metadata (last resort - token intensive)
+
+All functions use LANGUAGE SQL for better performance and compatibility.
+
+IMPORTANT: This registration is now centralized in src/multi_agent/tools/uc_functions.py
+and should be called before creating agents.
+"""
+
+# Import the registration function from the centralized module
+from src.multi_agent.tools import register_uc_functions, check_uc_functions_exist
+
+# Register all UC functions using the centralized registration module
+result = register_uc_functions(
+    catalog=CATALOG,
+    schema=SCHEMA,
+    table_name=TABLE_NAME
+)
+
+# # Check registration result
+# if not result["success"]:
+#     print("\n" + "=" * 80)
+#     print("⚠️ WARNING: Some UC functions failed to register!")
+#     print("=" * 80)
+#     for error in result["errors"]:
+#         print(f"  ✗ {error}")
+#     print("=" * 80)
+#     raise RuntimeError("Failed to register all UC functions")
+
+# # Verify all functions exist
+# print("\n🔍 Verifying UC functions...")
+# check_result = check_uc_functions_exist(spark=spark, catalog=CATALOG, schema=SCHEMA, verbose=True)
+
+# if not check_result["all_exist"]:
+#     raise RuntimeError(f"Missing UC functions: {check_result['missing_functions']}")
+
+# COMMAND ----------
+
 # DBTITLE 1,Discover Deployment Resources
 """
 Discover all required resources for deployment.
@@ -166,7 +340,7 @@ print("="*80)
 
 # COMMAND ----------
 
-# DBTITLE 1,Deploy Agent to Model Serving
+# DBTITLE 1,mlflow logging model
 """
 Deploy the agent to Model Serving with modular code.
 
@@ -216,12 +390,13 @@ resources = [
     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_summary"),
     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_table_overview"),
     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_column_detail"),
+    DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_instructions"),
     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_details"),
 ]
 
 # Input example for schema inference
 input_example = {
-    "input": [{"role": "user", "content": "Show me patient data"}],
+    "input": [{"role": "user", "content": "What is the average medical cost of diabetes patients?"}],
     "custom_inputs": {"thread_id": "example-123"},
     "context": {"conversation_id": "sess-001", "user_id": "user@example.com"}
 }
@@ -275,6 +450,9 @@ uc_model_info = mlflow.register_model(
 )
 print(f"✓ Model registered: {UC_MODEL_NAME} version {uc_model_info.version}")
 
+# COMMAND ----------
+
+# DBTITLE 1,Deploy Agent to Model Serving
 # Deploy to Model Serving
 from databricks import agents
 
@@ -403,37 +581,37 @@ print("="*80)
 
 # MAGIC %md
 # MAGIC ## 📝 Notes
-# MAGIC 
+# MAGIC
 # MAGIC ### What Changed from Original Super_Agent_hybrid.py
-# MAGIC 
+# MAGIC
 # MAGIC **Before** (Original - 6,833 lines):
 # MAGIC - All agent code embedded in notebook
 # MAGIC - Hard to maintain and test
 # MAGIC - Difficult to iterate locally
-# MAGIC 
+# MAGIC
 # MAGIC **After** (This notebook - ~250 lines):
 # MAGIC - Imports from `../src/multi_agent/`
 # MAGIC - Uses `code_paths` parameter to package modular code
 # MAGIC - Same functionality, cleaner structure
 # MAGIC - Easy to test locally before deploying
-# MAGIC 
+# MAGIC
 # MAGIC ### Benefits
-# MAGIC 
+# MAGIC
 # MAGIC 1. **Single Source of Truth**: Same code for local dev and deployment
 # MAGIC 2. **Easier Testing**: Test components individually
 # MAGIC 3. **Better Maintainability**: Small modules (<500 lines each)
 # MAGIC 4. **Faster Iteration**: Develop locally, test in Databricks, deploy
-# MAGIC 
+# MAGIC
 # MAGIC ### Related Files
-# MAGIC 
+# MAGIC
 # MAGIC - `agent.py`: MLflow wrapper (imports from src/multi_agent/)
 # MAGIC - `test_agent_databricks.py`: Test before deploying
 # MAGIC - `src/multi_agent/`: All agent code (single source of truth)
 # MAGIC - `prod_config.yaml`: Production configuration
 # MAGIC - `archive/Super_Agent_hybrid_original.py`: Original 6,833-line version (for reference)
-# MAGIC 
+# MAGIC
 # MAGIC ### Documentation
-# MAGIC 
+# MAGIC
 # MAGIC - [Deployment Guide](../docs/DEPLOYMENT.md)
 # MAGIC - [Configuration Guide](../docs/CONFIGURATION.md)
 # MAGIC - [Architecture](../docs/ARCHITECTURE.md)
