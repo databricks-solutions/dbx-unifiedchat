@@ -291,6 +291,76 @@ class SQLExecutionAgent:
                 "error_hint": error_hint
             }
     
+    def execute_sql_parallel(
+        self,
+        sql_queries: List[str],
+        max_rows: int = 100,
+        return_format: str = "dict",
+        max_workers: int = 4
+    ) -> List[Dict[str, Any]]:
+        """
+        Execute multiple SQL queries in parallel using ThreadPoolExecutor.
+        
+        Each query runs in its own thread with an independent sql.connect() connection,
+        so there is no shared state between threads. This is safe because execute_sql()
+        creates and closes its own connection/cursor via context managers per call.
+        
+        ThreadPoolExecutor is used instead of asyncio because databricks-sql-connector
+        is synchronous (no native async API), and the work is I/O-bound (waiting on
+        SQL Warehouse HTTP responses), so the GIL is not a bottleneck.
+        
+        Args:
+            sql_queries: List of SQL query strings to execute
+            max_rows: Maximum rows per query (default: 100)
+            return_format: Result format - "dict", "json", or "markdown"
+            max_workers: Maximum concurrent threads (default: 4, tune to warehouse concurrency)
+        
+        Returns:
+            List of result dicts (same format as execute_sql), ordered to match input queries.
+            Each result includes a "query_number" field (1-indexed).
+        """
+        import concurrent.futures
+        
+        # Fast path: skip threading overhead for single query
+        if len(sql_queries) <= 1:
+            if sql_queries:
+                result = self.execute_sql(sql_queries[0], max_rows, return_format)
+                result["query_number"] = 1
+                return [result]
+            return []
+        
+        print(f"⚡ Executing {len(sql_queries)} queries in parallel (max_workers={min(len(sql_queries), max_workers)})")
+        
+        results = [None] * len(sql_queries)  # Pre-allocate to preserve ordering
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(sql_queries), max_workers)) as executor:
+            future_to_idx = {
+                executor.submit(self.execute_sql, query, max_rows, return_format): idx
+                for idx, query in enumerate(sql_queries)
+            }
+            
+            for future in concurrent.futures.as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    result = future.result()
+                except Exception as e:
+                    # Catch unexpected errors not handled inside execute_sql
+                    result = {
+                        "success": False,
+                        "sql": sql_queries[idx],
+                        "result": None,
+                        "row_count": 0,
+                        "columns": [],
+                        "error": f"Parallel execution error: {type(e).__name__}: {str(e)}"
+                    }
+                result["query_number"] = idx + 1
+                results[idx] = result
+        
+        succeeded = sum(1 for r in results if r["success"])
+        print(f"⚡ Parallel execution complete: {succeeded}/{len(sql_queries)} succeeded")
+        
+        return results
+    
     def __call__(self, sql_query: str, max_rows: int = 100, return_format: str = "dict") -> Dict[str, Any]:
         """Make agent callable."""
         return self.execute_sql(sql_query, max_rows, return_format)

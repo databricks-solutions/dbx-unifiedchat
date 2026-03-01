@@ -45,7 +45,11 @@ def create_super_agent_hybrid() -> StateGraph:
     
     # Define routing logic based on explicit state
     def route_after_unified(state: AgentState) -> str:
-        """Route after unified node: planning or END (clarification/meta-question)"""
+        """Route after unified node: planning or END (clarification/meta-question/irrelevant)"""
+        # Check if irrelevant question - go directly to END with refusal
+        if state.get("is_irrelevant", False):
+            return END
+        
         # Check if meta-question - go directly to END with answer
         if state.get("is_meta_question", False):
             return END

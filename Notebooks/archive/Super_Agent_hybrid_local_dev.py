@@ -461,12 +461,15 @@ class AgentState(TypedDict):
     genie_route_plan: Optional[Dict[str, str]]
     
     # SQL Synthesis
-    sql_query: Optional[str]
+    sql_query: Optional[str]  # Keep for backward compatibility (first query)
+    sql_queries: Optional[List[str]]  # NEW: List of all SQL queries from multi-part questions
     sql_synthesis_explanation: Optional[str]  # Agent's explanation/reasoning
     synthesis_error: Optional[str]
+    has_sql: Optional[bool]  # Whether SQL was successfully extracted
     
     # Execution
-    execution_result: Optional[Dict[str, Any]]
+    execution_result: Optional[Dict[str, Any]]  # Keep for backward compatibility (first result)
+    execution_results: Optional[List[Dict[str, Any]]]  # NEW: List of all execution results
     execution_error: Optional[str]
     
     # Summary
@@ -1561,6 +1564,45 @@ print("✓ SQLSynthesisGenieAgent class defined")
 
 # COMMAND ----------
 
+# DBTITLE 1,Utility Function: Extract Multiple SQL Queries
+def extract_all_sql_queries(content: str) -> List[str]:
+    """
+    Extract all SQL queries from markdown code blocks.
+    
+    This function finds all SQL code blocks in the content, supporting both:
+    - Explicit ```sql blocks
+    - Generic ``` blocks containing SQL keywords
+    
+    Args:
+        content: The text content containing SQL code blocks
+        
+    Returns:
+        List of SQL query strings (empty list if none found)
+    """
+    sql_queries = []
+    
+    # Find all ```sql blocks (case-insensitive)
+    sql_pattern = r'```sql\s*(.*?)\s*```'
+    matches = re.findall(sql_pattern, content, re.IGNORECASE | re.DOTALL)
+    
+    if matches:
+        sql_queries.extend([m.strip() for m in matches if m.strip()])
+    else:
+        # Fallback: check for generic code blocks containing SQL keywords
+        generic_pattern = r'```\s*(.*?)\s*```'
+        matches = re.findall(generic_pattern, content, re.DOTALL)
+        for match in matches:
+            match = match.strip()
+            # Check if it looks like SQL (contains SQL keywords)
+            if match and any(kw in match.upper() for kw in ['SELECT', 'FROM', 'WHERE', 'JOIN']):
+                sql_queries.append(match)
+    
+    return sql_queries
+
+print("✓ extract_all_sql_queries utility function defined")
+
+# COMMAND ----------
+
 # DBTITLE 1,Agent Class 4: SQL Execution Agent (OOP)
 class SQLExecutionAgent:
     """
@@ -1761,30 +1803,98 @@ class ResultSummarizeAgent:
 
 """
             
+            # NEW: Check for multiple SQL queries and results
+            sql_queries = state.get('sql_queries', [])
+            execution_results = state.get('execution_results', [])
+            
+            # Fallback to single query/result for backward compatibility
+            if not sql_queries and sql_query:
+                sql_queries = [sql_query]
+            if not execution_results and exec_result:
+                execution_results = [exec_result]
+            
             # Add SQL synthesis info
-            if sql_query:
-                prompt += f"""**SQL Generation:** ✅ Successful
+            if sql_queries:
+                if len(sql_queries) == 1:
+                    # Single query (original behavior)
+                    prompt += f"""**SQL Generation:** ✅ Successful
 **SQL Query:** 
 ```sql
-{sql_query}
+{sql_queries[0]}
 ```
 
 """
+                else:
+                    # Multiple queries
+                    prompt += f"""**SQL Generation:** ✅ Successful ({len(sql_queries)} queries for multi-part question)
+
+"""
+                    for i, query in enumerate(sql_queries, 1):
+                        prompt += f"""**SQL Query {i}:** 
+```sql
+{query}
+```
+
+"""
+                
                 if sql_explanation:
                     prompt += f"""**SQL Synthesis Explanation:** {sql_explanation[:2000]}{'...' if len(sql_explanation) > 2000 else ''}
 
 """
                 
-                # Add execution info
-                if exec_result.get('success'):
-                    row_count = exec_result.get('row_count', 0)
-                    columns = exec_result.get('columns', [])
-                    result = exec_result.get('result', [])
-                    prompt += f"""**Execution:** ✅ Successful
+                # Add execution info (single or multiple results)
+                if execution_results:
+                    if len(execution_results) == 1:
+                        # Single result (original behavior)
+                        result = execution_results[0]
+                        if result.get('success'):
+                            row_count = result.get('row_count', 0)
+                            columns = result.get('columns', [])
+                            result_data = result.get('result', [])
+                            prompt += f"""**Execution:** ✅ Successful
 **Rows:** {row_count} rows returned
 **Columns:** {', '.join(columns[:5])}{'...' if len(columns) > 5 else ''}
 
-**Result:** {json.dumps(result, indent=2)}
+**Result:** {json.dumps(result_data, indent=2)}
+"""
+                        else:
+                            prompt += f"""**Execution:** ❌ Failed
+**Error:** {result.get('error', 'Unknown error')}
+
+"""
+                    else:
+                        # Multiple results
+                        all_successful = all(r.get('success') for r in execution_results)
+                        total_rows = sum(r.get('row_count', 0) for r in execution_results if r.get('success'))
+                        
+                        if all_successful:
+                            prompt += f"""**Execution:** ✅ All {len(execution_results)} queries executed successfully
+**Total Rows Returned:** {total_rows}
+
+"""
+                        else:
+                            failed_count = sum(1 for r in execution_results if not r.get('success'))
+                            prompt += f"""**Execution:** ⚠️ Partial success ({len(execution_results) - failed_count} succeeded, {failed_count} failed)
+
+"""
+                        
+                        # Add details for each result
+                        for i, result in enumerate(execution_results, 1):
+                            if result.get('success'):
+                                row_count = result.get('row_count', 0)
+                                columns = result.get('columns', [])
+                                result_data = result.get('result', [])
+                                prompt += f"""**Query {i} Result:**
+- Rows: {row_count}
+- Columns: {', '.join(columns[:5])}{'...' if len(columns) > 5 else ''}
+- Data: {json.dumps(result_data[:10], indent=2)}{'...(showing first 10 rows)' if len(result_data) > 10 else ''}
+
+"""
+                            else:
+                                prompt += f"""**Query {i} Result:**
+- Status: ❌ Failed
+- Error: {result.get('error', 'Unknown error')}
+
 """
                 elif execution_error:
                     prompt += f"""**Execution:** ❌ Failed
@@ -1799,16 +1909,23 @@ class ResultSummarizeAgent:
 """
         
         prompt += """
-**Task:** Generate a detailed summary in natural language that:
+**Task:** Generate a comprehensive summary in natural language that:
 1. Describes what the user asked for
 2. Explains what the system did (planning, SQL generation, execution)
-3. States the outcome (success with X rows, error, needs clarification, etc.)
-4. print out SQL synthesis explanation if any SQL was generated
-5. print out SQL if any SQL was generated; make it the code block
-6. print out the result itself (like a table).
+3. For multi-part questions with multiple queries:
+   - Explain each sub-question that was addressed
+   - Show each SQL query in its own code block with a clear label
+   - Present each query's results in a clear, readable format (preferably as a markdown table)
+   - Provide insights and analysis for each result
+   - Synthesize an overall conclusion combining insights from all queries
+4. For single queries:
+   - Print out SQL synthesis explanation if any SQL was generated
+   - Print out the SQL query in a code block
+   - Print out the result in a readable format (preferably as a markdown table)
+   - Provide insights and analysis for the result
+5. States the outcome (success with X rows, error, needs clarification, etc.)
 
-
-Keep it concise and user-friendly. 
+Use markdown formatting for readability. Keep it clear and user-friendly. 
 """
         
         return prompt
@@ -2032,12 +2149,25 @@ def sql_synthesis_table_node(state: AgentState) -> AgentState:
         
         state["sql_synthesis_explanation"] = explanation
         
-        if has_sql and sql_query and explanation:
-            state["sql_query"] = sql_query
-            state["has_sql"] = has_sql
+        # NEW: Extract all SQL queries from the complete response
+        # Check both the extracted SQL and the full explanation for SQL blocks
+        full_content = explanation
+        if sql_query:
+            full_content = f"{explanation}\n\n```sql\n{sql_query}\n```"
+        
+        sql_queries = extract_all_sql_queries(full_content)
+        
+        if sql_queries:
+            # Multi-query support
+            state["sql_queries"] = sql_queries
+            state["sql_query"] = sql_queries[0]  # For backward compatibility
+            state["has_sql"] = True
             state["next_agent"] = "sql_execution"
-            print("✓ SQL query synthesized successfully")
-            print(f"SQL Preview: {sql_query[:200]}...")
+            
+            print(f"✓ Extracted {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
+            for i, query in enumerate(sql_queries, 1):
+                print(f"  Query {i} preview: {query[:100]}...")
+            
             if explanation:
                 print(f"Agent Explanation: {explanation[:200]}...")
             
@@ -2113,13 +2243,25 @@ def sql_synthesis_genie_node(state: AgentState) -> AgentState:
         
         state["sql_synthesis_explanation"] = explanation
         
-        # Update explicit state
-        if has_sql and sql_query and explanation:
-            state["sql_query"] = sql_query
+        # NEW: Extract all SQL queries from the complete response
+        # Check both the extracted SQL and the full explanation for SQL blocks
+        full_content = explanation
+        if sql_query:
+            full_content = f"{explanation}\n\n```sql\n{sql_query}\n```"
+        
+        sql_queries = extract_all_sql_queries(full_content)
+        
+        if sql_queries:
+            # Multi-query support
+            state["sql_queries"] = sql_queries
+            state["sql_query"] = sql_queries[0]  # For backward compatibility
+            state["has_sql"] = True
             state["next_agent"] = "sql_execution"
-            state["has_sql"] = has_sql
-            print("✓ SQL fragments combined successfully")
-            print(f"SQL Preview: {sql_query[:200]}...")
+            
+            print(f"✓ Extracted {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
+            for i, query in enumerate(sql_queries, 1):
+                print(f"  Query {i} preview: {query[:100]}...")
+            
             if explanation:
                 print(f"Agent Explanation: {explanation[:200]}...")
             
@@ -2153,41 +2295,76 @@ def sql_synthesis_genie_node(state: AgentState) -> AgentState:
 def sql_execution_node(state: AgentState) -> AgentState:
     """
     SQL execution node wrapping SQLExecutionAgent class.
+    Supports executing multiple SQL queries for multi-part questions.
     Combines OOP modularity with explicit state management.
     """
     print("\n" + "="*80)
     print("🚀 SQL EXECUTION AGENT")
     print("="*80)
     
-    sql_query = state.get("sql_query")
+    # NEW: Support multiple queries
+    sql_queries = state.get("sql_queries", [])
     
-    if not sql_query:
-        print("❌ No SQL query to execute")
-        state["execution_error"] = "No SQL query provided"
-        # Route to summarize via fixed edge (sql_execution → summarize)
+    # Fallback to single query for backward compatibility
+    if not sql_queries:
+        single_query = state.get("sql_query")
+        if single_query:
+            sql_queries = [single_query]
+    
+    if not sql_queries:
+        print("❌ No SQL queries to execute")
+        state["execution_error"] = "No SQL queries provided"
+        state["next_agent"] = "summarize"
         return state
+    
+    print(f"📊 Executing {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
     
     # Use OOP agent
     execution_agent = SQLExecutionAgent()
-    result = execution_agent(sql_query)
+    execution_results = []
+    all_successful = True
     
-    if result["success"]:
-        print(f"✓ Query executed successfully!")
-        print(f"📊 Rows returned: {result['row_count']}")
-        print(f"📋 Columns: {', '.join(result['columns'])}")
+    # Execute each query
+    for i, query in enumerate(sql_queries, 1):
+        print(f"\n{'─'*80}")
+        print(f"Query {i} of {len(sql_queries)}")
+        print(f"{'─'*80}")
+        
+        result = execution_agent.execute_sql(query)
+        result["query_number"] = i  # Track which query this result is from
+        execution_results.append(result)
+        
+        if not result["success"]:
+            all_successful = False
+            print(f"❌ Query {i} failed: {result.get('error')}")
+        else:
+            print(f"✓ Query {i} succeeded: {result['row_count']} rows")
+    
+    # Store results (both single and multiple for backward compatibility)
+    state["execution_results"] = execution_results
+    state["execution_result"] = execution_results[0]  # For backward compatibility
+    
+    # Update state based on execution results
+    if all_successful:
+        total_rows = sum(r["row_count"] for r in execution_results)
+        success_msg = f"Executed {len(sql_queries)} quer{'y' if len(sql_queries) == 1 else 'ies'} successfully. Total rows: {total_rows}"
+        print(f"\n✅ {success_msg}")
         
         state["messages"].append(
-            SystemMessage(content=f"Execution successful: {result['row_count']} rows returned")
+            SystemMessage(content=success_msg)
         )
     else:
-        print(f"❌ SQL execution failed: {result.get('error', 'Unknown error')}")
-        state["execution_error"] = result.get("error")
+        failed_count = sum(1 for r in execution_results if not r["success"])
+        success_count = len(sql_queries) - failed_count
+        error_msg = f"{failed_count} of {len(sql_queries)} queries failed"
         
+        print(f"\n⚠️ Partial success: {success_count} succeeded, {failed_count} failed")
+        
+        state["execution_error"] = error_msg
         state["messages"].append(
-            SystemMessage(content=f"Execution failed: {result.get('error')}")
+            SystemMessage(content=f"{success_count} queries succeeded, {failed_count} failed")
         )
     
-    state["execution_result"] = result
     state["next_agent"] = "summarize"
     
     return state

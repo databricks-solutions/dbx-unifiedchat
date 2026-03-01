@@ -5,7 +5,7 @@ Shared test fixtures and configuration for the test suite.
 import pytest
 import os
 from typing import Generator
-from config import get_config, AgentConfig
+from src.multi_agent.core.config import get_config, AgentConfig
 
 
 @pytest.fixture(scope="session")

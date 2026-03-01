@@ -14,61 +14,54 @@ Original Super_Agent_hybrid.py (6,833 lines) archived in archive/ for reference.
 # COMMAND ----------
 
 # DBTITLE 1,Install Packages
-%pip install python-dotenv databricks-sdk==0.84.0 databricks-sql-connector==4.2.4 databricks-langchain[memory]==0.12.1 databricks-vectorsearch==0.63 databricks-agents==1.9.3 mlflow[databricks]>=3.6.0 pyyaml
+# MAGIC %pip install python-dotenv databricks-sdk==0.84.0 databricks-sql-connector==4.2.4 databricks-langchain[memory]==0.12.1 databricks-vectorsearch==0.63 databricks-agents==1.9.3 mlflow[databricks]>=3.6.0 pyyaml
 
 # COMMAND ----------
 
-%restart_python
+# MAGIC %restart_python
 
 # COMMAND ----------
 
-# DBTITLE 1,Load Configuration from YAML
-"""
-Load configuration from prod_config.yaml.
+# DBTITLE 1,autoreload local package
+# MAGIC %load_ext autoreload
+# MAGIC %autoreload 2
 
-For deployment, we use YAML configuration which gets packaged with the model.
-For local development, use config.py + .env instead.
-"""
+# COMMAND ----------
 
-import yaml
-import os
-
-# Load prod_config.yaml
-config_path = "../prod_config.yaml"
-with open(config_path, 'r') as f:
-    yaml_config = yaml.safe_load(f)
+# DBTITLE 1,Initialize ModelConfig and Load Environment Configurati ...
+from notebook_utils import load_deployment_config
+config_dict = load_deployment_config("../prod_config.yaml")
 
 # Extract configuration values
-CATALOG = yaml_config['catalog_name']
-SCHEMA = yaml_config['schema_name']
-TABLE_NAME = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks"
-VECTOR_SEARCH_INDEX = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks_vs_index"
+CATALOG = config_dict["CATALOG"]
+SCHEMA = config_dict["SCHEMA"]
+TABLE_NAME = config_dict["TABLE_NAME"]
+VECTOR_SEARCH_INDEX = config_dict["VECTOR_SEARCH_INDEX"]
 
 # LLM Endpoints - Diversified by Agent Role
-LLM_ENDPOINT_CLARIFICATION = yaml_config.get('llm_endpoint_clarification', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_PLANNING = yaml_config.get('llm_endpoint_planning', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = yaml_config.get('llm_endpoint_sql_synthesis_table', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = yaml_config.get('llm_endpoint_sql_synthesis_genie', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_EXECUTION = yaml_config.get('llm_endpoint_execution', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_SUMMARIZE = yaml_config.get('llm_endpoint_summarize', yaml_config['llm_endpoint'])
+LLM_ENDPOINT_CLARIFICATION = config_dict["LLM_ENDPOINT_CLARIFICATION"]
+LLM_ENDPOINT_PLANNING = config_dict["LLM_ENDPOINT_PLANNING"]
+LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = config_dict["LLM_ENDPOINT_SQL_SYNTHESIS_TABLE"]
+LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = config_dict["LLM_ENDPOINT_SQL_SYNTHESIS_GENIE"]
+LLM_ENDPOINT_EXECUTION = config_dict["LLM_ENDPOINT_EXECUTION"]
+LLM_ENDPOINT_SUMMARIZE = config_dict["LLM_ENDPOINT_SUMMARIZE"]
 
-# Lakebase configuration
-LAKEBASE_INSTANCE_NAME = yaml_config['lakebase_instance_name']
-EMBEDDING_ENDPOINT = yaml_config['lakebase_embedding_endpoint']
-EMBEDDING_DIMS = yaml_config['lakebase_embedding_dims']
+# Lakebase configuration for state management
+LAKEBASE_INSTANCE_NAME = config_dict["LAKEBASE_INSTANCE_NAME"]
+EMBEDDING_ENDPOINT = config_dict["EMBEDDING_ENDPOINT"]
+EMBEDDING_DIMS = config_dict["EMBEDDING_DIMS"]
 
-# SQL Warehouse
-SQL_WAREHOUSE_ID = yaml_config['sql_warehouse_id']
+# Genie space IDs
+GENIE_SPACE_IDS = config_dict["GENIE_SPACE_IDS"]
 
-# Genie Spaces
-GENIE_SPACE_IDS = yaml_config['genie_space_ids']
+# SQL Warehouse ID (required for SQLExecutionAgent)
+SQL_WAREHOUSE_ID = config_dict["SQL_WAREHOUSE_ID"]
 
-# Validate SQL_WAREHOUSE_ID
-if not SQL_WAREHOUSE_ID:
-    raise ValueError("SQL_WAREHOUSE_ID must be configured in prod_config.yaml")
+# UC Functions
+UC_FUNCTION_NAMES = config_dict["UC_FUNCTION_NAMES"]
 
 print("="*80)
-print("CONFIGURATION LOADED FROM prod_config.yaml")
+print("CONFIGURATION LOADED FROM prod_config.yaml via notebook_utils")
 print("="*80)
 print(f"Catalog: {CATALOG}")
 print(f"Schema: {SCHEMA}")
@@ -84,6 +77,8 @@ print(f"  SQL Synthesis Genie: {LLM_ENDPOINT_SQL_SYNTHESIS_GENIE}")
 print(f"  Execution: {LLM_ENDPOINT_EXECUTION}")
 print(f"  Summarize: {LLM_ENDPOINT_SUMMARIZE}")
 print("="*80)
+print("✓ All dependencies imported successfully (including memory support)")
+
 
 # COMMAND ----------
 
@@ -95,6 +90,7 @@ The modular code must be uploaded before deployment.
 """
 
 import sys
+import os
 
 # Add src to path
 notebook_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
@@ -115,6 +111,188 @@ except ImportError as e:
     print("  databricks workspace import-dir src/multi_agent /Workspace/src/multi_agent --overwrite")
     print("\nOr use Databricks Repos for automatic syncing.")
     raise
+
+# COMMAND ----------
+
+# DBTITLE 1,ONE-TIME SETUP: Initialize Lakebase Tables for State Management
+"""
+IMPORTANT: Run this cell ONCE to set up Lakebase instance and tables for state management.
+
+This creates:
+1. Lakebase Postgres instance (if it doesn't exist)
+2. checkpoints table - For short-term memory (multi-turn conversations)
+3. store table - For long-term memory (user preferences with semantic search)
+"""
+
+from databricks_langchain import CheckpointSaver, DatabricksStore
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.database import DatabaseInstance
+import time
+
+print("="*80)
+print("LAKEBASE INSTANCE SETUP")
+print("="*80)
+print(f"Instance name: {LAKEBASE_INSTANCE_NAME}")
+
+# Initialize Databricks workspace client
+w = WorkspaceClient()
+
+# Check if Lakebase instance exists, create if not
+instance_exists = False
+try:
+    instance = w.database.get_database_instance(LAKEBASE_INSTANCE_NAME)
+    print(f"✓ Lakebase instance '{LAKEBASE_INSTANCE_NAME}' already exists")
+    instance_exists = True
+except Exception as e:
+    print(f"Instance not found. Creating new Lakebase instance...")
+    try:
+        # Create Lakebase instance with DatabaseInstance object
+        instance = w.database.create_database_instance(
+            DatabaseInstance(
+                name=LAKEBASE_INSTANCE_NAME,
+                capacity="CU_1"  # Start with smallest capacity (1 compute unit)
+            )
+        )
+        print(f"✓ Lakebase instance '{LAKEBASE_INSTANCE_NAME}' creation initiated")
+        print(f"  Capacity: CU_1")
+        print("  Waiting for instance to become available...")
+        
+        # Wait for instance to be ready (can take 2-5 minutes)
+        max_wait_time = 300  # 5 minutes
+        wait_interval = 10  # Check every 10 seconds
+        elapsed_time = 0
+        
+        while elapsed_time < max_wait_time:
+            try:
+                instance = w.database.get_database_instance(LAKEBASE_INSTANCE_NAME)
+                # If we can get the instance without error, it's ready
+                print(f"✓ Instance is now available (waited {elapsed_time}s)")
+                instance_exists = True
+                break
+            except:
+                time.sleep(wait_interval)
+                elapsed_time += wait_interval
+                print(f"  Still waiting... ({elapsed_time}s elapsed)")
+        
+        if not instance_exists:
+            print(f"⚠️ Instance creation is taking longer than expected.")
+            print(f"   Please wait a few more minutes and re-run this cell.")
+            raise TimeoutError(f"Instance not ready after {max_wait_time}s")
+            
+    except Exception as create_error:
+        print(f"❌ Error creating Lakebase instance: {create_error}")
+        raise
+
+if instance_exists:
+    # Check if instance is in RUNNING state before proceeding
+    print("\n" + "="*80)
+    print("CHECKING INSTANCE STATUS")
+    print("="*80)
+    
+    max_status_wait = 600  # 10 minutes max wait for RUNNING state
+    status_check_interval = 60  # Check every 1 minute
+    status_elapsed = 0
+    
+    while status_elapsed < max_status_wait:
+        instance = w.database.get_database_instance(LAKEBASE_INSTANCE_NAME)
+        instance_state = instance.state.value if instance.state else "UNKNOWN"
+        
+        print(f"Instance state: {instance_state}")
+        
+        if instance_state == "AVAILABLE":
+            print("✓ Instance is AVAILABLE and ready for table setup")
+            break
+        elif instance_state in ["FAILED", "DELETED"]:
+            raise RuntimeError(f"Instance is in {instance_state} state. Cannot proceed.")
+        else:
+            print(f"Instance {instance_state} not ready yet. Waiting 1 minute before rechecking...")
+            time.sleep(status_check_interval)
+            status_elapsed += status_check_interval
+            print(f"  Total wait time: {status_elapsed}s")
+    
+    if status_elapsed >= max_status_wait:
+        raise TimeoutError(f"Instance did not reach RUNNING state after {max_status_wait}s")
+
+    print("\n" + "="*80)
+    print("INITIALIZING LAKEBASE TABLES")
+    print("="*80)
+
+    # Setup checkpoint table for short-term memory
+    print("Setting up checkpoint table...")
+    with CheckpointSaver(instance_name=LAKEBASE_INSTANCE_NAME) as saver:
+        saver.setup()
+        print("✓ Checkpoint table created/verified")
+
+    # Setup store table for long-term memory
+    print("Setting up store table...")
+    store = DatabricksStore(
+        instance_name=LAKEBASE_INSTANCE_NAME,
+        embedding_endpoint=EMBEDDING_ENDPOINT,
+        embedding_dims=EMBEDDING_DIMS,
+    )
+    store.setup()
+    print("✓ Store table created/verified")
+
+    print("\n" + "="*80)
+    print("✅ LAKEBASE SETUP COMPLETE!")
+    print("="*80)
+    print(f"Instance: {LAKEBASE_INSTANCE_NAME}")
+    print("Tables: checkpoints, store")
+    print("="*80)
+
+# COMMAND ----------
+
+# DBTITLE 1,ONE-TIME SETUP: Register Unity Catalog Functions for Metadata Querying
+"""
+Register UC functions that will be used as tools by the SQL Synthesis Agent.
+
+These UC functions query different levels of the enriched genie docs chunks table:
+1. get_space_summary: High-level space information
+2. get_table_overview: Table-level metadata
+3. get_column_detail: Column-level metadata
+4. get_space_instructions: Extract raw SQL instructions JSON (any structure within instructions field) from space metadata (REQUIRED FINAL STEP)
+5. get_space_details: Complete metadata (last resort - token intensive)
+
+All functions use LANGUAGE SQL for better performance and compatibility.
+
+IMPORTANT: This registration is now centralized in src/multi_agent/tools/uc_functions.py
+and should be called before creating agents.
+"""
+from databricks_langchain import (
+    DatabricksFunctionClient,
+    UCFunctionToolkit,
+    set_uc_function_client,
+)
+# Initialize UC Function Client
+client = DatabricksFunctionClient()
+set_uc_function_client(client)
+
+# Import the registration function from the centralized module
+from src.multi_agent.tools import register_uc_functions, check_uc_functions_exist
+
+# Register all UC functions using the centralized registration module
+result = register_uc_functions(
+    catalog=CATALOG,
+    schema=SCHEMA,
+    table_name=TABLE_NAME
+)
+
+# # Check registration result
+# if not result["success"]:
+#     print("\n" + "=" * 80)
+#     print("⚠️ WARNING: Some UC functions failed to register!")
+#     print("=" * 80)
+#     for error in result["errors"]:
+#         print(f"  ✗ {error}")
+#     print("=" * 80)
+#     raise RuntimeError("Failed to register all UC functions")
+
+# # Verify all functions exist
+# print("\n🔍 Verifying UC functions...")
+# check_result = check_uc_functions_exist(spark=spark, catalog=CATALOG, schema=SCHEMA, verbose=True)
+
+# if not check_result["all_exist"]:
+#     raise RuntimeError(f"Missing UC functions: {check_result['missing_functions']}")
 
 # COMMAND ----------
 
@@ -166,7 +344,7 @@ print("="*80)
 
 # COMMAND ----------
 
-# DBTITLE 1,Deploy Agent to Model Serving
+# DBTITLE 1,mlflow logging model
 """
 Deploy the agent to Model Serving with modular code.
 
@@ -216,12 +394,13 @@ resources = [
     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_summary"),
     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_table_overview"),
     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_column_detail"),
+    DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_instructions"),
     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_details"),
 ]
 
 # Input example for schema inference
 input_example = {
-    "input": [{"role": "user", "content": "Show me patient data"}],
+    "input": [{"role": "user", "content": "What is the average medical cost of diabetes patients? Use Genie route"}],
     "custom_inputs": {"thread_id": "example-123"},
     "context": {"conversation_id": "sess-001", "user_id": "user@example.com"}
 }
@@ -275,8 +454,12 @@ uc_model_info = mlflow.register_model(
 )
 print(f"✓ Model registered: {UC_MODEL_NAME} version {uc_model_info.version}")
 
+# COMMAND ----------
+
+# DBTITLE 1,Deploy Agent to Model Serving
 # Deploy to Model Serving
 from databricks import agents
+import os
 
 deployment_info = agents.deploy(
     UC_MODEL_NAME,
@@ -306,33 +489,73 @@ print("="*80)
 
 # COMMAND ----------
 
-# DBTITLE 1,Test Deployed Endpoint
-"""
-Test the deployed endpoint with a sample query.
-"""
+endpoint_status = w.serving_endpoints.get(name=deployment_info.endpoint_name)
 
+# COMMAND ----------
+
+# DBTITLE 1,Test Deployed Endpoint with Readiness Check
 from databricks.sdk import WorkspaceClient
+import time
 
 w = WorkspaceClient()
 
-# Test query
+# Wait for endpoint to be ready
+print("Waiting for endpoint to be ready...")
+max_wait_time = 1800
+wait_interval = 30
+elapsed_time = 0
+
+while elapsed_time < max_wait_time:
+    try:
+        endpoint_status = w.serving_endpoints.get(name=deployment_info.endpoint_name)
+        state = endpoint_status.state.config_update if endpoint_status.state.config_update else endpoint_status.state.ready
+        state = state.value
+
+        print(f"  Endpoint state: {state} (elapsed: {elapsed_time}s)")
+        
+        if state in ["READY", "NOT_UPDATING"]:
+            print("\n✓ Endpoint is ready!")
+            break
+        elif state in ["UPDATE_FAILED", "CRASHED"]:
+            print(f"\n✗ Endpoint deployment failed with state: {state}")
+            raise RuntimeError(f"Endpoint failed to deploy: {state}")
+        
+        time.sleep(wait_interval)
+        elapsed_time += wait_interval
+        
+    except Exception as e:
+        if elapsed_time == 0:
+            print(f"  Initial status check failed: {e}")
+            print(f"  This is normal for new deployments. Waiting...")
+        time.sleep(wait_interval)
+        elapsed_time += wait_interval
+
+if elapsed_time >= max_wait_time:
+    print(f"\n⚠ Timeout: Endpoint not ready after {max_wait_time}s")
+    print("Check Model Serving UI for details.")
+    raise TimeoutError(f"Endpoint not ready after {max_wait_time}s")
+
+print("\nTesting endpoint with sample query...")
 test_input = {
-    "input": [{"role": "user", "content": "Show me patient demographics"}],
+    "input": [{"role": "user", "content": "How many total patients are there? Give me patient demographics distribution."}],
     "custom_inputs": {"thread_id": "test-123"}
 }
 
-# Query endpoint
 try:
-    print("Testing endpoint...")
+    # Use dataframe_records for MLflow pyfunc models
     response = w.serving_endpoints.query(
         name=deployment_info.endpoint_name,
-        inputs=[test_input]
+        dataframe_records=[test_input]
     )
     print("\n✓ Endpoint responding successfully")
-    print(f"Response preview: {str(response)[:200]}...")
+    print(f"Response preview: {str(response)[:500]}...")
 except Exception as e:
-    print(f"⚠️ Error testing endpoint: {e}")
-    print("The endpoint may still be initializing. Check Model Serving UI.")
+    print(f"\n✗ Error querying endpoint: {e}")
+    print("Check Model Serving UI and logs for details.")
+
+# COMMAND ----------
+
+response.predictions
 
 # COMMAND ----------
 
@@ -403,37 +626,37 @@ print("="*80)
 
 # MAGIC %md
 # MAGIC ## 📝 Notes
-# MAGIC 
+# MAGIC
 # MAGIC ### What Changed from Original Super_Agent_hybrid.py
-# MAGIC 
+# MAGIC
 # MAGIC **Before** (Original - 6,833 lines):
 # MAGIC - All agent code embedded in notebook
 # MAGIC - Hard to maintain and test
 # MAGIC - Difficult to iterate locally
-# MAGIC 
+# MAGIC
 # MAGIC **After** (This notebook - ~250 lines):
 # MAGIC - Imports from `../src/multi_agent/`
 # MAGIC - Uses `code_paths` parameter to package modular code
 # MAGIC - Same functionality, cleaner structure
 # MAGIC - Easy to test locally before deploying
-# MAGIC 
+# MAGIC
 # MAGIC ### Benefits
-# MAGIC 
+# MAGIC
 # MAGIC 1. **Single Source of Truth**: Same code for local dev and deployment
 # MAGIC 2. **Easier Testing**: Test components individually
 # MAGIC 3. **Better Maintainability**: Small modules (<500 lines each)
 # MAGIC 4. **Faster Iteration**: Develop locally, test in Databricks, deploy
-# MAGIC 
+# MAGIC
 # MAGIC ### Related Files
-# MAGIC 
+# MAGIC
 # MAGIC - `agent.py`: MLflow wrapper (imports from src/multi_agent/)
 # MAGIC - `test_agent_databricks.py`: Test before deploying
 # MAGIC - `src/multi_agent/`: All agent code (single source of truth)
 # MAGIC - `prod_config.yaml`: Production configuration
 # MAGIC - `archive/Super_Agent_hybrid_original.py`: Original 6,833-line version (for reference)
-# MAGIC 
+# MAGIC
 # MAGIC ### Documentation
-# MAGIC 
+# MAGIC
 # MAGIC - [Deployment Guide](../docs/DEPLOYMENT.md)
 # MAGIC - [Configuration Guide](../docs/CONFIGURATION.md)
 # MAGIC - [Architecture](../docs/ARCHITECTURE.md)

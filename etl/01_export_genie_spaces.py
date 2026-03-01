@@ -14,7 +14,8 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install dotenv
+# MAGIC %pip install python-dotenv requests
+# MAGIC dbutils.library.restartPython()
 
 # COMMAND ----------
 
@@ -24,16 +25,18 @@ import json
 import pathlib
 import requests
 from typing import List, Dict, Optional
-from dotenv import load_dotenv
 
-# Load environment variables from .env file (if running locally)
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not available; fine on Databricks
+
+print("Imports loaded successfully")
 
 # COMMAND ----------
 
 # DBTITLE 1,Setup Parameters
-
-dbutils.widgets.removeAll()
 
 # Databricks connection (use environment variables or widgets)
 dbutils.widgets.text("databricks_host", os.getenv("DATABRICKS_HOST", ""), "Databricks Host")
@@ -63,23 +66,47 @@ genie_space_ids_str = dbutils.widgets.get("genie_space_ids")
 # Parse Genie Space IDs
 GENIE_SPACE_IDS = [sid.strip() for sid in genie_space_ids_str.split(",") if sid.strip()]
 
-# Validate required parameters
+print("Resolving Databricks host and token...")
+
+# Validate required parameters — try env vars, then auto-detect from notebook context
 if not HOST:
     HOST = os.environ.get("DATABRICKS_HOST", "").rstrip("/")
+    if HOST:
+        print(f"  Got host from env var: {HOST}")
 if not TOKEN:
     TOKEN = os.environ.get("DATABRICKS_TOKEN") or os.environ.get("DATABRICKS_PAT")
+    if TOKEN:
+        print("  Got token from env var")
+
+# Auto-detect from Databricks notebook context (works on serverless + classic clusters)
+if not HOST:
+    try:
+        workspace_url = spark.conf.get("spark.databricks.workspaceUrl")
+        HOST = "https://" + workspace_url
+        print(f"  Auto-detected host from spark conf: {HOST}")
+    except Exception as e:
+        print(f"  Could not auto-detect host from spark conf: {e}")
+
+if not TOKEN:
+    try:
+        TOKEN = dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+        print("  Auto-detected token from notebook context")
+    except Exception as e:
+        print(f"  Could not auto-detect token from notebook context: {e}")
 
 # Ensure HOST starts with https://
 if HOST and not HOST.startswith("https://"):
     HOST = f"https://{HOST.lstrip('/')}"
 
 if not HOST or not TOKEN:
-    raise SystemExit(
-        "Please provide DATABRICKS_HOST and DATABRICKS_TOKEN via environment variables or widgets"
-    )
+    msg = f"Cannot resolve credentials. HOST={'set' if HOST else 'MISSING'}, TOKEN={'set' if TOKEN else 'MISSING'}"
+    print(f"FATAL: {msg}")
+    dbutils.notebook.exit(msg)
 
 if not GENIE_SPACE_IDS:
-    raise SystemExit("Please provide at least one Genie Space ID via GENIE_SPACE_IDS")
+    msg = "No Genie Space IDs provided"
+    print(f"FATAL: {msg}")
+    dbutils.notebook.exit(msg)
 
 # Setup API headers
 HEADERS = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/json"}
@@ -99,10 +126,27 @@ for i, sid in enumerate(GENIE_SPACE_IDS, 1):
 # DBTITLE 1,Create Unity Catalog Volume
 
 # Create catalog, schema, and volume if they don't exist
-spark.sql(f"CREATE CATALOG IF NOT EXISTS `{catalog_name}`")
-print(f"✓ Catalog '{catalog_name}' ready")
+# Use try/except for CREATE CATALOG — some workspaces require a managed location
+try:
+    spark.sql(f"CREATE CATALOG IF NOT EXISTS `{catalog_name}`")
+    print(f"✓ Catalog '{catalog_name}' created/verified")
+except Exception as e:
+    if "already exists" in str(e).lower() or "CATALOG_ALREADY_EXISTS" in str(e):
+        print(f"✓ Catalog '{catalog_name}' already exists")
+    else:
+        # Catalog may already exist but CREATE failed due to storage config — try to USE it
+        print(f"⚠ CREATE CATALOG failed ({type(e).__name__}), attempting to USE existing catalog...")
+        try:
+            spark.sql(f"USE CATALOG `{catalog_name}`")
+            print(f"✓ Catalog '{catalog_name}' exists and is accessible")
+        except Exception as e2:
+            msg = f"Cannot create or access catalog '{catalog_name}': {e}"
+            print(f"FATAL: {msg}")
+            dbutils.notebook.exit(msg)
 
 spark.sql(f"USE CATALOG `{catalog_name}`")
+print(f"✓ Using catalog '{catalog_name}'")
+
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{schema_name}`")
 print(f"✓ Schema '{schema_name}' ready")
 

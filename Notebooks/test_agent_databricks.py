@@ -15,6 +15,21 @@ Use this for:
 
 # COMMAND ----------
 
+# DBTITLE 1,Install Packages
+# MAGIC %pip install python-dotenv databricks-sdk==0.84.0 databricks-sql-connector==4.2.4 databricks-langchain[memory]==0.12.1 databricks-vectorsearch==0.63 databricks-agents==1.9.3 mlflow[databricks]>=3.6.0 pyyaml
+
+# COMMAND ----------
+
+# MAGIC %restart_python
+
+# COMMAND ----------
+
+# DBTITLE 1,dev_package_autoreload
+# MAGIC %load_ext autoreload
+# MAGIC %autoreload 2
+
+# COMMAND ----------
+
 # DBTITLE 1,Setup: Add src to Path
 import sys
 import os
@@ -29,6 +44,16 @@ print(f"✓ Added to path: {src_path}")
 
 # COMMAND ----------
 
+# DBTITLE 1,Setting up module level logger
+import logging
+logger = logging.getLogger(__name__)
+
+# COMMAND ----------
+
+import mlflow
+
+# COMMAND ----------
+
 # DBTITLE 1,Load Configuration from YAML
 """
 Load configuration from dev_config.yaml for testing.
@@ -37,39 +62,37 @@ This uses the same YAML configuration that deployment uses,
 but loads it for testing purposes.
 """
 
-import yaml
+from notebook_utils import load_deployment_config
 
-# Load dev_config.yaml
-config_path = os.path.join(os.path.dirname(notebook_dir), "dev_config.yaml")
-with open(config_path, 'r') as f:
-    yaml_config = yaml.safe_load(f)
+# Load dev_config.yaml via notebook_utils
+config_dict = load_deployment_config("../dev_config.yaml")
 
 # Extract key configuration values
-CATALOG = yaml_config['catalog_name']
-SCHEMA = yaml_config['schema_name']
-TABLE_NAME = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks"
-VECTOR_SEARCH_INDEX = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks_vs_index"
+CATALOG = config_dict['CATALOG']
+SCHEMA = config_dict['SCHEMA']
+TABLE_NAME = config_dict['TABLE_NAME']
+VECTOR_SEARCH_INDEX = config_dict['VECTOR_SEARCH_INDEX']
 
 # LLM Endpoints
-LLM_ENDPOINT_CLARIFICATION = yaml_config.get('llm_endpoint_clarification', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_PLANNING = yaml_config.get('llm_endpoint_planning', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = yaml_config.get('llm_endpoint_sql_synthesis_table', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = yaml_config.get('llm_endpoint_sql_synthesis_genie', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_EXECUTION = yaml_config.get('llm_endpoint_execution', yaml_config['llm_endpoint'])
-LLM_ENDPOINT_SUMMARIZE = yaml_config.get('llm_endpoint_summarize', yaml_config['llm_endpoint'])
+LLM_ENDPOINT_CLARIFICATION = config_dict['LLM_ENDPOINT_CLARIFICATION']
+LLM_ENDPOINT_PLANNING = config_dict['LLM_ENDPOINT_PLANNING']
+LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = config_dict['LLM_ENDPOINT_SQL_SYNTHESIS_TABLE']
+LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = config_dict['LLM_ENDPOINT_SQL_SYNTHESIS_GENIE']
+LLM_ENDPOINT_EXECUTION = config_dict['LLM_ENDPOINT_EXECUTION']
+LLM_ENDPOINT_SUMMARIZE = config_dict['LLM_ENDPOINT_SUMMARIZE']
 
 # Lakebase
-LAKEBASE_INSTANCE_NAME = yaml_config['lakebase_instance_name']
-EMBEDDING_ENDPOINT = yaml_config['lakebase_embedding_endpoint']
+LAKEBASE_INSTANCE_NAME = config_dict['LAKEBASE_INSTANCE_NAME']
+EMBEDDING_ENDPOINT = config_dict['EMBEDDING_ENDPOINT']
 
 # SQL Warehouse
-SQL_WAREHOUSE_ID = yaml_config['sql_warehouse_id']
+SQL_WAREHOUSE_ID = config_dict['SQL_WAREHOUSE_ID']
 
 # Genie Spaces
-GENIE_SPACE_IDS = yaml_config['genie_space_ids']
+GENIE_SPACE_IDS = config_dict['GENIE_SPACE_IDS']
 
 print("="*80)
-print("CONFIGURATION LOADED FROM dev_config.yaml")
+print("CONFIGURATION LOADED FROM dev_config.yaml via notebook_utils")
 print("="*80)
 print(f"Catalog: {CATALOG}")
 print(f"Schema: {SCHEMA}")
@@ -81,222 +104,72 @@ print("="*80)
 
 # COMMAND ----------
 
-# DBTITLE 1,Import Modular Agent Code
-"""
-Import agent code from src/multi_agent/ package.
-
-This imports the same code that gets deployed via code_paths parameter.
-"""
-
-try:
-    from multi_agent.core.graph import create_agent_graph
-    from multi_agent.core.state import get_initial_state, AgentState
-    from multi_agent.agents import (
-        unified_intent_context_clarification_node,
-        planning_node,
-        sql_synthesis_table_node,
-        sql_synthesis_genie_node,
-        sql_execution_node,
-        summarize_node
-    )
-    print("✓ Successfully imported modular agent code from src/multi_agent/")
-except ImportError as e:
-    print(f"❌ Import Error: {e}")
-    print("\nTroubleshooting:")
-    print("1. Make sure src/multi_agent/ directory is synced to Databricks")
-    print("2. Verify the path was added correctly (see cell above)")
-    print("3. Check that all __init__.py files exist in src/multi_agent/")
-    raise
+from agent import AGENT
 
 # COMMAND ----------
 
-# DBTITLE 1,Create Agent Graph
-"""
-Create the agent graph using modular code.
-
-This creates the same graph that would be deployed to Model Serving.
-"""
-
-from langgraph.graph import StateGraph, END
-
-# Create workflow (matching structure in src/multi_agent/core/graph.py)
-workflow = StateGraph(AgentState)
-
-# Add nodes
-workflow.add_node("unified_intent_context_clarification", unified_intent_context_clarification_node)
-workflow.add_node("planning", planning_node)
-workflow.add_node("sql_synthesis_table", sql_synthesis_table_node)
-workflow.add_node("sql_synthesis_genie", sql_synthesis_genie_node)
-workflow.add_node("sql_execution", sql_execution_node)
-workflow.add_node("summarize", summarize_node)
-
-# Define routing logic
-def route_after_unified(state: AgentState) -> str:
-    if state.get("is_meta_question", False):
-        return END
-    if state.get("question_clear", False):
-        return "planning"
-    return END
-
-def route_after_planning(state: AgentState) -> str:
-    next_agent = state.get("next_agent", "summarize")
-    if next_agent == "sql_synthesis_table":
-        return "sql_synthesis_table"
-    elif next_agent == "sql_synthesis_genie":
-        return "sql_synthesis_genie"
-    return "summarize"
-
-def route_after_synthesis(state: AgentState) -> str:
-    next_agent = state.get("next_agent", "summarize")
-    if next_agent == "sql_execution":
-        return "sql_execution"
-    return "summarize"
-
-# Add routing
-workflow.set_entry_point("unified_intent_context_clarification")
-workflow.add_conditional_edges("unified_intent_context_clarification", route_after_unified, {"planning": "planning", END: END})
-workflow.add_conditional_edges("planning", route_after_planning, {"sql_synthesis_table": "sql_synthesis_table", "sql_synthesis_genie": "sql_synthesis_genie", "summarize": "summarize"})
-workflow.add_conditional_edges("sql_synthesis_table", route_after_synthesis, {"sql_execution": "sql_execution", "summarize": "summarize"})
-workflow.add_conditional_edges("sql_synthesis_genie", route_after_synthesis, {"sql_execution": "sql_execution", "summarize": "summarize"})
-workflow.add_edge("sql_execution", "summarize")
-workflow.add_edge("summarize", END)
-
-# Compile WITHOUT checkpointer for simple testing
-agent = workflow.compile()
-
-print("✓ Agent graph created from modular code")
-print("✓ Ready for testing with real Databricks services")
+# DBTITLE 1,testing-related library import
+from uuid import uuid4
+from mlflow.types.responses import ResponsesAgentRequest
 
 # COMMAND ----------
 
-# DBTITLE 1,Test with Sample Query
+# DBTITLE 1,predict (a wrapper of predict_stream)
+follow_up_msg =  "What is the average cost of medical claims for patients diagnosed with diabetes, broken down by insurance payer type and patient age group? use table route"
+thread_id = f"test-streaming-{str(uuid4())[:8]}"
+print("thread_id in use:", thread_id)
+# follow up of thread from above, update here
+# First message
+result1 = AGENT.predict(ResponsesAgentRequest(
+    input=[{"role": "user", "content": f"{follow_up_msg}"}],
+    custom_inputs={"thread_id": f"{thread_id}"}
+))
+
+# COMMAND ----------
+
+# DBTITLE 1,Test with predict_stream
 """
 Test the agent with a sample query.
 
-This tests the complete workflow with real Databricks services.
+This tests the complete workflow with real Databricks services using the ResponsesAgent interface.
 """
 
-# Sample query
-test_query = "Show me patient demographics"
+from mlflow.types.responses import ResponsesAgentRequest
 
-# Create initial state
-initial_state = get_initial_state()
-initial_state["messages"] = [{"role": "user", "content": test_query}]
+# Sample query
+test_query = "Show me patient demographics. Use Genie Route"
 
 print("="*80)
 print(f"TESTING QUERY: {test_query}")
 print("="*80)
 
-# Invoke agent
-response = agent.invoke(initial_state)
+request = ResponsesAgentRequest(
+    input=[{"role": "user", "content": f"{test_query}"}],
+    custom_inputs={"thread_id": "test-thread-001", "user_id": "test_user"}
+)
 
-# Display response
-if response.get("final_response"):
-    print("\n✓ RESPONSE:")
-    print(response["final_response"])
-elif response.get("meta_answer"):
-    print("\n✓ META ANSWER:")
-    print(response["meta_answer"])
-elif response.get("pending_clarification"):
-    clarification = response["pending_clarification"]
-    print(f"\n✓ CLARIFICATION NEEDED:")
-    print(clarification["reason"])
-    print("\nOptions:")
-    for i, option in enumerate(clarification["options"], 1):
-        print(f"  {i}. {option}")
-else:
-    print("\n⚠️ No response generated")
+# Invoke agent using predict_stream
+print("\nStreaming response:")
+print("-" * 40)
+
+try:
+    for event in AGENT.predict_stream(request):
+        if event.type == "response.output_item.delta":
+            # Stream the text chunks
+            content = event.item.get("content", [])
+            if content and content[0].get("type") == "text":
+                print(content[0].get("text", ""), end="", flush=True)
+        elif event.type == "response.output_item.done":
+            # Print custom events or tool calls
+            content = event.item.get("content", [])
+            if content and content[0].get("type") == "text":
+                print(f"\n[Event] {content[0].get('text', '')}")
+except Exception as e:
+    print(f"\n❌ Error during execution: {e}")
+    import traceback
+    traceback.print_exc()
 
 print("\n" + "="*80)
-
-# COMMAND ----------
-
-# DBTITLE 1,Test with Your Own Query
-"""
-Run your own test queries here.
-
-Change the query below and run this cell to test different scenarios.
-"""
-
-# YOUR QUERY HERE
-my_query = "Show me patients with high blood pressure and their medications"
-
-# Run query
-initial_state = get_initial_state()
-initial_state["messages"] = [{"role": "user", "content": my_query}]
-
-print(f"Query: {my_query}\n")
-response = agent.invoke(initial_state)
-
-# Display response
-if response.get("final_response"):
-    print(response["final_response"])
-elif response.get("pending_clarification"):
-    print("Clarification needed:", response["pending_clarification"]["reason"])
-
-# COMMAND ----------
-
-# DBTITLE 1,Test Multi-Turn Conversation
-"""
-Test multi-turn conversation with checkpointer.
-
-This tests conversation state persistence.
-"""
-
-from databricks_langchain.checkpoint import DatabricksCheckpointSaver
-from databricks.sdk import WorkspaceClient
-
-# Create agent with checkpointer
-w = WorkspaceClient()
-checkpointer = DatabricksCheckpointSaver(w.lakebase, database_instance_name=LAKEBASE_INSTANCE_NAME)
-agent_with_memory = workflow.compile(checkpointer=checkpointer)
-
-# Thread ID for conversation
-thread_id = "test-thread-123"
-
-# First turn
-print("="*80)
-print("MULTI-TURN CONVERSATION TEST")
-print("="*80)
-
-turn1_state = get_initial_state(thread_id=thread_id)
-turn1_state["messages"] = [{"role": "user", "content": "Show me patients"}]
-
-print("\n👤 Turn 1: Show me patients")
-response1 = agent_with_memory.invoke(turn1_state, config={"configurable": {"thread_id": thread_id}})
-print(f"🤖 Agent: {response1.get('final_response', 'No response')[:200]}...")
-
-# Second turn (follow-up)
-turn2_state = get_initial_state(thread_id=thread_id)
-turn2_state["messages"] = [{"role": "user", "content": "What about their medications?"}]
-
-print("\n👤 Turn 2: What about their medications?")
-response2 = agent_with_memory.invoke(turn2_state, config={"configurable": {"thread_id": thread_id}})
-print(f"🤖 Agent: {response2.get('final_response', 'No response')[:200]}...")
-
-print("\n✓ Multi-turn conversation test complete")
-
-# COMMAND ----------
-
-# DBTITLE 1,Inspect Agent State (Debugging)
-"""
-Inspect the agent state for debugging.
-
-Use this to see what's in the state at any point.
-"""
-
-# Run a query and inspect the response
-test_state = get_initial_state()
-test_state["messages"] = [{"role": "user", "content": "test query"}]
-result = agent.invoke(test_state)
-
-# Show state keys
-print("State keys:")
-for key in sorted(result.keys()):
-    value = result[key]
-    if value is not None:
-        value_str = str(value)[:100] if len(str(value)) > 100 else str(value)
-        print(f"  {key}: {value_str}")
 
 # COMMAND ----------
 
@@ -317,7 +190,8 @@ print("\nWhat was tested:")
 print("✓ Imports from src/multi_agent/")
 print("✓ Configuration loading from dev_config.yaml")
 print("✓ Agent graph construction")
-print("✓ Single query execution")
+print("✓ ResponsesAgent wrapper initialization")
+print("✓ Single query execution via predict_stream")
 print("✓ Multi-turn conversations with checkpointer")
 print("✓ Real Databricks services integration")
 print("\nNext steps:")

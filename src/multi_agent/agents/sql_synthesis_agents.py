@@ -144,7 +144,8 @@ class SQLSynthesisTableAgent:
             f"{catalog}.{schema}.get_space_summary",
             f"{catalog}.{schema}.get_table_overview",
             f"{catalog}.{schema}.get_column_detail",
-            f"{catalog}.{schema}.get_space_details",
+            f"{catalog}.{schema}.get_space_instructions",  # REQUIRED FINAL STEP before SQL synthesis
+            f"{catalog}.{schema}.get_space_details",  # Last resort only
         ]
         
         self.uc_toolkit = UCFunctionToolkit(function_names=uc_function_names)
@@ -161,21 +162,27 @@ class SQLSynthesisTableAgent:
                 "## WORKFLOW:\n"
                 "1. Review the execution plan and provided metadata\n"
                 "2. If metadata is sufficient → Generate SQL immediately\n"
-                "3. If insufficient, call UC function tools in this order:\n"
+                "3. If insufficient, call UC function tools in this order to gather metadata:\n"
                 "   a) get_space_summary for space information\n"
                 "   b) get_table_overview for table schemas\n"
                 "   c) get_column_detail for specific columns\n"
                 "   d) get_space_details ONLY as last resort (token intensive)\n"
-                "4. At last, if you still cannot find enough metadata in relevant spaces provided, dont stuck there. Expand the searching scope to all spaces mentioned in the execution plan's 'vector_search_relevant_spaces_info' field. Extract the space_id from 'vector_search_relevant_spaces_info'. \n"
-                "5. Generate complete, executable SQL\n\n"
+                "4. If still cannot find enough metadata in relevant spaces, expand searching scope to all spaces\n"
+                "   mentioned in the execution plan's 'vector_search_relevant_spaces_info' field\n"
+                "5. Generate complete, executable SQL using the gathered metadata, print out the final SQL\n\n"
 
                 "## UC FUNCTION USAGE:\n"
-                "- Pass arguments as JSON array strings: '[\"space_id_1\", \"space_id_2\"]' or 'null'\n"
+                "- Pass arguments as JSON array strings: e.g., '[\"space_id_1\", \"space_id_2\"]' or passing a NULL without any quote\n"
+                "- Always explicitly passing all required arguments, even it is a NULL\n"
                 "- Only query spaces from execution plan's relevant_space_ids\n"
                 "- Use minimal sufficiency: only query what you need\n"
                 "- OPTIMIZATION: When possible, call multiple UC functions in parallel by returning multiple tool calls\n"
                 "  Example: If you need table_overview for space_1 AND column_detail for space_2, call both tools at once\n"
                 "- This enables parallel execution and reduces latency by 1-2 seconds\n\n"
+
+                "## SQL FINETUNE INSTRUCTIONS:\n"
+                "- **Additional SQL Finetune Step** After you already generated the SQL, take a reflection first, and then you are ready to call **get_space_instructions** to extract the space instructions taught by human; only use the most related instruction parts to finetune the SQL if necessary.\n"
+                "- This provides essential human-taught SQL patterns and best practices for the specific space.\n\n"
 
                 "## OUTPUT REQUIREMENTS:\n"
                 "- Generate complete, executable SQL with:\n"
@@ -183,10 +190,32 @@ class SQLSynthesisTableAgent:
                 "  * WHERE clauses for filtering\n"
                 "  * Appropriate aggregations\n"
                 "  * Clear column aliases\n"
-                "  * Always use real column names, never make up ones\n"
+                "  * Always use real column names, never make up ones\n\n"
+                "## MULTI-QUERY STRATEGY:\n"
+                "- If the question has multiple parts (sub_questions) and you think it's better to report\n"
+                "  each query and result separately instead of combining into one big complex query:\n"
+                "  * Generate MULTIPLE separate SQL queries (one per sub-question)\n"
+                "  * This is preferred when: sub-questions are independent, results are easier to interpret\n"
+                "    separately, or combining would create overly complex SQL\n"
+                "- If sub-questions are closely related and naturally combine (e.g., same table, similar filters):\n"
+                "  * You may generate a single combined SQL query\n\n"
+                "## OUTPUT FORMAT:\n"
                 "- Return your response with:\n"
                 "1. Your explanations; If SQL cannot be generated, explain what metadata is missing\n"
-                "2. The final SQL query in a ```sql code block\n\n"
+                "2. SQL queries formatted as follows:\n"
+                "   * For SINGLE-part questions: One ```sql code block with query ending in semicolon\n"
+                "   * For MULTI-part questions: Use SEPARATE ```sql code blocks (one per query)\n"
+                "   * Each query MUST end with a semicolon (;)\n"
+                "   * Add a leading comment before each query: -- Query N: <brief description>\n"
+                "   * Example for multi-part:\n"
+                "     ```sql\n"
+                "     -- Query 1: Most common diagnoses\n"
+                "     SELECT diagnosis_code, COUNT(*) AS freq FROM diagnosis GROUP BY diagnosis_code;\n"
+                "     ```\n"
+                "     ```sql\n"
+                "     -- Query 2: Top procedures\n"
+                "     SELECT procedure_code, COUNT(*) AS count FROM procedures GROUP BY procedure_code;\n"
+                "     ```\n\n"
             )
         )
     
@@ -229,24 +258,30 @@ Use your available UC function tools to gather metadata intelligently.
             sql_query = None
             has_sql = False
             
-            # Try to extract SQL from markdown if present
+            # Try to extract SQL from markdown - use findall to capture ALL code blocks
             if "```sql" in final_content.lower():
-                sql_match = re.search(r'```sql\s*(.*?)\s*```', final_content, re.IGNORECASE | re.DOTALL)
-                if sql_match:
-                    sql_query = sql_match.group(1).strip()
+                # Find all ```sql blocks
+                sql_blocks = re.findall(r'```sql\s*(.*?)\s*```', final_content, re.IGNORECASE | re.DOTALL)
+                if sql_blocks:
+                    # Join all SQL blocks with newlines to preserve multi-query structure
+                    sql_query = '\n\n'.join(block.strip() for block in sql_blocks if block.strip())
                     has_sql = True
-                    # Remove SQL block from content to get explanation
+                    # Remove all SQL blocks from content to get explanation
                     final_content = re.sub(r'```sql\s*.*?\s*```', '', final_content, flags=re.IGNORECASE | re.DOTALL)
             elif "```" in final_content:
-                sql_match = re.search(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
-                if sql_match:
-                    # Check if it looks like SQL
-                    potential_sql = sql_match.group(1).strip()
-                    if any(keyword in potential_sql.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN']):
-                        sql_query = potential_sql
-                        has_sql = True
-                        # Remove SQL block from content to get explanation
-                        final_content = re.sub(r'```\s*.*?\s*```', '', final_content, flags=re.DOTALL)
+                # Find all generic code blocks
+                code_blocks = re.findall(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
+                # Filter for SQL-like blocks
+                sql_blocks = [
+                    block.strip() for block in code_blocks 
+                    if block.strip() and any(keyword in block.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN', 'WITH'])
+                ]
+                if sql_blocks:
+                    # Join all SQL blocks
+                    sql_query = '\n\n'.join(sql_blocks)
+                    has_sql = True
+                    # Remove all code blocks from content to get explanation
+                    final_content = re.sub(r'```\s*.*?\s*```', '', final_content, flags=re.DOTALL)
             
             # Clean up explanation
             explanation = final_content.strip()
@@ -638,7 +673,15 @@ Step 3: Keep space_1 SQL, retry space_2 with reframed question using invoke_para
 Step 4: Combine all successful SQL fragments
 
 ## SQL SYNTHESIS:
-Combine all SQL fragments into a single query.
+
+MULTI-QUERY STRATEGY:
+- If the question has multiple parts and you think it's better to report each query
+  and result separately instead of combining into one big complex query:
+  * Generate MULTIPLE separate SQL queries (one per sub-question)
+  * This is preferred when: sub-questions are independent, results are easier to interpret
+    separately, or combining would create overly complex SQL
+- If sub-questions are closely related and naturally combine (e.g., same Genie space, similar context):
+  * You may combine SQL fragments into a single query
 
 OUTPUT REQUIREMENTS:
 - Generate complete, executable SQL with:
@@ -649,7 +692,20 @@ OUTPUT REQUIREMENTS:
   * Always use real column names from the data
 - Return your response with:
   1. Your explanation (including which execution strategy you used)
-  2. The final SQL query in a ```sql code block"""
+  2. SQL queries formatted as follows:
+     * For SINGLE-part questions: One ```sql code block with query ending in semicolon
+     * For MULTI-part questions: Use SEPARATE ```sql code blocks (one per query)
+     * Each query MUST end with a semicolon (;)
+     * Add a leading comment before each query: -- Query N: <brief description>
+     * Example for multi-part:
+       ```sql
+       -- Query 1: Most common diagnoses
+       SELECT diagnosis_code, COUNT(*) AS freq FROM diagnosis GROUP BY diagnosis_code;
+       ```
+       ```sql
+       -- Query 2: Top procedures
+       SELECT procedure_code, COUNT(*) AS count FROM procedures GROUP BY procedure_code;
+       ```"""
             )
         )
         
@@ -811,23 +867,30 @@ Then combine them into a final SQL query.
             has_sql = False
             explanation = final_content
             
-            # Clean markdown if present and extract SQL
+            # Clean markdown if present and extract SQL - use findall to capture ALL code blocks
             if "```sql" in final_content.lower():
-                sql_match = re.search(r'```sql\s*(.*?)\s*```', final_content, re.IGNORECASE | re.DOTALL)
-                if sql_match:
-                    sql_query = sql_match.group(1).strip()
+                # Find all ```sql blocks
+                sql_blocks = re.findall(r'```sql\s*(.*?)\s*```', final_content, re.IGNORECASE | re.DOTALL)
+                if sql_blocks:
+                    # Join all SQL blocks with newlines to preserve multi-query structure
+                    sql_query = '\n\n'.join(block.strip() for block in sql_blocks if block.strip())
                     has_sql = True
-                    # Remove SQL block to get explanation
+                    # Remove all SQL blocks to get explanation
                     explanation = re.sub(r'```sql\s*.*?\s*```', '', final_content, flags=re.IGNORECASE | re.DOTALL)
             elif "```" in final_content:
-                sql_match = re.search(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
-                if sql_match:
-                    potential_sql = sql_match.group(1).strip()
-                    if any(keyword in potential_sql.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN']):
-                        sql_query = potential_sql
-                        has_sql = True
-                        # Remove SQL block to get explanation
-                        explanation = re.sub(r'```\s*.*?\s*```', '', final_content, flags=re.DOTALL)
+                # Find all generic code blocks
+                code_blocks = re.findall(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
+                # Filter for SQL-like blocks
+                sql_blocks = [
+                    block.strip() for block in code_blocks 
+                    if block.strip() and any(keyword in block.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN', 'WITH'])
+                ]
+                if sql_blocks:
+                    # Join all SQL blocks
+                    sql_query = '\n\n'.join(sql_blocks)
+                    has_sql = True
+                    # Remove all code blocks to get explanation
+                    explanation = re.sub(r'```\s*.*?\s*```', '', final_content, flags=re.DOTALL)
             else:
                 # No markdown, check if the entire content is SQL
                 if any(keyword in final_content.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN']):

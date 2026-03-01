@@ -1,0 +1,1039 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1920, height=1080, initial-scale=1">
+<title>DBX-UnifiedChat - Two Slide Overview</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #0a0e1a;
+    color: #f8fafc;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 30px 20px;
+    gap: 40px;
+  }
+
+  .slide-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 2px;
+    color: #475569;
+    margin-bottom: -30px;
+    align-self: center;
+  }
+
+  /* ============================= */
+  /*  SLIDE 1: The Agent System    */
+  /* ============================= */
+  .slide {
+    width: 1280px;
+    min-height: 720px;
+    border-radius: 12px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 25px 60px rgba(0,0,0,0.5);
+  }
+
+  .slide-1 {
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 40%, #0f172a 100%);
+    padding: 44px 52px 36px;
+  }
+
+  .slide-1::before {
+    content: '';
+    position: absolute;
+    top: -100px; right: -100px;
+    width: 500px; height: 500px;
+    background: radial-gradient(circle, rgba(255,54,33,0.07) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .slide-1::after {
+    content: '';
+    position: absolute;
+    bottom: -80px; left: -80px;
+    width: 400px; height: 400px;
+    background: radial-gradient(circle, rgba(167,139,250,0.05) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  /* Slide 1 Header */
+  .s1-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 24px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .s1-header h1 {
+    font-size: 36px;
+    font-weight: 900;
+    background: linear-gradient(135deg, #FF3621 0%, #FF6B4A 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: -1px;
+    line-height: 1;
+  }
+
+  .s1-header .sub {
+    font-size: 15px;
+    color: #94a3b8;
+    margin-top: 6px;
+    font-weight: 400;
+  }
+
+  .slide-counter {
+    font-size: 11px;
+    color: #475569;
+    font-weight: 600;
+    letter-spacing: 1px;
+  }
+
+  /* Slide 1 Body */
+  .s1-body {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 24px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .s1-left {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  /* Problem + Solution cards */
+  .problem-card, .solution-card {
+    border-radius: 10px;
+    padding: 18px 20px;
+  }
+
+  .problem-card {
+    background: rgba(239,68,68,0.06);
+    border: 1px solid rgba(239,68,68,0.15);
+  }
+
+  .problem-card h3 {
+    font-size: 13px;
+    font-weight: 700;
+    color: #f87171;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 10px;
+  }
+
+  .problem-card ul {
+    list-style: none;
+    padding: 0;
+  }
+
+  .problem-card li {
+    font-size: 12px;
+    color: #cbd5e1;
+    padding: 3px 0;
+    padding-left: 16px;
+    position: relative;
+    line-height: 1.5;
+  }
+
+  .problem-card li::before {
+    content: '\2716';
+    position: absolute;
+    left: 0;
+    color: #ef4444;
+    font-size: 10px;
+    top: 4px;
+  }
+
+  .solution-card {
+    background: rgba(16,185,129,0.06);
+    border: 1px solid rgba(16,185,129,0.15);
+  }
+
+  .solution-card h3 {
+    font-size: 13px;
+    font-weight: 700;
+    color: #34d399;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 10px;
+  }
+
+  .solution-card ul {
+    list-style: none;
+    padding: 0;
+  }
+
+  .solution-card li {
+    font-size: 12px;
+    color: #cbd5e1;
+    padding: 3px 0;
+    padding-left: 16px;
+    position: relative;
+    line-height: 1.5;
+  }
+
+  .solution-card li::before {
+    content: '\2714';
+    position: absolute;
+    left: 0;
+    color: #10b981;
+    font-size: 10px;
+    top: 4px;
+  }
+
+  .solution-card li strong { color: #e2e8f0; }
+
+  /* Architecture diagram */
+  .s1-right {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .arch-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: #64748b;
+    margin-bottom: 2px;
+  }
+
+  .arch-diagram {
+    background: rgba(15,23,42,0.7);
+    border: 1px solid rgba(148,163,184,0.1);
+    border-radius: 10px;
+    padding: 20px;
+    flex: 1;
+  }
+
+  .agent-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  .agent-row:last-child { margin-bottom: 0; }
+
+  .agent-box {
+    padding: 7px 12px;
+    border-radius: 6px;
+    font-size: 10.5px;
+    font-weight: 600;
+    white-space: nowrap;
+    text-align: center;
+    border: 1px solid;
+  }
+
+  .agent-user { background: rgba(255,54,33,0.15); border-color: rgba(255,54,33,0.3); color: #FF6B4A; }
+  .agent-supervisor { background: rgba(251,191,36,0.12); border-color: rgba(251,191,36,0.25); color: #fbbf24; }
+  .agent-planner { background: rgba(167,139,250,0.12); border-color: rgba(167,139,250,0.25); color: #a78bfa; }
+  .agent-genie { background: rgba(59,130,246,0.12); border-color: rgba(59,130,246,0.25); color: #60a5fa; }
+  .agent-sql { background: rgba(16,185,129,0.12); border-color: rgba(16,185,129,0.25); color: #34d399; }
+  .agent-exec { background: rgba(244,114,182,0.12); border-color: rgba(244,114,182,0.25); color: #f472b6; }
+  .agent-summ { background: rgba(251,191,36,0.12); border-color: rgba(251,191,36,0.25); color: #fbbf24; }
+  .agent-clarify { background: rgba(148,163,184,0.12); border-color: rgba(148,163,184,0.2); color: #94a3b8; }
+  .agent-memory { background: rgba(20,184,166,0.12); border-color: rgba(20,184,166,0.25); color: #2dd4bf; }
+
+  .arrow { color: #475569; font-size: 14px; flex-shrink: 0; }
+  .arrow-down { color: #475569; font-size: 12px; text-align: center; margin: 2px 0; }
+
+  .agent-group {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .route-label {
+    font-size: 9px;
+    color: #64748b;
+    font-style: italic;
+    margin-left: 8px;
+  }
+
+  .features-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 10px;
+  }
+
+  .feature-chip {
+    background: rgba(30,41,59,0.8);
+    border: 1px solid rgba(148,163,184,0.08);
+    border-radius: 8px;
+    padding: 10px 12px;
+    text-align: center;
+  }
+
+  .feature-chip .num {
+    font-size: 20px;
+    font-weight: 800;
+    line-height: 1;
+    margin-bottom: 2px;
+  }
+
+  .feature-chip:nth-child(1) .num { color: #FF6B4A; }
+  .feature-chip:nth-child(2) .num { color: #60a5fa; }
+  .feature-chip:nth-child(3) .num { color: #34d399; }
+
+  .feature-chip .label {
+    font-size: 9px;
+    color: #94a3b8;
+    text-transform: uppercase;
+    letter-spacing: 0.8px;
+    font-weight: 600;
+  }
+
+  /* Slide 1 Footer */
+  .s1-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(148,163,184,0.08);
+    position: relative;
+    z-index: 1;
+  }
+
+  .tech-badges {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+
+  .badge {
+    font-size: 9px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 4px;
+    letter-spacing: 0.3px;
+  }
+
+  .badge-orange { background: rgba(255,54,33,0.12); color: #FF6B4A; border: 1px solid rgba(255,54,33,0.2); }
+  .badge-blue { background: rgba(59,130,246,0.12); color: #60a5fa; border: 1px solid rgba(59,130,246,0.2); }
+  .badge-green { background: rgba(16,185,129,0.12); color: #34d399; border: 1px solid rgba(16,185,129,0.2); }
+  .badge-purple { background: rgba(167,139,250,0.12); color: #a78bfa; border: 1px solid rgba(167,139,250,0.2); }
+  .badge-yellow { background: rgba(251,191,36,0.12); color: #fbbf24; border: 1px solid rgba(251,191,36,0.2); }
+  .badge-teal { background: rgba(20,184,166,0.12); color: #2dd4bf; border: 1px solid rgba(20,184,166,0.2); }
+
+  .credits {
+    font-size: 10px;
+    color: #475569;
+    text-align: right;
+  }
+  .credits strong { color: #64748b; }
+
+
+  /* ============================= */
+  /*  SLIDE 2: App + ETL           */
+  /* ============================= */
+  .slide-2 {
+    background: linear-gradient(135deg, #0f172a 0%, #1a2332 40%, #0f172a 100%);
+    padding: 44px 52px 36px;
+  }
+
+  .slide-2::before {
+    content: '';
+    position: absolute;
+    top: -80px; right: -80px;
+    width: 450px; height: 450px;
+    background: radial-gradient(circle, rgba(59,130,246,0.07) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .slide-2::after {
+    content: '';
+    position: absolute;
+    bottom: -80px; left: -80px;
+    width: 400px; height: 400px;
+    background: radial-gradient(circle, rgba(16,185,129,0.05) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .s2-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 24px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .s2-header h1 {
+    font-size: 32px;
+    font-weight: 900;
+    color: #f1f5f9;
+    letter-spacing: -0.5px;
+    line-height: 1;
+  }
+
+  .s2-header h1 span {
+    background: linear-gradient(135deg, #3b82f6 0%, #60a5fa 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+
+  .s2-header .sub {
+    font-size: 14px;
+    color: #94a3b8;
+    margin-top: 6px;
+    font-weight: 400;
+  }
+
+  .s2-body {
+    display: grid;
+    grid-template-columns: 3fr 2fr;
+    gap: 24px;
+    position: relative;
+    z-index: 1;
+  }
+
+  /* Tables to Genies Section */
+  .app-section {
+    background: rgba(30,41,59,0.4);
+    border: 1px solid rgba(59,130,246,0.15);
+    border-top: 3px solid #3b82f6;
+    border-radius: 10px;
+    padding: 22px 24px;
+  }
+
+  .app-section h2 {
+    font-size: 18px;
+    font-weight: 700;
+    color: #f1f5f9;
+    margin-bottom: 3px;
+  }
+
+  .app-section .tag {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: #60a5fa;
+    margin-bottom: 14px;
+  }
+
+  .app-section p {
+    font-size: 12px;
+    color: #cbd5e1;
+    line-height: 1.55;
+    margin-bottom: 16px;
+  }
+
+  .workflow-steps {
+    display: flex;
+    gap: 0;
+    margin-bottom: 16px;
+  }
+
+  .workflow-step {
+    flex: 1;
+    text-align: center;
+    position: relative;
+  }
+
+  .step-circle {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 auto 6px;
+    font-size: 14px;
+    font-weight: 800;
+    color: #fff;
+    position: relative;
+    z-index: 2;
+  }
+
+  .workflow-step:nth-child(1) .step-circle { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+  .workflow-step:nth-child(2) .step-circle { background: linear-gradient(135deg, #8b5cf6, #7c3aed); }
+  .workflow-step:nth-child(3) .step-circle { background: linear-gradient(135deg, #10b981, #059669); }
+  .workflow-step:nth-child(4) .step-circle { background: linear-gradient(135deg, #f59e0b, #d97706); }
+  .workflow-step:nth-child(5) .step-circle { background: linear-gradient(135deg, #FF3621, #dc2626); }
+
+  .workflow-step::after {
+    content: '';
+    position: absolute;
+    top: 18px;
+    left: 55%;
+    right: -45%;
+    height: 2px;
+    background: linear-gradient(90deg, rgba(148,163,184,0.3), rgba(148,163,184,0.1));
+    z-index: 1;
+  }
+
+  .workflow-step:last-child::after { display: none; }
+
+  .step-label {
+    font-size: 9.5px;
+    font-weight: 600;
+    color: #e2e8f0;
+    line-height: 1.3;
+  }
+
+  .step-desc {
+    font-size: 8.5px;
+    color: #64748b;
+    margin-top: 2px;
+    line-height: 1.3;
+  }
+
+  .app-features {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+
+  .app-feat {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 10px;
+    background: rgba(15,23,42,0.5);
+    border-radius: 6px;
+    border: 1px solid rgba(148,163,184,0.06);
+  }
+
+  .app-feat-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 5px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    flex-shrink: 0;
+  }
+
+  .app-feat:nth-child(1) .app-feat-icon { background: rgba(59,130,246,0.15); }
+  .app-feat:nth-child(2) .app-feat-icon { background: rgba(167,139,250,0.15); }
+  .app-feat:nth-child(3) .app-feat-icon { background: rgba(16,185,129,0.15); }
+  .app-feat:nth-child(4) .app-feat-icon { background: rgba(255,54,33,0.15); }
+
+  .app-feat-text {
+    font-size: 10px;
+    color: #94a3b8;
+    line-height: 1.4;
+  }
+
+  .app-feat-text strong { color: #e2e8f0; font-size: 10.5px; }
+
+  /* ETL Section */
+  .etl-section {
+    background: rgba(30,41,59,0.4);
+    border: 1px solid rgba(16,185,129,0.15);
+    border-top: 3px solid #10b981;
+    border-radius: 10px;
+    padding: 22px 24px;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .etl-section h2 {
+    font-size: 18px;
+    font-weight: 700;
+    color: #f1f5f9;
+    margin-bottom: 3px;
+  }
+
+  .etl-section .tag {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    color: #34d399;
+    margin-bottom: 14px;
+  }
+
+  .etl-section p {
+    font-size: 12px;
+    color: #cbd5e1;
+    line-height: 1.55;
+    margin-bottom: 16px;
+  }
+
+  .etl-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    flex: 1;
+  }
+
+  .etl-step {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 12px 14px;
+    background: rgba(15,23,42,0.5);
+    border-radius: 8px;
+    border: 1px solid rgba(148,163,184,0.06);
+    position: relative;
+  }
+
+  .etl-step-num {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    font-weight: 800;
+    color: #fff;
+    flex-shrink: 0;
+  }
+
+  .etl-step:nth-child(1) .etl-step-num { background: linear-gradient(135deg, #10b981, #059669); }
+  .etl-step:nth-child(2) .etl-step-num { background: linear-gradient(135deg, #3b82f6, #2563eb); }
+  .etl-step:nth-child(3) .etl-step-num { background: linear-gradient(135deg, #8b5cf6, #7c3aed); }
+
+  .etl-step-content h4 {
+    font-size: 12px;
+    font-weight: 700;
+    color: #e2e8f0;
+    margin-bottom: 2px;
+  }
+
+  .etl-step-content span {
+    font-size: 10px;
+    color: #94a3b8;
+    line-height: 1.4;
+  }
+
+  .etl-step::after {
+    content: '';
+    position: absolute;
+    bottom: -10px;
+    left: 26px;
+    width: 2px;
+    height: 10px;
+    background: rgba(148,163,184,0.15);
+  }
+
+  .etl-step:last-child::after { display: none; }
+
+  .etl-output {
+    margin-top: 14px;
+    padding: 10px 14px;
+    background: rgba(16,185,129,0.06);
+    border: 1px solid rgba(16,185,129,0.15);
+    border-radius: 6px;
+  }
+
+  .etl-output h4 {
+    font-size: 10px;
+    font-weight: 700;
+    color: #34d399;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 6px;
+  }
+
+  .etl-output ul {
+    list-style: none;
+    padding: 0;
+  }
+
+  .etl-output li {
+    font-size: 10px;
+    color: #94a3b8;
+    padding: 1.5px 0;
+    padding-left: 14px;
+    position: relative;
+  }
+
+  .etl-output li::before {
+    content: '\2713';
+    position: absolute;
+    left: 0;
+    color: #10b981;
+    font-size: 9px;
+  }
+
+  /* Bottom section */
+  .s2-bottom {
+    display: flex;
+    gap: 16px;
+    margin-top: 20px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .use-case-card {
+    flex: 1;
+    background: rgba(30,41,59,0.4);
+    border: 1px solid rgba(148,163,184,0.08);
+    border-radius: 8px;
+    padding: 14px 16px;
+    text-align: center;
+  }
+
+  .use-case-card h4 {
+    font-size: 11px;
+    font-weight: 700;
+    color: #e2e8f0;
+    margin-bottom: 4px;
+  }
+
+  .use-case-card p {
+    font-size: 10px;
+    color: #64748b;
+    line-height: 1.4;
+  }
+
+  .use-case-card .example {
+    font-size: 10px;
+    color: #94a3b8;
+    font-style: italic;
+    margin-top: 6px;
+    padding: 5px 8px;
+    background: rgba(15,23,42,0.5);
+    border-radius: 4px;
+  }
+
+  .s2-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(148,163,184,0.08);
+    position: relative;
+    z-index: 1;
+  }
+
+  .cta-text {
+    font-size: 12px;
+    color: #94a3b8;
+  }
+
+  .cta-text strong {
+    color: #FF6B4A;
+  }
+
+  /* Print styles */
+  @media print {
+    body { background: white; padding: 0; gap: 0; }
+    .slide { box-shadow: none; page-break-after: always; border-radius: 0; }
+    .slide-label { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ============================================ -->
+<!-- SLIDE 1: Multi-Agent System                  -->
+<!-- ============================================ -->
+<div class="slide-label">Slide 1 of 2</div>
+<div class="slide slide-1">
+
+  <div class="s1-header">
+    <div>
+      <h1>DBX-UnifiedChat</h1>
+      <div class="sub">Intelligent Cross-Domain Data Queries with Multi-Agent AI &mdash; Built on Databricks</div>
+    </div>
+    <div class="slide-counter">1 / 2</div>
+  </div>
+
+  <div class="s1-body">
+
+    <!-- Left: Problem / Solution -->
+    <div class="s1-left">
+      <div class="problem-card">
+        <h3>The Challenge</h3>
+        <ul>
+          <li><strong style="color:#fca5a5">Data Silos</strong> &mdash; Critical data scattered across dozens of domains and systems</li>
+          <li><strong style="color:#fca5a5">SQL Expertise Gap</strong> &mdash; Business users blocked without deep technical skills</li>
+          <li><strong style="color:#fca5a5">Complex Schemas</strong> &mdash; Understanding data architecture takes weeks, not hours</li>
+          <li><strong style="color:#fca5a5">Slow Time-to-Insight</strong> &mdash; Waiting for data teams creates decision bottlenecks</li>
+        </ul>
+      </div>
+
+      <div class="solution-card">
+        <h3>The Solution: 7 Specialized AI Agents</h3>
+        <ul>
+          <li><strong>Supervisor + Planning</strong> &mdash; Analyzes intent, plans execution via Vector Search</li>
+          <li><strong>Genie Agents (parallel)</strong> &mdash; NL-to-SQL for each data domain simultaneously</li>
+          <li><strong>SQL Synthesis + Execution</strong> &mdash; Auto-generates complex cross-domain JOINs</li>
+          <li><strong>Clarification Agent</strong> &mdash; Handles ambiguity with intelligent follow-ups</li>
+          <li><strong>Summarize Agent</strong> &mdash; Delivers formatted answers with reasoning</li>
+          <li><strong>Lakebase Memory</strong> &mdash; Multi-turn chat + long-term user preferences</li>
+        </ul>
+      </div>
+
+      <div class="features-row">
+        <div class="feature-chip">
+          <div class="num">2-5s</div>
+          <div class="label">Simple Queries</div>
+        </div>
+        <div class="feature-chip">
+          <div class="num">18+</div>
+          <div class="label">Data Domains</div>
+        </div>
+        <div class="feature-chip">
+          <div class="num">88</div>
+          <div class="label">Tables Covered</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: Architecture -->
+    <div class="s1-right">
+      <div class="arch-label">Agent Architecture (LangGraph)</div>
+      <div class="arch-diagram">
+        <div class="agent-row">
+          <div class="agent-box agent-user">User Query</div>
+          <span class="arrow">&rarr;</span>
+          <div class="agent-box agent-supervisor">Supervisor Agent</div>
+          <span class="arrow">&rarr;</span>
+          <div class="agent-box agent-planner">Planning Agent</div>
+        </div>
+        <div class="arrow-down">&darr; &nbsp;&nbsp; Vector Search + Genie Metadata</div>
+
+        <div style="margin: 8px 0; padding: 10px; background: rgba(30,41,59,0.5); border-radius: 6px; border: 1px solid rgba(148,163,184,0.06);">
+          <div style="font-size: 9px; color: #64748b; font-weight: 600; margin-bottom: 6px; text-transform: uppercase; letter-spacing: 1px;">Intelligent Route Selection</div>
+
+          <div class="agent-row" style="margin-bottom: 6px;">
+            <span class="route-label" style="width: 80px; margin-left: 0;">Single domain</span>
+            <span class="arrow">&rarr;</span>
+            <div class="agent-box agent-genie">Genie Agent</div>
+          </div>
+
+          <div class="agent-row" style="margin-bottom: 6px;">
+            <span class="route-label" style="width: 80px; margin-left: 0;">Multi domain</span>
+            <span class="arrow">&rarr;</span>
+            <div class="agent-group">
+              <div class="agent-box agent-genie">Genie 1</div>
+              <div class="agent-box agent-genie">Genie 2</div>
+              <div class="agent-box agent-genie">Genie N</div>
+            </div>
+          </div>
+
+          <div class="agent-row">
+            <span class="route-label" style="width: 80px; margin-left: 0;">Complex JOIN</span>
+            <span class="arrow">&rarr;</span>
+            <div class="agent-box agent-sql">SQL Synthesis</div>
+            <span class="arrow">&rarr;</span>
+            <div class="agent-box agent-exec">SQL Execution</div>
+          </div>
+        </div>
+
+        <div class="arrow-down">&darr;</div>
+
+        <div class="agent-row">
+          <div class="agent-box agent-clarify">Clarification</div>
+          <span style="color:#475569; font-size: 10px;">if needed</span>
+          <span style="flex:1"></span>
+          <div class="agent-box agent-summ">Summarize Agent</div>
+          <span class="arrow">&rarr;</span>
+          <div class="agent-box agent-user">Answer</div>
+        </div>
+
+        <div style="margin-top: 10px; border-top: 1px solid rgba(148,163,184,0.06); padding-top: 8px;">
+          <div class="agent-row">
+            <div class="agent-box agent-memory">Lakebase Short-Term Memory</div>
+            <div class="agent-box agent-memory">Lakebase Long-Term Memory</div>
+            <span style="font-size: 9px; color: #64748b; margin-left: 6px;">Persistent across sessions</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="s1-footer">
+    <div class="tech-badges">
+      <span class="badge badge-orange">LangGraph</span>
+      <span class="badge badge-blue">Databricks Genie</span>
+      <span class="badge badge-teal">Lakebase</span>
+      <span class="badge badge-purple">Vector Search</span>
+      <span class="badge badge-yellow">Claude Sonnet 4.5</span>
+      <span class="badge badge-blue">Unity Catalog</span>
+      <span class="badge badge-orange">MLflow</span>
+      <span class="badge badge-green">Model Serving</span>
+    </div>
+    <div class="credits">
+      <strong>Databricks Field Solutions</strong>
+    </div>
+  </div>
+
+</div>
+
+
+<!-- ============================================ -->
+<!-- SLIDE 2: App + ETL Pipeline                  -->
+<!-- ============================================ -->
+<div class="slide-label">Slide 2 of 2</div>
+<div class="slide slide-2">
+
+  <div class="s2-header">
+    <div>
+      <h1>From Tables to <span>Intelligent Genies</span> &mdash; In Minutes</h1>
+      <div class="sub">Self-service tooling and automated metadata enrichment that power the agent system</div>
+    </div>
+    <div class="slide-counter">2 / 2</div>
+  </div>
+
+  <div class="s2-body">
+
+    <!-- Tables-to-Genies App -->
+    <div class="app-section">
+      <div class="tag">Full-Stack Databricks App &bull; React + FastAPI</div>
+      <h2>Tables-to-Genies App</h2>
+      <p>
+        A guided visual workflow that lets anyone turn Unity Catalog tables into production-ready Genie Spaces.
+        Browse your data, auto-enrich with LLM-generated descriptions, discover relationships with GraphRAG,
+        and deploy Genie rooms &mdash; all without writing a single line of code.
+      </p>
+
+      <!-- 5-Step Workflow -->
+      <div class="workflow-steps">
+        <div class="workflow-step">
+          <div class="step-circle">1</div>
+          <div class="step-label">Browse<br>Catalogs</div>
+          <div class="step-desc">Explore UC tables</div>
+        </div>
+        <div class="workflow-step">
+          <div class="step-circle">2</div>
+          <div class="step-label">Enrich<br>Tables</div>
+          <div class="step-desc">LLM descriptions</div>
+        </div>
+        <div class="workflow-step">
+          <div class="step-circle">3</div>
+          <div class="step-label">Explore<br>Graph</div>
+          <div class="step-desc">GraphRAG analysis</div>
+        </div>
+        <div class="workflow-step">
+          <div class="step-circle">4</div>
+          <div class="step-label">Build<br>Rooms</div>
+          <div class="step-desc">Group by domain</div>
+        </div>
+        <div class="workflow-step">
+          <div class="step-circle">5</div>
+          <div class="step-label">Create<br>Genies</div>
+          <div class="step-desc">One-click deploy</div>
+        </div>
+      </div>
+
+      <!-- Key Features -->
+      <div class="app-features">
+        <div class="app-feat">
+          <div class="app-feat-icon">&#x1F50D;</div>
+          <div class="app-feat-text"><strong>UC Catalog Browser</strong><br>Hierarchical tree view of all catalogs, schemas &amp; tables</div>
+        </div>
+        <div class="app-feat">
+          <div class="app-feat-icon">&#x2728;</div>
+          <div class="app-feat-text"><strong>LLM Enrichment</strong><br>Auto-generated data dictionaries, column descriptions &amp; stats</div>
+        </div>
+        <div class="app-feat">
+          <div class="app-feat-icon">&#x1F310;</div>
+          <div class="app-feat-text"><strong>GraphRAG Explorer</strong><br>LLM + structural analysis discovers semantic &amp; schema relationships</div>
+        </div>
+        <div class="app-feat">
+          <div class="app-feat-icon">&#x1F680;</div>
+          <div class="app-feat-text"><strong>Batch Genie Creation</strong><br>Deploy multiple Genie Spaces to your workspace in one click</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ETL Pipeline -->
+    <div class="etl-section">
+      <div class="tag">Metadata Enrichment Pipeline</div>
+      <h2>ETL Pipeline</h2>
+      <p>
+        Three-step pipeline that transforms raw Genie metadata into the enriched
+        Vector Search index powering the agent's semantic routing.
+      </p>
+
+      <div class="etl-steps">
+        <div class="etl-step">
+          <div class="etl-step-num">01</div>
+          <div class="etl-step-content">
+            <h4>Export Genie Spaces</h4>
+            <span>Capture Genie space metadata &amp; table structures into Unity Catalog volumes</span>
+          </div>
+        </div>
+        <div class="etl-step">
+          <div class="etl-step-num">02</div>
+          <div class="etl-step-content">
+            <h4>Enrich Table Metadata</h4>
+            <span>LLM-powered enrichment with samples, statistics, column details &amp; descriptions</span>
+          </div>
+        </div>
+        <div class="etl-step">
+          <div class="etl-step-num">03</div>
+          <div class="etl-step-content">
+            <h4>Build Vector Search Index</h4>
+            <span>Semantic index for sub-second metadata retrieval enabling intelligent query routing</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="etl-output">
+        <h4>Pipeline Outputs</h4>
+        <ul>
+          <li>Enriched metadata table in Unity Catalog</li>
+          <li>Chunked documents for retrieval</li>
+          <li>Vector Search index (semantic routing)</li>
+          <li>Agents ready to answer queries</li>
+        </ul>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Use Cases Row -->
+  <div class="s2-bottom">
+    <div class="use-case-card">
+      <h4>Healthcare</h4>
+      <p>Patient outcomes, treatment protocols, medication adherence</p>
+      <div class="example">"Compare readmission rates across cardiac procedures"</div>
+    </div>
+    <div class="use-case-card">
+      <h4>Financial Services</h4>
+      <p>Sales performance, risk analysis, fraud detection</p>
+      <div class="example">"Show high-value customers at risk of churn"</div>
+    </div>
+    <div class="use-case-card">
+      <h4>Insurance</h4>
+      <p>Claims processing, provider networks, adjuster workflows</p>
+      <div class="example">"Claims with highest adjustment rates by region"</div>
+    </div>
+    <div class="use-case-card">
+      <h4>Any Domain</h4>
+      <p>88 tables across 18 domains ready to demo</p>
+      <div class="example">"Add your own tables &mdash; works out of the box"</div>
+    </div>
+  </div>
+
+  <div class="s2-footer">
+    <div class="cta-text">
+      <strong>Get started in 5 minutes</strong> &mdash; Clone, configure, run ETL, deploy. Production-ready on Databricks.
+    </div>
+    <div class="credits">
+      <strong>Databricks Field Solutions</strong><br>
+      github.com/databricks-solutions/dbx-unifiedchat
+    </div>
+  </div>
+
+</div>
+
+</body>
+</html>

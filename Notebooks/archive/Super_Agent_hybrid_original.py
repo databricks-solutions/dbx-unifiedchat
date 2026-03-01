@@ -14,7 +14,7 @@
 
 # COMMAND ----------
 
-# DBTITLE 1,Configuration
+# DBTITLE 1,Local dev Configuration
 """
 Configuration loaded from config.py and .env file.
 To update configuration, edit .env file instead of this notebook.
@@ -95,6 +95,68 @@ config.print_summary()
 
 # COMMAND ----------
 
+# DBTITLE 1,databricks notebook configuration
+
+from mlflow.models import ModelConfig
+
+# Development configuration (used for local testing)
+# When deployed, this will be overridden by the config passed to log_model()
+development_config = {
+    # Unity Catalog Configuration
+    "catalog_name": "serverless_dbx_unifiedchat_catalog",
+    "schema_name": "multi_agent_genie",
+    
+    # LLM Endpoint Configuration - Diversified by Agent Role
+    "llm_endpoint": "databricks-claude-sonnet-4-5",  # Default/fallback
+    "llm_endpoint_clarification": "databricks-claude-haiku-4-5",
+    "llm_endpoint_planning": "databricks-claude-sonnet-4-5",
+    "llm_endpoint_sql_synthesis_table": "databricks-claude-haiku-4-5",
+    "llm_endpoint_sql_synthesis_genie": "databricks-claude-sonnet-4-5",
+    "llm_endpoint_execution": "databricks-claude-haiku-4-5",
+    "llm_endpoint_summarize": "databricks-claude-haiku-4-5",
+    
+    # Vector Search Configuration
+    "vs_endpoint_name": "genie_multi_agent_vs",
+    "embedding_model": "databricks-gte-large-en",
+    
+    # Lakebase Configuration (for State Management)
+    "lakebase_instance_name": "multi-agent-genie-system-state-db",
+    "lakebase_embedding_endpoint": "databricks-gte-large-en",
+    "lakebase_embedding_dims": 1024,
+    
+    # Genie Space IDs
+    "genie_space_ids": [
+        "01f106e1239d14b28d6ab46f9c15e540",
+        "01f106e121e7173d8cf84bb80e842d6c",
+        "01f106e120b718e084598e92dcf14d4e"
+    ],
+    
+    # SQL Warehouse ID
+    "sql_warehouse_id": "a4ed2ccbda385db9",
+    
+    # Table Metadata Enrichment
+    "sample_size": 20,
+    "max_unique_values": 20,
+}
+
+# Initialize ModelConfig
+# For local development: Uses development_config above
+# For Model Serving: Uses config passed during mlflow.pyfunc.log_model(model_config=...)
+model_config = ModelConfig(development_config=development_config)
+
+
+# Extract configuration values
+CATALOG = model_config.get("catalog_name")
+SCHEMA = model_config.get("schema_name")
+TABLE_NAME = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks"
+
+# Lakebase configuration for state management
+LAKEBASE_INSTANCE_NAME = model_config.get("lakebase_instance_name")
+EMBEDDING_ENDPOINT = model_config.get("lakebase_embedding_endpoint")
+EMBEDDING_DIMS = model_config.get("lakebase_embedding_dims")
+
+# COMMAND ----------
+
 # DBTITLE 1,ONE-TIME SETUP: Initialize Lakebase Tables for State Management
 """
 IMPORTANT: Run this cell ONCE to set up Lakebase instance and tables for state management.
@@ -165,6 +227,35 @@ except Exception as e:
         raise
 
 if instance_exists:
+    # Check if instance is in RUNNING state before proceeding
+    print("\n" + "="*80)
+    print("CHECKING INSTANCE STATUS")
+    print("="*80)
+    
+    max_status_wait = 600  # 10 minutes max wait for RUNNING state
+    status_check_interval = 60  # Check every 1 minute
+    status_elapsed = 0
+    
+    while status_elapsed < max_status_wait:
+        instance = w.database.get_database_instance(LAKEBASE_INSTANCE_NAME)
+        instance_state = instance.state.value if instance.state else "UNKNOWN"
+        
+        print(f"Instance state: {instance_state}")
+        
+        if instance_state == "AVAILABLE":
+            print("✓ Instance is AVAILABLE and ready for table setup")
+            break
+        elif instance_state in ["FAILED", "DELETED"]:
+            raise RuntimeError(f"Instance is in {instance_state} state. Cannot proceed.")
+        else:
+            print(f"Instance {instance_state} not ready yet. Waiting 1 minute before rechecking...")
+            time.sleep(status_check_interval)
+            status_elapsed += status_check_interval
+            print(f"  Total wait time: {status_elapsed}s")
+    
+    if status_elapsed >= max_status_wait:
+        raise TimeoutError(f"Instance did not reach RUNNING state after {max_status_wait}s")
+
     print("\n" + "="*80)
     print("INITIALIZING LAKEBASE TABLES")
     print("="*80)
@@ -195,216 +286,48 @@ if instance_exists:
 # COMMAND ----------
 
 # DBTITLE 1,ONE-TIME SETUP: Register Unity Catalog Functions for Metadata Querying
-# """
-# Register UC functions that will be used as tools by the SQL Synthesis Agent.
+"""
+Register UC functions that will be used as tools by the SQL Synthesis Agent.
 
-# These UC functions query different levels of the enriched genie docs chunks table:
-# 1. get_space_summary: High-level space information
-# 2. get_table_overview: Table-level metadata
-# 3. get_column_detail: Column-level metadata
-# 4. get_space_details: Complete metadata (last resort - token intensive)
+These UC functions query different levels of the enriched genie docs chunks table:
+1. get_space_summary: High-level space information
+2. get_table_overview: Table-level metadata
+3. get_column_detail: Column-level metadata
+4. get_space_instructions: Extract raw SQL instructions JSON (any structure within instructions field) from space metadata (REQUIRED FINAL STEP)
+5. get_space_details: Complete metadata (last resort - token intensive)
 
-# All functions use LANGUAGE SQL for better performance and compatibility.
-# """
+All functions use LANGUAGE SQL for better performance and compatibility.
 
-# print("="*80)
-# print("REGISTERING UNITY CATALOG FUNCTIONS")
-# print("="*80)
-# print(f"Target table: {TABLE_NAME}")
-# print(f"Functions will be created in: {CATALOG}.{SCHEMA}")
-# print("="*80)
+IMPORTANT: This registration is now centralized in src/multi_agent/tools/uc_functions.py
+and should be called before creating agents.
+"""
 
-# # Optional: Drop existing functions if you need to recreate them
-# # Uncomment these lines if you need to drop and recreate the functions
-# # spark.sql(f'DROP FUNCTION IF EXISTS {CATALOG}.{SCHEMA}.get_space_summary')
-# # spark.sql(f'DROP FUNCTION IF EXISTS {CATALOG}.{SCHEMA}.get_table_overview')
-# # spark.sql(f'DROP FUNCTION IF EXISTS {CATALOG}.{SCHEMA}.get_column_detail')
-# # spark.sql(f'DROP FUNCTION IF EXISTS {CATALOG}.{SCHEMA}.get_space_details')
+# Import the registration function from the centralized module
+from src.multi_agent.tools import register_uc_functions, check_uc_functions_exist
 
-# # UC Function 1: get_space_summary (SQL scalar function)
-# spark.sql(f"""
-# CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.get_space_summary(
-#     space_ids_json STRING DEFAULT 'null' COMMENT 'JSON array of space IDs to query, or "null" to retrieve all spaces. Example: ["space_1", "space_2"] or "null"'
-# )
-# RETURNS STRING
-# LANGUAGE SQL
-# COMMENT 'Get high-level summary of Genie spaces. Returns JSON with space summaries including chunk_id, chunk_type, space_title, and content.'
-# RETURN
-#     SELECT COALESCE(
-#         to_json(
-#             map_from_entries(
-#                 collect_list(
-#                     struct(
-#                         space_id,
-#                         named_struct(
-#                             'chunk_id', chunk_id,
-#                             'chunk_type', chunk_type,
-#                             'space_title', space_title,
-#                             'content', searchable_content
-#                         )
-#                     )
-#                 )
-#             )
-#         ),
-#         '{{}}'
-#     ) as result
-#     FROM {TABLE_NAME}
-#     WHERE chunk_type = 'space_summary'
-#     AND (
-#         space_ids_json IS NULL 
-#         OR TRIM(LOWER(space_ids_json)) IN ('null', 'none', '')
-#         OR array_contains(from_json(space_ids_json, 'array<string>'), space_id)
-#     )
-# """)
-# print("✓ Registered: get_space_summary")
+# Register all UC functions using the centralized registration module
+result = register_uc_functions(
+    catalog=CATALOG,
+    schema=SCHEMA,
+    table_name=TABLE_NAME
+)
 
-# # UC Function 2: get_table_overview (SQL scalar function with grouping)
-# spark.sql(f"""
-# CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.get_table_overview(
-#     space_ids_json STRING DEFAULT 'null' COMMENT 'JSON array of space IDs to query (required, prefer single space). Example: ["space_1"]',
-#     table_names_json STRING DEFAULT 'null' COMMENT 'JSON array of table names to filter, or "null" for all tables in the specified spaces. Example: ["table1", "table2"] or "null"'
-# )
-# RETURNS STRING
-# LANGUAGE SQL
-# COMMENT 'Get table-level metadata for specific Genie spaces. Returns JSON with table metadata including chunk_id, chunk_type, table_name, and content grouped by space.'
-# RETURN
-#     SELECT COALESCE(
-#         to_json(
-#             map_from_entries(
-#                 collect_list(
-#                     struct(
-#                         space_id,
-#                         named_struct(
-#                             'space_title', space_title,
-#                             'tables', tables
-#                         )
-#                     )
-#                 )
-#             )
-#         ),
-#         '{{}}'
-#     ) as result
-#     FROM (
-#         SELECT 
-#             space_id,
-#             first(space_title) as space_title,
-#             collect_list(
-#                 named_struct(
-#                     'chunk_id', chunk_id,
-#                     'chunk_type', chunk_type,
-#                     'table_name', table_name,
-#                     'content', searchable_content
-#                 )
-#             ) as tables
-#         FROM {TABLE_NAME}
-#         WHERE chunk_type = 'table_overview'
-#         AND array_contains(from_json(space_ids_json, 'array<string>'), space_id)
-#         AND (
-#             table_names_json IS NULL 
-#             OR TRIM(LOWER(table_names_json)) IN ('null', 'none', '')
-#             OR array_contains(from_json(table_names_json, 'array<string>'), table_name)
-#         )
-#         GROUP BY space_id
-#     )
-# """)
-# print("✓ Registered: get_table_overview")
+# # Check registration result
+# if not result["success"]:
+#     print("\n" + "=" * 80)
+#     print("⚠️ WARNING: Some UC functions failed to register!")
+#     print("=" * 80)
+#     for error in result["errors"]:
+#         print(f"  ✗ {error}")
+#     print("=" * 80)
+#     raise RuntimeError("Failed to register all UC functions")
 
-# # UC Function 3: get_column_detail (SQL scalar function with grouping)
-# spark.sql(f"""
-# CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.get_column_detail(
-#     space_ids_json STRING DEFAULT 'null' COMMENT 'JSON array of space IDs to query (required, prefer single space). Example: ["space_1"]',
-#     table_names_json STRING DEFAULT 'null' COMMENT 'JSON array of table names to filter (required, prefer single table). Example: ["table1"]',
-#     column_names_json STRING DEFAULT 'null' COMMENT 'JSON array of column names to filter, or "null" for all columns in the specified tables. Example: ["col1", "col2"] or "null"'
-# )
-# RETURNS STRING
-# LANGUAGE SQL
-# COMMENT 'Get column-level metadata for specific Genie spaces. Returns JSON with column metadata including chunk_id, chunk_type, table_name, column_name, and content grouped by space.'
-# RETURN
-#     SELECT COALESCE(
-#         to_json(
-#             map_from_entries(
-#                 collect_list(
-#                     struct(
-#                         space_id,
-#                         named_struct(
-#                             'space_title', space_title,
-#                             'columns', columns
-#                         )
-#                     )
-#                 )
-#             )
-#         ),
-#         '{{}}'
-#     ) as result
-#     FROM (
-#         SELECT 
-#             space_id,
-#             first(space_title) as space_title,
-#             collect_list(
-#                 named_struct(
-#                     'chunk_id', chunk_id,
-#                     'chunk_type', chunk_type,
-#                     'table_name', table_name,
-#                     'column_name', column_name,
-#                     'content', searchable_content
-#                 )
-#             ) as columns
-#         FROM {TABLE_NAME}
-#         WHERE chunk_type = 'column_detail'
-#         AND array_contains(from_json(space_ids_json, 'array<string>'), space_id)
-#         AND array_contains(from_json(table_names_json, 'array<string>'), table_name)
-#         AND (
-#             column_names_json IS NULL 
-#             OR TRIM(LOWER(column_names_json)) IN ('null', 'none', '')
-#             OR array_contains(from_json(column_names_json, 'array<string>'), column_name)
-#         )
-#         GROUP BY space_id
-#     )
-# """)
-# print("✓ Registered: get_column_detail")
+# # Verify all functions exist
+# print("\n🔍 Verifying UC functions...")
+# check_result = check_uc_functions_exist(spark=spark, catalog=CATALOG, schema=SCHEMA, verbose=True)
 
-# # UC Function 4: get_space_details (SQL scalar function - last resort)
-# spark.sql(f"""
-# CREATE OR REPLACE FUNCTION {CATALOG}.{SCHEMA}.get_space_details(
-#     space_ids_json STRING DEFAULT 'null' COMMENT 'JSON array of space IDs to query (required). Example: ["space_1", "space_2"]. WARNING: Returns large metadata - use as LAST RESORT.'
-# )
-# RETURNS STRING
-# LANGUAGE SQL
-# COMMENT 'Get complete metadata for specific Genie spaces - use as LAST RESORT (token intensive). Returns JSON with complete space metadata including chunk_id, chunk_type, space_title, and all available metadata content.'
-# RETURN
-#     SELECT COALESCE(
-#         to_json(
-#             map_from_entries(
-#                 collect_list(
-#                     struct(
-#                         space_id,
-#                         named_struct(
-#                             'chunk_id', chunk_id,
-#                             'chunk_type', chunk_type,
-#                             'space_title', space_title,
-#                             'complete_metadata', searchable_content
-#                         )
-#                     )
-#                 )
-#             )
-#         ),
-#         '{{}}'
-#     ) as result
-#     FROM {TABLE_NAME}
-#     WHERE chunk_type = 'space_details'
-#     AND array_contains(from_json(space_ids_json, 'array<string>'), space_id)
-# """)
-# print("✓ Registered: get_space_details")
-
-# print("\n" + "="*80)
-# print("✅ ALL 4 UC FUNCTIONS REGISTERED SUCCESSFULLY!")
-# print("="*80)
-# print("Functions available for SQL Synthesis Agent:")
-# print(f"  1. {CATALOG}.{SCHEMA}.get_space_summary")
-# print(f"  2. {CATALOG}.{SCHEMA}.get_table_overview")
-# print(f"  3. {CATALOG}.{SCHEMA}.get_column_detail")
-# print(f"  4. {CATALOG}.{SCHEMA}.get_space_details")
-# print("="*80)
+# if not check_result["all_exist"]:
+#     raise RuntimeError(f"Missing UC functions: {check_result['missing_functions']}")
 
 # COMMAND ----------
 
@@ -453,12 +376,7 @@ if instance_exists:
 # MAGIC # Import conversation management modules
 # MAGIC import sys
 # MAGIC from pathlib import Path
-# MAGIC # # (obsolete) Add kumc_poc to path if not already present
-# MAGIC # kumc_poc_path = str(Path(__file__).parent.parent / "kumc_poc") if '__file__' in globals() else "../kumc_poc"
-# MAGIC # if kumc_poc_path not in sys.path:
-# MAGIC #     sys.path.insert(0, kumc_poc_path)
-# MAGIC
-# MAGIC # NOTE: No imports from kumc_poc - all TypedDicts and logic are inline
+# MAGIC # NOTE: All TypedDicts and logic are inline (self-contained)
 # MAGIC # This simplifies the agent and makes it self-contained
 # MAGIC from databricks_langchain.genie import GenieAgent
 # MAGIC from langchain.agents import create_agent
@@ -499,7 +417,7 @@ if instance_exists:
 # MAGIC # When deployed, this will be overridden by the config passed to log_model()
 # MAGIC development_config = {
 # MAGIC     # Unity Catalog Configuration
-# MAGIC     "catalog_name": "yyang",
+# MAGIC     "catalog_name": "serverless_dbx_unifiedchat_catalog",
 # MAGIC     "schema_name": "multi_agent_genie",
 # MAGIC     
 # MAGIC     # LLM Endpoint Configuration - Diversified by Agent Role
@@ -522,13 +440,13 @@ if instance_exists:
 # MAGIC     
 # MAGIC     # Genie Space IDs
 # MAGIC     "genie_space_ids": [
-# MAGIC         "01f0eab621401f9faa11e680f5a2bcd0",
-# MAGIC         "01f0eababd9f1bcab5dea65cf67e48e3",
-# MAGIC         "01f0eac186d11b9897bc1d43836cc4e1"
+# MAGIC         "01f106e1239d14b28d6ab46f9c15e540",
+# MAGIC         "01f106e121e7173d8cf84bb80e842d6c",
+# MAGIC         "01f106e120b718e084598e92dcf14d4e"
 # MAGIC     ],
 # MAGIC     
 # MAGIC     # SQL Warehouse ID
-# MAGIC     "sql_warehouse_id": "148ccb90800933a1",
+# MAGIC     "sql_warehouse_id": "a4ed2ccbda385db9",
 # MAGIC     
 # MAGIC     # Table Metadata Enrichment
 # MAGIC     "sample_size": 20,
@@ -575,6 +493,7 @@ if instance_exists:
 # MAGIC     f"{CATALOG}.{SCHEMA}.get_space_summary",
 # MAGIC     f"{CATALOG}.{SCHEMA}.get_table_overview",
 # MAGIC     f"{CATALOG}.{SCHEMA}.get_column_detail",
+# MAGIC     f"{CATALOG}.{SCHEMA}.get_space_instructions",
 # MAGIC     f"{CATALOG}.{SCHEMA}.get_space_details",
 # MAGIC ]
 # MAGIC
@@ -1106,10 +1025,10 @@ if instance_exists:
 # MAGIC # Note: Context is now loaded dynamically in clarification_node
 # MAGIC # This allows refresh without model redeployment
 # MAGIC # ==============================================================================
-# MAGIC # Inline TypedDicts for Unified Agent (No kumc_poc imports)
+# MAGIC # Inline TypedDicts for Unified Agent (self-contained)
 # MAGIC # ==============================================================================
 # MAGIC
-# MAGIC from typing import TypedDict, Optional, List, Dict, Any, Literal, Annotated
+# MAGIC from typing import TypedDict, Optional, List, Dict, Any, Literal, Annotated, Tuple
 # MAGIC from datetime import datetime
 # MAGIC import operator
 # MAGIC import uuid as uuid_module
@@ -1163,6 +1082,9 @@ if instance_exists:
 # MAGIC     is_meta_question: Optional[bool]
 # MAGIC     meta_answer: Optional[str]
 # MAGIC     
+# MAGIC     # Irrelevant question handling (NEW)
+# MAGIC     is_irrelevant: Optional[bool]
+# MAGIC     
 # MAGIC     # Deprecated
 # MAGIC     original_query: Optional[str]
 # MAGIC     
@@ -1179,12 +1101,16 @@ if instance_exists:
 # MAGIC     genie_route_plan: Optional[Dict[str, str]]
 # MAGIC     
 # MAGIC     # SQL Synthesis
-# MAGIC     sql_query: Optional[str]
+# MAGIC     sql_query: Optional[str]  # Keep for backward compatibility (first query)
+# MAGIC     sql_queries: Optional[List[str]]  # NEW: List of all SQL queries from multi-part questions
+# MAGIC     sql_query_labels: Optional[List[str]]  # NEW: Per-query labels (e.g. "QUERY 1: Most Common Diagnoses")
 # MAGIC     sql_synthesis_explanation: Optional[str]
 # MAGIC     synthesis_error: Optional[str]
+# MAGIC     has_sql: Optional[bool]  # Whether SQL was successfully extracted
 # MAGIC     
 # MAGIC     # Execution
-# MAGIC     execution_result: Optional[Dict[str, Any]]
+# MAGIC     execution_result: Optional[Dict[str, Any]]  # Keep for backward compatibility (first result)
+# MAGIC     execution_results: Optional[List[Dict[str, Any]]]  # NEW: List of all execution results
 # MAGIC     execution_error: Optional[str]
 # MAGIC     
 # MAGIC     # Summary
@@ -1276,6 +1202,7 @@ if instance_exists:
 # MAGIC         "question_clear": False,
 # MAGIC         "is_meta_question": False,
 # MAGIC         "meta_answer": None,
+# MAGIC         "is_irrelevant": False,
 # MAGIC         "plan": None,
 # MAGIC         "sub_questions": None,
 # MAGIC         "requires_multiple_spaces": None,
@@ -1287,14 +1214,18 @@ if instance_exists:
 # MAGIC         "execution_plan": None,
 # MAGIC         "genie_route_plan": None,
 # MAGIC         "sql_query": None,
+# MAGIC         "sql_queries": None,
+# MAGIC         "sql_query_labels": None,
 # MAGIC         "sql_synthesis_explanation": None,
 # MAGIC         "synthesis_error": None,
+# MAGIC         "has_sql": None,
 # MAGIC         "execution_result": None,
+# MAGIC         "execution_results": None,
 # MAGIC         "execution_error": None,
 # MAGIC         "final_summary": None,
 # MAGIC     }
 # MAGIC
-# MAGIC print("✓ Inline TypedDicts defined (no kumc_poc imports)")
+# MAGIC print("✓ Inline TypedDicts defined (self-contained)")
 # MAGIC
 # MAGIC # State Reset Template
 # MAGIC # All per-query execution fields that should be cleared for each new query.
@@ -1308,9 +1239,12 @@ if instance_exists:
 # MAGIC
 # MAGIC # For reference, the template includes per-query fields (see conversation_models.get_reset_state_template()):
 # MAGIC # RESET_STATE_TEMPLATE = {
-# MAGIC     # Clarification fields (per-query) - SIMPLIFIED from 7+ legacy fields to 2
+# MAGIC     # Clarification fields (per-query)
 # MAGIC     # "pending_clarification": None,
 # MAGIC     # "question_clear": False,
+# MAGIC     # "is_meta_question": False,
+# MAGIC     # "meta_answer": None,
+# MAGIC     # "is_irrelevant": False,
 # MAGIC     
 # MAGIC     # Planning fields (per-query)
 # MAGIC     # "plan": None,
@@ -1326,11 +1260,15 @@ if instance_exists:
 # MAGIC     
 # MAGIC     # SQL fields (per-query)
 # MAGIC     # "sql_query": None,
+# MAGIC     # "sql_queries": None,
+# MAGIC     # "sql_query_labels": None,
 # MAGIC     # "sql_synthesis_explanation": None,
 # MAGIC     # "synthesis_error": None,
+# MAGIC     # "has_sql": None,
 # MAGIC     
 # MAGIC     # Execution fields (per-query)
 # MAGIC     # "execution_result": None,
+# MAGIC     # "execution_results": None,
 # MAGIC     # "execution_error": None,
 # MAGIC     
 # MAGIC     # Summary (per-query)
@@ -1557,6 +1495,7 @@ if instance_exists:
 # MAGIC             f"{catalog}.{schema}.get_space_summary",
 # MAGIC             f"{catalog}.{schema}.get_table_overview",
 # MAGIC             f"{catalog}.{schema}.get_column_detail",
+# MAGIC             f"{catalog}.{schema}.get_space_instructions",
 # MAGIC             f"{catalog}.{schema}.get_space_details",
 # MAGIC         ]
 # MAGIC         
@@ -1568,38 +1507,72 @@ if instance_exists:
 # MAGIC             model=llm,
 # MAGIC             tools=self.tools,
 # MAGIC             system_prompt=(
-# MAGIC                 "You are a specialized SQL synthesis agent in a multi-agent system.\n\n"
-# MAGIC                 "ROLE: You receive execution plans from the planning agent and generate SQL queries.\n\n"
+# MAGIC             """
+# MAGIC You are a specialized SQL synthesis agent in a multi-agent system.
 # MAGIC
-# MAGIC                 "## WORKFLOW:\n"
-# MAGIC                 "1. Review the execution plan and provided metadata\n"
-# MAGIC                 "2. If metadata is sufficient → Generate SQL immediately\n"
-# MAGIC                 "3. If insufficient, call UC function tools in this order:\n"
-# MAGIC                 "   a) get_space_summary for space information\n"
-# MAGIC                 "   b) get_table_overview for table schemas\n"
-# MAGIC                 "   c) get_column_detail for specific columns\n"
-# MAGIC                 "   d) get_space_details ONLY as last resort (token intensive)\n"
-# MAGIC                 "4. At last, if you still cannot find enough metadata in relevant spaces provided, dont stuck there. Expand the searching scope to all spaces mentioned in the execution plan's 'vector_search_relevant_spaces_info' field. Extract the space_id from 'vector_search_relevant_spaces_info'. \n"
-# MAGIC                 "5. Generate complete, executable SQL\n\n"
+# MAGIC ROLE: You receive execution plans from the planning agent and generate SQL queries.
 # MAGIC
-# MAGIC                 "## UC FUNCTION USAGE:\n"
-# MAGIC                 "- Pass arguments as JSON array strings: '[\"space_id_1\", \"space_id_2\"]' or 'null'\n"
-# MAGIC                 "- Only query spaces from execution plan's relevant_space_ids\n"
-# MAGIC                 "- Use minimal sufficiency: only query what you need\n"
-# MAGIC                 "- OPTIMIZATION: When possible, call multiple UC functions in parallel by returning multiple tool calls\n"
-# MAGIC                 "  Example: If you need table_overview for space_1 AND column_detail for space_2, call both tools at once\n"
-# MAGIC                 "- This enables parallel execution and reduces latency by 1-2 seconds\n\n"
+# MAGIC ## WORKFLOW:
+# MAGIC 1. Review the execution plan and provided metadata
+# MAGIC 2. If metadata is sufficient → Generate SQL immediately
+# MAGIC 3. If insufficient, call UC function tools in this order to gather metadata:
+# MAGIC    a) get_space_summary for space information
+# MAGIC    b) get_table_overview for table schemas
+# MAGIC    c) get_column_detail for specific columns
+# MAGIC    d) get_space_details ONLY as last resort (token intensive)
+# MAGIC 4. If still cannot find enough metadata in relevant spaces, expand searching scope to all spaces
+# MAGIC    mentioned in the execution plan's 'vector_search_relevant_spaces_info' field
+# MAGIC 5. Generate complete, executable SQL using the gathered metadata, print out the final SQL
 # MAGIC
-# MAGIC                 "## OUTPUT REQUIREMENTS:\n"
-# MAGIC                 "- Generate complete, executable SQL with:\n"
-# MAGIC                 "  * Proper JOINs based on execution plan\n"
-# MAGIC                 "  * WHERE clauses for filtering\n"
-# MAGIC                 "  * Appropriate aggregations\n"
-# MAGIC                 "  * Clear column aliases\n"
-# MAGIC                 "  * Always use real column names, never make up ones\n"
-# MAGIC                 "- Return your response with:\n"
-# MAGIC                 "1. Your explanations; If SQL cannot be generated, explain what metadata is missing\n"
-# MAGIC                 "2. The final SQL query in a ```sql code block\n\n"
+# MAGIC ## UC FUNCTION USAGE:
+# MAGIC - Pass arguments as JSON array strings: e.g., '[\"space_id_1\", \"space_id_2\"]' or passing a NULL without any quote
+# MAGIC - Always explicitly passing all required arguments, even it is a NULL
+# MAGIC - Only query spaces from execution plan's relevant_space_ids
+# MAGIC - Use minimal sufficiency: only query what you need
+# MAGIC - OPTIMIZATION: When possible, call multiple UC functions in parallel by returning multiple tool calls
+# MAGIC   Example: If you need table_overview for space_1 AND column_detail for space_2, call both tools at once
+# MAGIC - This enables parallel execution and reduces latency by 1-2 seconds
+# MAGIC
+# MAGIC ## SQL FINETUNE INSTRUCTIONS:
+# MAGIC - **Additional SQL Finetune Step** After you already generated the SQL, take a reflection first, and then you are ready to call **get_space_instructions** to extract the space instructions taught by human; only use the most related instruction parts to finetune the SQL if necessary. 
+# MAGIC - This provides essential human-taught SQL patterns and best practices for the specific space.
+# MAGIC
+# MAGIC
+# MAGIC ## OUTPUT REQUIREMENTS:
+# MAGIC - Generate complete, executable SQL with:
+# MAGIC   * Proper JOINs based on execution plan
+# MAGIC   * WHERE clauses for filtering
+# MAGIC   * Appropriate aggregations
+# MAGIC   * Clear column aliases
+# MAGIC   * Always use real column names, never make up ones
+# MAGIC
+# MAGIC ## MULTI-QUERY STRATEGY:
+# MAGIC - If the question has multiple parts (sub_questions) and you think it's better to report
+# MAGIC   each query and result separately instead of combining into one big complex query:
+# MAGIC   * Generate MULTIPLE separate SQL queries (one per sub-question)
+# MAGIC   * This is preferred when: sub-questions are independent, results are easier to interpret
+# MAGIC     separately, or combining would create overly complex SQL
+# MAGIC - If sub-questions are closely related and naturally combine (e.g., same table, similar filters):
+# MAGIC   * You may generate a single combined SQL query
+# MAGIC
+# MAGIC ## OUTPUT FORMAT:
+# MAGIC - Return your response with:
+# MAGIC 1. Your explanations; If SQL cannot be generated, explain what metadata is missing
+# MAGIC 2. SQL queries formatted as follows:
+# MAGIC    * For SINGLE-part questions: One sql code block with query ending in semicolon
+# MAGIC    * For MULTI-part questions: Use SEPARATE sql code blocks (one per query)
+# MAGIC    * Each query MUST end with a semicolon (;)
+# MAGIC    * Add a leading comment before each query: -- Query N: <brief description>
+# MAGIC    * Example for multi-part:
+# MAGIC      sql
+# MAGIC      -- Query 1: Most common diagnoses
+# MAGIC      SELECT diagnosis_code, COUNT(*) AS freq FROM diagnosis GROUP BY diagnosis_code;
+# MAGIC      
+# MAGIC      sql
+# MAGIC      -- Query 2: Top procedures
+# MAGIC      SELECT procedure_code, COUNT(*) AS count FROM procedures GROUP BY procedure_code;
+# MAGIC      
+# MAGIC """
 # MAGIC             )
 # MAGIC         )
 # MAGIC     
@@ -1651,24 +1624,30 @@ if instance_exists:
 # MAGIC             sql_query = None
 # MAGIC             has_sql = False
 # MAGIC             
-# MAGIC             # Try to extract SQL from markdown if present
+# MAGIC             # Try to extract SQL from markdown - use findall to capture ALL code blocks
 # MAGIC             if "```sql" in final_content.lower():
-# MAGIC                 sql_match = re.search(r'```sql\s*(.*?)\s*```', final_content, re.IGNORECASE | re.DOTALL)
-# MAGIC                 if sql_match:
-# MAGIC                     sql_query = sql_match.group(1).strip()
+# MAGIC                 # Find all ```sql blocks
+# MAGIC                 sql_blocks = re.findall(r'```sql\s*(.*?)\s*```', final_content, re.IGNORECASE | re.DOTALL)
+# MAGIC                 if sql_blocks:
+# MAGIC                     # Join all SQL blocks with newlines to preserve multi-query structure
+# MAGIC                     sql_query = '\n\n'.join(block.strip() for block in sql_blocks if block.strip())
 # MAGIC                     has_sql = True
-# MAGIC                     # Remove SQL block from content to get explanation
+# MAGIC                     # Remove all SQL blocks from content to get explanation
 # MAGIC                     final_content = re.sub(r'```sql\s*.*?\s*```', '', final_content, flags=re.IGNORECASE | re.DOTALL)
 # MAGIC             elif "```" in final_content:
-# MAGIC                 sql_match = re.search(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
-# MAGIC                 if sql_match:
-# MAGIC                     # Check if it looks like SQL
-# MAGIC                     potential_sql = sql_match.group(1).strip()
-# MAGIC                     if any(keyword in potential_sql.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN']):
-# MAGIC                         sql_query = potential_sql
-# MAGIC                         has_sql = True
-# MAGIC                         # Remove SQL block from content to get explanation
-# MAGIC                         final_content = re.sub(r'```\s*.*?\s*```', '', final_content, flags=re.DOTALL)
+# MAGIC                 # Find all generic code blocks
+# MAGIC                 code_blocks = re.findall(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
+# MAGIC                 # Filter for SQL-like blocks
+# MAGIC                 sql_blocks = [
+# MAGIC                     block.strip() for block in code_blocks 
+# MAGIC                     if block.strip() and any(keyword in block.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN', 'WITH'])
+# MAGIC                 ]
+# MAGIC                 if sql_blocks:
+# MAGIC                     # Join all SQL blocks
+# MAGIC                     sql_query = '\n\n'.join(sql_blocks)
+# MAGIC                     has_sql = True
+# MAGIC                     # Remove all code blocks from content to get explanation
+# MAGIC                     final_content = re.sub(r'```\s*.*?\s*```', '', final_content, flags=re.DOTALL)
 # MAGIC             
 # MAGIC             # Clean up explanation
 # MAGIC             explanation = final_content.strip()
@@ -2057,7 +2036,15 @@ if instance_exists:
 # MAGIC Step 4: Combine all successful SQL fragments
 # MAGIC
 # MAGIC ## SQL SYNTHESIS:
-# MAGIC Combine all SQL fragments into a single query.
+# MAGIC
+# MAGIC MULTI-QUERY STRATEGY:
+# MAGIC - If the question has multiple parts and you think it's better to report each query
+# MAGIC   and result separately instead of combining into one big complex query:
+# MAGIC   * Generate MULTIPLE separate SQL queries (one per sub-question)
+# MAGIC   * This is preferred when: sub-questions are independent, results are easier to interpret
+# MAGIC     separately, or combining would create overly complex SQL
+# MAGIC - If sub-questions are closely related and naturally combine (e.g., same Genie space, similar context):
+# MAGIC   * You may combine SQL fragments into a single query
 # MAGIC
 # MAGIC OUTPUT REQUIREMENTS:
 # MAGIC - Generate complete, executable SQL with:
@@ -2068,7 +2055,20 @@ if instance_exists:
 # MAGIC   * Always use real column names from the data
 # MAGIC - Return your response with:
 # MAGIC   1. Your explanation (including which execution strategy you used)
-# MAGIC   2. The final SQL query in a ```sql code block"""
+# MAGIC   2. SQL queries formatted as follows:
+# MAGIC      * For SINGLE-part questions: One ```sql code block with query ending in semicolon
+# MAGIC      * For MULTI-part questions: Use SEPARATE ```sql code blocks (one per query)
+# MAGIC      * Each query MUST end with a semicolon (;)
+# MAGIC      * Add a leading comment before each query: -- Query N: <brief description>
+# MAGIC      * Example for multi-part:
+# MAGIC        ```sql
+# MAGIC        -- Query 1: Most common diagnoses
+# MAGIC        SELECT diagnosis_code, COUNT(*) AS freq FROM diagnosis GROUP BY diagnosis_code;
+# MAGIC        ```
+# MAGIC        ```sql
+# MAGIC        -- Query 2: Top procedures
+# MAGIC        SELECT procedure_code, COUNT(*) AS count FROM procedures GROUP BY procedure_code;
+# MAGIC        ```"""
 # MAGIC             )
 # MAGIC         )
 # MAGIC         
@@ -2230,23 +2230,30 @@ if instance_exists:
 # MAGIC             has_sql = False
 # MAGIC             explanation = final_content
 # MAGIC             
-# MAGIC             # Clean markdown if present and extract SQL
+# MAGIC             # Clean markdown if present and extract SQL - use findall to capture ALL code blocks
 # MAGIC             if "```sql" in final_content.lower():
-# MAGIC                 sql_match = re.search(r'```sql\s*(.*?)\s*```', final_content, re.IGNORECASE | re.DOTALL)
-# MAGIC                 if sql_match:
-# MAGIC                     sql_query = sql_match.group(1).strip()
+# MAGIC                 # Find all ```sql blocks
+# MAGIC                 sql_blocks = re.findall(r'```sql\s*(.*?)\s*```', final_content, re.IGNORECASE | re.DOTALL)
+# MAGIC                 if sql_blocks:
+# MAGIC                     # Join all SQL blocks with newlines to preserve multi-query structure
+# MAGIC                     sql_query = '\n\n'.join(block.strip() for block in sql_blocks if block.strip())
 # MAGIC                     has_sql = True
-# MAGIC                     # Remove SQL block to get explanation
+# MAGIC                     # Remove all SQL blocks to get explanation
 # MAGIC                     explanation = re.sub(r'```sql\s*.*?\s*```', '', final_content, flags=re.IGNORECASE | re.DOTALL)
 # MAGIC             elif "```" in final_content:
-# MAGIC                 sql_match = re.search(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
-# MAGIC                 if sql_match:
-# MAGIC                     potential_sql = sql_match.group(1).strip()
-# MAGIC                     if any(keyword in potential_sql.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN']):
-# MAGIC                         sql_query = potential_sql
-# MAGIC                         has_sql = True
-# MAGIC                         # Remove SQL block to get explanation
-# MAGIC                         explanation = re.sub(r'```\s*.*?\s*```', '', final_content, flags=re.DOTALL)
+# MAGIC                 # Find all generic code blocks
+# MAGIC                 code_blocks = re.findall(r'```\s*(.*?)\s*```', final_content, re.DOTALL)
+# MAGIC                 # Filter for SQL-like blocks
+# MAGIC                 sql_blocks = [
+# MAGIC                     block.strip() for block in code_blocks 
+# MAGIC                     if block.strip() and any(keyword in block.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN', 'WITH'])
+# MAGIC                 ]
+# MAGIC                 if sql_blocks:
+# MAGIC                     # Join all SQL blocks
+# MAGIC                     sql_query = '\n\n'.join(sql_blocks)
+# MAGIC                     has_sql = True
+# MAGIC                     # Remove all code blocks to get explanation
+# MAGIC                     explanation = re.sub(r'```\s*.*?\s*```', '', final_content, flags=re.DOTALL)
 # MAGIC             else:
 # MAGIC                 # No markdown, check if the entire content is SQL
 # MAGIC                 if any(keyword in final_content.upper() for keyword in ['SELECT', 'FROM', 'WHERE', 'JOIN']):
@@ -2285,6 +2292,208 @@ if instance_exists:
 # MAGIC         return self.synthesize_sql(plan)
 # MAGIC
 # MAGIC print("✓ SQLSynthesisGenieAgent class defined")
+# MAGIC
+# MAGIC # --------------------------------------------------------------------------
+# MAGIC # Utility Function: Extract Multiple SQL Queries
+# MAGIC # --------------------------------------------------------------------------
+# MAGIC SQL_KEYWORDS = {'SELECT', 'WITH', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'DROP', 'ALTER', 'MERGE', 'REPLACE'}
+# MAGIC
+# MAGIC def _split_multi_query_block(block: str) -> Tuple[List[str], List[str]]:
+# MAGIC     """
+# MAGIC     Split a single SQL block that may contain multiple semicolon-separated
+# MAGIC     queries into individual queries and their leading-comment labels.
+# MAGIC     
+# MAGIC     Strategy:
+# MAGIC       1. Split the block on ';' (the standard SQL statement terminator).
+# MAGIC       2. For each resulting segment, extract any leading SQL comment lines
+# MAGIC          (lines starting with '--') as the query label / title.
+# MAGIC          The first leading comment line becomes the label text (without '--').
+# MAGIC       3. Only keep segments that contain real SQL keywords.
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         block: A SQL string, possibly containing multiple ';'-separated statements,
+# MAGIC                each optionally preceded by comment-line labels such as:
+# MAGIC                  -- QUERY 1: Most Common Diagnoses
+# MAGIC                  -- Patient counts by year
+# MAGIC                  -- Top procedures
+# MAGIC     
+# MAGIC     Returns:
+# MAGIC         Tuple of (queries, labels) where:
+# MAGIC           - queries:  list of individual SQL query strings (with trailing ';')
+# MAGIC           - labels:   list of label strings aligned by index. Empty string when
+# MAGIC                       no leading comment was found for a query.
+# MAGIC     """
+# MAGIC     raw_segments = block.split(';')
+# MAGIC     
+# MAGIC     queries: List[str] = []
+# MAGIC     labels: List[str] = []
+# MAGIC     
+# MAGIC     for segment in raw_segments:
+# MAGIC         segment = segment.strip()
+# MAGIC         if not segment:
+# MAGIC             continue
+# MAGIC         
+# MAGIC         # Does this segment contain actual SQL?
+# MAGIC         segment_upper = segment.upper()
+# MAGIC         if not any(kw in segment_upper for kw in SQL_KEYWORDS):
+# MAGIC             continue
+# MAGIC         
+# MAGIC         # Walk lines: collect leading comment lines, find where SQL body starts
+# MAGIC         lines = segment.split('\n')
+# MAGIC         leading_comments: List[str] = []
+# MAGIC         sql_start_idx = 0
+# MAGIC         
+# MAGIC         for i, line in enumerate(lines):
+# MAGIC             stripped = line.strip()
+# MAGIC             if stripped.startswith('--'):
+# MAGIC                 # Strip the '--' prefix and any surrounding whitespace
+# MAGIC                 comment_text = stripped.lstrip('-').strip()
+# MAGIC                 if comment_text:
+# MAGIC                     leading_comments.append(comment_text)
+# MAGIC             elif stripped == '':
+# MAGIC                 # Skip blank lines between comments and SQL body
+# MAGIC                 continue
+# MAGIC             else:
+# MAGIC                 # First non-comment, non-blank line → SQL body starts here
+# MAGIC                 sql_start_idx = i
+# MAGIC                 break
+# MAGIC         else:
+# MAGIC             # Every line was a comment or blank → no actual SQL
+# MAGIC             continue
+# MAGIC         
+# MAGIC         sql_text = '\n'.join(lines[sql_start_idx:]).strip()
+# MAGIC         if not sql_text:
+# MAGIC             continue
+# MAGIC         
+# MAGIC         # Use the first leading comment as the label / title
+# MAGIC         label = leading_comments[0] if leading_comments else ""
+# MAGIC         
+# MAGIC         queries.append(sql_text.rstrip(';').strip() + ';')
+# MAGIC         labels.append(label)
+# MAGIC     
+# MAGIC     return queries, labels
+# MAGIC
+# MAGIC def extract_all_sql_queries(content: str) -> Tuple[List[str], List[str]]:
+# MAGIC     """
+# MAGIC     Extract all SQL queries from content, with support for:
+# MAGIC       - Multiple ```sql code blocks (each treated as a separate query)
+# MAGIC       - A single code block containing multiple ';'-separated queries
+# MAGIC       - Leading comment lines (-- ...) used as query labels / titles
+# MAGIC       - Raw SQL without code fences
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         content: The text content containing SQL (possibly in markdown code blocks)
+# MAGIC         
+# MAGIC     Returns:
+# MAGIC         Tuple of (sql_queries, query_labels) where:
+# MAGIC           - sql_queries:  list of individual SQL query strings
+# MAGIC           - query_labels: list of label strings aligned with queries
+# MAGIC     """
+# MAGIC     raw_blocks: List[str] = []
+# MAGIC     
+# MAGIC     # 1. Find all ```sql blocks (case-insensitive)
+# MAGIC     sql_pattern = r'```sql\s*(.*?)\s*```'
+# MAGIC     matches = re.findall(sql_pattern, content, re.IGNORECASE | re.DOTALL)
+# MAGIC     
+# MAGIC     if matches:
+# MAGIC         raw_blocks.extend([m.strip() for m in matches if m.strip()])
+# MAGIC     else:
+# MAGIC         # 2. Fallback: generic code blocks that look like SQL
+# MAGIC         generic_pattern = r'```\s*(.*?)\s*```'
+# MAGIC         matches = re.findall(generic_pattern, content, re.DOTALL)
+# MAGIC         for match in matches:
+# MAGIC             match = match.strip()
+# MAGIC             if match and any(kw in match.upper() for kw in SQL_KEYWORDS):
+# MAGIC                 raw_blocks.append(match)
+# MAGIC     
+# MAGIC     # 3. Last resort: treat the raw content itself as SQL (no code fences)
+# MAGIC     if not raw_blocks and any(kw in content.upper() for kw in ['SELECT', 'FROM']):
+# MAGIC         raw_blocks = [content.strip()]
+# MAGIC     
+# MAGIC     # 4. Split each block on ';' to extract individual queries + labels
+# MAGIC     all_queries: List[str] = []
+# MAGIC     all_labels: List[str] = []
+# MAGIC     for block in raw_blocks:
+# MAGIC         queries, labels = _split_multi_query_block(block)
+# MAGIC         all_queries.extend(queries)
+# MAGIC         all_labels.extend(labels)
+# MAGIC     
+# MAGIC     return all_queries, all_labels
+# MAGIC
+# MAGIC print("✓ extract_all_sql_queries utility function defined")
+# MAGIC
+# MAGIC # --------------------------------------------------------------------------
+# MAGIC # Helper Function: Extract SQL Queries from Agent Result
+# MAGIC # --------------------------------------------------------------------------
+# MAGIC def extract_sql_queries_from_agent_result(
+# MAGIC     result: dict,
+# MAGIC     agent_name: str = "agent"
+# MAGIC ) -> Tuple[List[str], List[str]]:
+# MAGIC     """
+# MAGIC     Extract SQL queries and labels from agent result dictionary.
+# MAGIC     
+# MAGIC     This helper provides a simple, robust extraction strategy:
+# MAGIC       1. Try result['sql'] field first (primary source)
+# MAGIC       2. Try result['explanation'] field if sql is empty (fallback)
+# MAGIC       3. Try combined content as last resort
+# MAGIC     
+# MAGIC     Takes first non-empty result, delegating all parsing complexity to
+# MAGIC     extract_all_sql_queries() which handles:
+# MAGIC       - Markdown code fences
+# MAGIC       - Semicolon splitting
+# MAGIC       - Label extraction from comments
+# MAGIC       - Multiple query detection
+# MAGIC     
+# MAGIC     Args:
+# MAGIC         result: Agent result dict with 'sql' and/or 'explanation' fields
+# MAGIC         agent_name: Name for logging (e.g., 'sql_synthesis_table')
+# MAGIC     
+# MAGIC     Returns:
+# MAGIC         Tuple of (queries, labels):
+# MAGIC           - queries: List of individual SQL query strings
+# MAGIC           - labels: List of label strings (from leading comments)
+# MAGIC           Returns ([], []) if extraction fails
+# MAGIC     
+# MAGIC     Example:
+# MAGIC         result = {
+# MAGIC             "sql": "-- Query 1\\nSELECT...; -- Query 2\\nSELECT...;",
+# MAGIC             "explanation": "Here are the queries...",
+# MAGIC             "has_sql": True
+# MAGIC         }
+# MAGIC         queries, labels = extract_sql_queries_from_agent_result(result, "table_agent")
+# MAGIC         # Returns: (["SELECT...", "SELECT..."], ["Query 1", "Query 2"])
+# MAGIC     """
+# MAGIC     sql_query = result.get("sql", "")
+# MAGIC     explanation = result.get("explanation", "")
+# MAGIC     
+# MAGIC     # Attempt 1: Extract from sql field (primary source)
+# MAGIC     if sql_query:
+# MAGIC         queries, labels = extract_all_sql_queries(sql_query)
+# MAGIC         if queries:
+# MAGIC             print(f"✓ [{agent_name}] Extracted {len(queries)} quer{'y' if len(queries) == 1 else 'ies'} from 'sql' field")
+# MAGIC             return queries, labels
+# MAGIC     
+# MAGIC     # Attempt 2: Extract from explanation (fallback)
+# MAGIC     if explanation:
+# MAGIC         queries, labels = extract_all_sql_queries(explanation)
+# MAGIC         if queries:
+# MAGIC             print(f"✓ [{agent_name}] Extracted {len(queries)} quer{'y' if len(queries) == 1 else 'ies'} from 'explanation' field")
+# MAGIC             return queries, labels
+# MAGIC     
+# MAGIC     # Attempt 3: Try combined content (last resort)
+# MAGIC     if sql_query or explanation:
+# MAGIC         combined = f"{explanation}\n\n{sql_query}" if explanation and sql_query else (explanation or sql_query)
+# MAGIC         queries, labels = extract_all_sql_queries(combined)
+# MAGIC         if queries:
+# MAGIC             print(f"✓ [{agent_name}] Extracted {len(queries)} quer{'y' if len(queries) == 1 else 'ies'} from combined content")
+# MAGIC             return queries, labels
+# MAGIC     
+# MAGIC     # No SQL found
+# MAGIC     print(f"⚠ [{agent_name}] No SQL queries extracted from result")
+# MAGIC     return [], []
+# MAGIC
+# MAGIC print("✓ extract_sql_queries_from_agent_result helper function defined")
+# MAGIC
 # MAGIC class SQLExecutionAgent:
 # MAGIC     """
 # MAGIC     Agent responsible for executing SQL queries using Databricks SQL Warehouse.
@@ -2538,6 +2747,76 @@ if instance_exists:
 # MAGIC                 "error_hint": error_hint
 # MAGIC             }
 # MAGIC     
+# MAGIC     def execute_sql_parallel(
+# MAGIC         self,
+# MAGIC         sql_queries: List[str],
+# MAGIC         max_rows: int = 100,
+# MAGIC         return_format: str = "dict",
+# MAGIC         max_workers: int = 4
+# MAGIC     ) -> List[Dict[str, Any]]:
+# MAGIC         """
+# MAGIC         Execute multiple SQL queries in parallel using ThreadPoolExecutor.
+# MAGIC         
+# MAGIC         Each query runs in its own thread with an independent sql.connect() connection,
+# MAGIC         so there is no shared state between threads. This is safe because execute_sql()
+# MAGIC         creates and closes its own connection/cursor via context managers per call.
+# MAGIC         
+# MAGIC         ThreadPoolExecutor is used instead of asyncio because databricks-sql-connector
+# MAGIC         is synchronous (no native async API), and the work is I/O-bound (waiting on
+# MAGIC         SQL Warehouse HTTP responses), so the GIL is not a bottleneck.
+# MAGIC         
+# MAGIC         Args:
+# MAGIC             sql_queries: List of SQL query strings to execute
+# MAGIC             max_rows: Maximum rows per query (default: 100)
+# MAGIC             return_format: Result format - "dict", "json", or "markdown"
+# MAGIC             max_workers: Maximum concurrent threads (default: 4, tune to warehouse concurrency)
+# MAGIC         
+# MAGIC         Returns:
+# MAGIC             List of result dicts (same format as execute_sql), ordered to match input queries.
+# MAGIC             Each result includes a "query_number" field (1-indexed).
+# MAGIC         """
+# MAGIC         import concurrent.futures
+# MAGIC         
+# MAGIC         # Fast path: skip threading overhead for single query
+# MAGIC         if len(sql_queries) <= 1:
+# MAGIC             if sql_queries:
+# MAGIC                 result = self.execute_sql(sql_queries[0], max_rows, return_format)
+# MAGIC                 result["query_number"] = 1
+# MAGIC                 return [result]
+# MAGIC             return []
+# MAGIC         
+# MAGIC         print(f"⚡ Executing {len(sql_queries)} queries in parallel (max_workers={min(len(sql_queries), max_workers)})")
+# MAGIC         
+# MAGIC         results = [None] * len(sql_queries)  # Pre-allocate to preserve ordering
+# MAGIC         
+# MAGIC         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(sql_queries), max_workers)) as executor:
+# MAGIC             future_to_idx = {
+# MAGIC                 executor.submit(self.execute_sql, query, max_rows, return_format): idx
+# MAGIC                 for idx, query in enumerate(sql_queries)
+# MAGIC             }
+# MAGIC             
+# MAGIC             for future in concurrent.futures.as_completed(future_to_idx):
+# MAGIC                 idx = future_to_idx[future]
+# MAGIC                 try:
+# MAGIC                     result = future.result()
+# MAGIC                 except Exception as e:
+# MAGIC                     # Catch unexpected errors not handled inside execute_sql
+# MAGIC                     result = {
+# MAGIC                         "success": False,
+# MAGIC                         "sql": sql_queries[idx],
+# MAGIC                         "result": None,
+# MAGIC                         "row_count": 0,
+# MAGIC                         "columns": [],
+# MAGIC                         "error": f"Parallel execution error: {type(e).__name__}: {str(e)}"
+# MAGIC                     }
+# MAGIC                 result["query_number"] = idx + 1
+# MAGIC                 results[idx] = result
+# MAGIC         
+# MAGIC         succeeded = sum(1 for r in results if r["success"])
+# MAGIC         print(f"⚡ Parallel execution complete: {succeeded}/{len(sql_queries)} succeeded")
+# MAGIC         
+# MAGIC         return results
+# MAGIC     
 # MAGIC     def __call__(self, sql_query: str, max_rows: int = 100, return_format: str = "dict") -> Dict[str, Any]:
 # MAGIC         """Make agent callable."""
 # MAGIC         return self.execute_sql(sql_query, max_rows, return_format)
@@ -2606,15 +2885,25 @@ if instance_exists:
 # MAGIC         print(f"✓ Summary stream complete ({len(summary)} chars)")
 # MAGIC         
 # MAGIC         # Append Option B downloadable tables if query execution was successful
+# MAGIC         # Support multiple results
+# MAGIC         execution_results = state.get('execution_results', [])
 # MAGIC         exec_result = state.get('execution_result', {})
-# MAGIC         if exec_result and exec_result.get('success'):
-# MAGIC             columns = exec_result.get('columns', [])
-# MAGIC             result = exec_result.get('result', [])
-# MAGIC             
-# MAGIC             if columns and result:
-# MAGIC                 option_b_tables = self._format_option_b_tables(columns, result, display_rows=100)
-# MAGIC                 summary += option_b_tables
-# MAGIC                 print(f"✓ Appended Option B downloadable tables ({len(option_b_tables)} chars)")
+# MAGIC         
+# MAGIC         if not execution_results and exec_result:
+# MAGIC             execution_results = [exec_result]
+# MAGIC         
+# MAGIC         for idx, result_item in enumerate(execution_results):
+# MAGIC             if result_item and result_item.get('success'):
+# MAGIC                 columns = result_item.get('columns', [])
+# MAGIC                 result = result_item.get('result', [])
+# MAGIC                 
+# MAGIC                 if columns and result:
+# MAGIC                     label_suffix = f" (Query {idx + 1})" if len(execution_results) > 1 else ""
+# MAGIC                     option_b_tables = self._format_option_b_tables(columns, result, display_rows=100)
+# MAGIC                     if len(execution_results) > 1:
+# MAGIC                         option_b_tables = option_b_tables.replace("## 📥 Downloadable Results", f"## 📥 Downloadable Results{label_suffix}")
+# MAGIC                     summary += option_b_tables
+# MAGIC                     print(f"✓ Appended Option B downloadable tables{label_suffix} ({len(option_b_tables)} chars)")
 # MAGIC         
 # MAGIC         return summary
 # MAGIC     
@@ -2714,63 +3003,150 @@ if instance_exists:
 # MAGIC
 # MAGIC """
 # MAGIC             
+# MAGIC             # NEW: Check for multiple SQL queries and results
+# MAGIC             sql_queries = state.get('sql_queries', [])
+# MAGIC             query_labels = state.get('sql_query_labels', [])
+# MAGIC             execution_results = state.get('execution_results', [])
+# MAGIC             
+# MAGIC             # Fallback to single query/result for backward compatibility
+# MAGIC             if not sql_queries and sql_query:
+# MAGIC                 sql_queries = [sql_query]
+# MAGIC             if not execution_results and exec_result:
+# MAGIC                 execution_results = [exec_result]
+# MAGIC             
 # MAGIC             # Add SQL synthesis info
-# MAGIC             if sql_query:
-# MAGIC                 prompt += f"""**SQL Generation:** ✅ Successful
+# MAGIC             if sql_queries:
+# MAGIC                 if len(sql_queries) == 1:
+# MAGIC                     # Single query (original behavior)
+# MAGIC                     label = query_labels[0] if query_labels else ""
+# MAGIC                     label_display = f" — {label}" if label else ""
+# MAGIC                     prompt += f"""**SQL Generation:** ✅ Successful{label_display}
 # MAGIC **SQL Query:** 
 # MAGIC ```sql
-# MAGIC {sql_query}
+# MAGIC {sql_queries[0]}
 # MAGIC ```
 # MAGIC
 # MAGIC """
+# MAGIC                 else:
+# MAGIC                     # Multiple queries
+# MAGIC                     prompt += f"""**SQL Generation:** ✅ Successful ({len(sql_queries)} queries for multi-part question)
+# MAGIC
+# MAGIC """
+# MAGIC                     for i, query in enumerate(sql_queries, 1):
+# MAGIC                         label = query_labels[i-1] if i <= len(query_labels) and query_labels[i-1] else ""
+# MAGIC                         label_display = f" — {label}" if label else ""
+# MAGIC                         prompt += f"""**SQL Query {i}{label_display}:** 
+# MAGIC ```sql
+# MAGIC {query}
+# MAGIC ```
+# MAGIC
+# MAGIC """
+# MAGIC                 
 # MAGIC                 if sql_explanation:
 # MAGIC                     prompt += f"""**SQL Synthesis Explanation:** {sql_explanation[:2000]}{'...' if len(sql_explanation) > 2000 else ''}
 # MAGIC
 # MAGIC """
 # MAGIC                 
-# MAGIC                 # Add execution info
-# MAGIC                 if exec_result.get('success'):
-# MAGIC                     row_count = exec_result.get('row_count', 0)
-# MAGIC                     columns = exec_result.get('columns', [])
-# MAGIC                     result = exec_result.get('result', [])
-# MAGIC                     
-# MAGIC                     # TOKEN PROTECTION: Sample results to prevent huge prompts
-# MAGIC                     # - Max 10 rows
-# MAGIC                     # - Max 10 columns per row
-# MAGIC                     # - Max 5000 characters for JSON
-# MAGIC                     MAX_PREVIEW_ROWS = 20
-# MAGIC                     MAX_PREVIEW_COLS = 20
-# MAGIC                     MAX_JSON_CHARS = 2000
-# MAGIC                     
-# MAGIC                     # Sample rows
-# MAGIC                     result_preview = result[:MAX_PREVIEW_ROWS] if len(result) > MAX_PREVIEW_ROWS else result
-# MAGIC                     
-# MAGIC                     # Sample columns (if result has too many columns)
-# MAGIC                     if result_preview and len(columns) > MAX_PREVIEW_COLS:
-# MAGIC                         # Keep only first MAX_PREVIEW_COLS columns
-# MAGIC                         sampled_cols = columns[:MAX_PREVIEW_COLS]
-# MAGIC                         result_preview = [
-# MAGIC                             {k: v for k, v in row.items() if k in sampled_cols}
-# MAGIC                             for row in result_preview
-# MAGIC                         ]
-# MAGIC                         col_display = ', '.join(sampled_cols) + f'... (+{len(columns) - MAX_PREVIEW_COLS} more columns)'
-# MAGIC                     else:
-# MAGIC                         col_display = ', '.join(columns[:10]) + ('...' if len(columns) > 10 else '')
-# MAGIC                     
-# MAGIC                     # Serialize to JSON
-# MAGIC                     result_json = self._safe_json_dumps(result_preview, indent=2)
-# MAGIC                     
-# MAGIC                     # Truncate JSON if too large
-# MAGIC                     if len(result_json) > MAX_JSON_CHARS:
-# MAGIC                         result_json = result_json[:MAX_JSON_CHARS] + f'\n... (truncated, {len(result_json) - MAX_JSON_CHARS} chars omitted)'
-# MAGIC                     
-# MAGIC                     prompt += f"""**Execution:** ✅ Successful
+# MAGIC                 # TOKEN PROTECTION: Sample results to prevent huge prompts
+# MAGIC                 MAX_PREVIEW_ROWS = 20
+# MAGIC                 MAX_PREVIEW_COLS = 20
+# MAGIC                 MAX_JSON_CHARS = 2000
+# MAGIC                 
+# MAGIC                 # Add execution info (single or multiple results)
+# MAGIC                 if execution_results:
+# MAGIC                     if len(execution_results) == 1:
+# MAGIC                         # Single result (original behavior with token protection)
+# MAGIC                         result = execution_results[0]
+# MAGIC                         if result.get('success'):
+# MAGIC                             row_count = result.get('row_count', 0)
+# MAGIC                             columns = result.get('columns', [])
+# MAGIC                             result_data = result.get('result', [])
+# MAGIC                             
+# MAGIC                             # Sample rows
+# MAGIC                             result_preview = result_data[:MAX_PREVIEW_ROWS] if len(result_data) > MAX_PREVIEW_ROWS else result_data
+# MAGIC                             
+# MAGIC                             # Sample columns (if result has too many columns)
+# MAGIC                             if result_preview and len(columns) > MAX_PREVIEW_COLS:
+# MAGIC                                 sampled_cols = columns[:MAX_PREVIEW_COLS]
+# MAGIC                                 result_preview = [
+# MAGIC                                     {k: v for k, v in row.items() if k in sampled_cols}
+# MAGIC                                     for row in result_preview
+# MAGIC                                 ]
+# MAGIC                                 col_display = ', '.join(sampled_cols) + f'... (+{len(columns) - MAX_PREVIEW_COLS} more columns)'
+# MAGIC                             else:
+# MAGIC                                 col_display = ', '.join(columns[:10]) + ('...' if len(columns) > 10 else '')
+# MAGIC                             
+# MAGIC                             # Serialize to JSON
+# MAGIC                             result_json = self._safe_json_dumps(result_preview, indent=2)
+# MAGIC                             
+# MAGIC                             # Truncate JSON if too large
+# MAGIC                             if len(result_json) > MAX_JSON_CHARS:
+# MAGIC                                 result_json = result_json[:MAX_JSON_CHARS] + f'\n... (truncated, {len(result_json) - MAX_JSON_CHARS} chars omitted)'
+# MAGIC                             
+# MAGIC                             prompt += f"""**Execution:** ✅ Successful
 # MAGIC **Rows:** {row_count} rows returned{f' (showing first {MAX_PREVIEW_ROWS})' if row_count > MAX_PREVIEW_ROWS else ''}
 # MAGIC **Columns:** {col_display}
 # MAGIC
 # MAGIC **Result Preview:** 
 # MAGIC {result_json}
 # MAGIC {f'... and {row_count - MAX_PREVIEW_ROWS} more rows' if row_count > MAX_PREVIEW_ROWS else ''}
+# MAGIC """
+# MAGIC                         else:
+# MAGIC                             prompt += f"""**Execution:** ❌ Failed
+# MAGIC **Error:** {result.get('error', 'Unknown error')}
+# MAGIC
+# MAGIC """
+# MAGIC                     else:
+# MAGIC                         # Multiple results
+# MAGIC                         all_successful = all(r.get('success') for r in execution_results)
+# MAGIC                         total_rows = sum(r.get('row_count', 0) for r in execution_results if r.get('success'))
+# MAGIC                         
+# MAGIC                         if all_successful:
+# MAGIC                             prompt += f"""**Execution:** ✅ All {len(execution_results)} queries executed successfully
+# MAGIC **Total Rows Returned:** {total_rows}
+# MAGIC
+# MAGIC """
+# MAGIC                         else:
+# MAGIC                             failed_count = sum(1 for r in execution_results if not r.get('success'))
+# MAGIC                             prompt += f"""**Execution:** ⚠️ Partial success ({len(execution_results) - failed_count} succeeded, {failed_count} failed)
+# MAGIC
+# MAGIC """
+# MAGIC                         
+# MAGIC                         # Add details for each result
+# MAGIC                         for i, result in enumerate(execution_results, 1):
+# MAGIC                             if result.get('success'):
+# MAGIC                                 row_count = result.get('row_count', 0)
+# MAGIC                                 columns = result.get('columns', [])
+# MAGIC                                 result_data = result.get('result', [])
+# MAGIC                                 
+# MAGIC                                 # Token protection per result
+# MAGIC                                 result_preview = result_data[:MAX_PREVIEW_ROWS] if len(result_data) > MAX_PREVIEW_ROWS else result_data
+# MAGIC                                 
+# MAGIC                                 if result_preview and len(columns) > MAX_PREVIEW_COLS:
+# MAGIC                                     sampled_cols = columns[:MAX_PREVIEW_COLS]
+# MAGIC                                     result_preview = [
+# MAGIC                                         {k: v for k, v in row.items() if k in sampled_cols}
+# MAGIC                                         for row in result_preview
+# MAGIC                                     ]
+# MAGIC                                     col_display = ', '.join(sampled_cols) + f'... (+{len(columns) - MAX_PREVIEW_COLS} more columns)'
+# MAGIC                                 else:
+# MAGIC                                     col_display = ', '.join(columns[:10]) + ('...' if len(columns) > 10 else '')
+# MAGIC                                 
+# MAGIC                                 result_json = self._safe_json_dumps(result_preview, indent=2)
+# MAGIC                                 if len(result_json) > MAX_JSON_CHARS:
+# MAGIC                                     result_json = result_json[:MAX_JSON_CHARS] + f'\n... (truncated)'
+# MAGIC                                 
+# MAGIC                                 prompt += f"""**Query {i} Result:**
+# MAGIC - Rows: {row_count}{f' (showing first {MAX_PREVIEW_ROWS})' if row_count > MAX_PREVIEW_ROWS else ''}
+# MAGIC - Columns: {col_display}
+# MAGIC - Data: {result_json}
+# MAGIC
+# MAGIC """
+# MAGIC                             else:
+# MAGIC                                 prompt += f"""**Query {i} Result:**
+# MAGIC - Status: ❌ Failed
+# MAGIC - Error: {result.get('error', 'Unknown error')}
+# MAGIC
 # MAGIC """
 # MAGIC                 elif execution_error:
 # MAGIC                     prompt += f"""**Execution:** ❌ Failed
@@ -2785,18 +3161,33 @@ if instance_exists:
 # MAGIC """
 # MAGIC         
 # MAGIC         prompt += """
-# MAGIC **Task:** Generate a detailed summary in natural language that:
+# MAGIC **Task:** Generate a comprehensive summary in natural language that:
 # MAGIC 1. Describes what the user asked for
 # MAGIC 2. Explains what the system did (planning, SQL generation, execution)
-# MAGIC 3. States the outcome (success with X rows, error, needs clarification, etc.)
-# MAGIC 4. print out SQL synthesis explanation if any SQL was generated
-# MAGIC 5. print out SQL if any SQL was generated; make it the code block. If multiple SQL queries were generated, print out them in separate code blocks.
-# MAGIC 6. print out the result itself (markdown formatted as a table). If multiple result sets were generated, print out them in separate tables.
-# MAGIC 7. summarize the insights from the result itself (markdown formatted as a list of bullets).
-# MAGIC 8. if multiple result sets were generated, summarize the insights from each result set in a separate list of bullets.
+# MAGIC 3. For multi-part questions with multiple queries:
+# MAGIC    - Explain each sub-question that was addressed
+# MAGIC    - Show each SQL query in its own code block with a clear label
+# MAGIC    - Present each query's results in a clear, readable format (preferably as a markdown table)
+# MAGIC    - Provide insights and analysis for each result
+# MAGIC    - Synthesize an overall conclusion combining insights from all queries
+# MAGIC 4. For single queries:
+# MAGIC    - Print out SQL synthesis explanation if any SQL was generated
+# MAGIC    - Print out the SQL query in a code block
+# MAGIC    - Print out the result in a readable format (preferably as a markdown table)
+# MAGIC    - Provide insights and analysis for the result
+# MAGIC 5. **Code Annotation for Human Readability:**
+# MAGIC    - For each result table, scan the columns for raw codes (e.g., diagnosis_code, procedure_code, ICD codes, CPT codes, not limited to medical domain)
+# MAGIC    - If you find columns containing raw codes WITHOUT corresponding human-readable description columns:
+# MAGIC      * Add a new column with a descriptive name like "{code_column}_description" 
+# MAGIC      * Populate it with human-readable descriptions/meanings of those codes
+# MAGIC      * Use your knowledge base to translate common codes (ICD-10, CPT, etc.) into plain language
+# MAGIC      * Example: diagnosis_code "I10" → diagnosis_code_description "Essential (primary) hypertension"
+# MAGIC      * Example: procedure_code "99213" → procedure_code_description "Office visit, established patient, 20-29 minutes"
+# MAGIC    - Present the enhanced table with both the original codes and the new description columns
+# MAGIC    - This makes the results more interpretable for non-technical users
+# MAGIC 6. States the outcome (success with X rows, error, needs clarification, etc.)
 # MAGIC
-# MAGIC
-# MAGIC Keep it concise and user-friendly. 
+# MAGIC Use markdown formatting for readability. Keep it clear and user-friendly. 
 # MAGIC """
 # MAGIC         
 # MAGIC         return prompt
@@ -2814,9 +3205,9 @@ if instance_exists:
 # MAGIC # - find_most_recent_clarification_context() → Intent detection handles this
 # MAGIC # - is_new_question() → Intent detection provides intent_type classification
 # MAGIC #
-# MAGIC # These have been removed to simplify the codebase. See:
-# MAGIC # - kumc_poc/intent_detection_service.py for the replacement
-# MAGIC # - kumc_poc/conversation_models.py for the new data models
+# MAGIC # These have been removed to simplify the codebase.
+# MAGIC # See src/multi_agent/utils/intent_detection_service.py for the replacement
+# MAGIC # See src/multi_agent/core/state.py for the data models
 # MAGIC # ==============================================================================
 # MAGIC
 # MAGIC # ==============================================================================
@@ -2895,7 +3286,9 @@ if instance_exists:
 # MAGIC def extract_execution_context(state: AgentState) -> dict:
 # MAGIC     """Extract minimal context for SQL execution."""
 # MAGIC     return {
-# MAGIC         "sql_query": state.get("sql_query")
+# MAGIC         "sql_query": state.get("sql_query"),
+# MAGIC         "sql_queries": state.get("sql_queries", []),
+# MAGIC         "sql_query_labels": state.get("sql_query_labels", [])
 # MAGIC     }
 # MAGIC
 # MAGIC def extract_summarize_context(state: AgentState) -> dict:
@@ -2909,7 +3302,10 @@ if instance_exists:
 # MAGIC     return {
 # MAGIC         "messages": truncate_message_history(messages, max_turns=5),
 # MAGIC         "sql_query": state.get("sql_query"),
+# MAGIC         "sql_queries": state.get("sql_queries", []),
+# MAGIC         "sql_query_labels": state.get("sql_query_labels", []),
 # MAGIC         "execution_result": state.get("execution_result"),
+# MAGIC         "execution_results": state.get("execution_results", []),
 # MAGIC         "execution_error": state.get("execution_error"),
 # MAGIC         "sql_synthesis_explanation": state.get("sql_synthesis_explanation"),
 # MAGIC         "synthesis_error": state.get("synthesis_error"),
@@ -2993,82 +3389,7 @@ if instance_exists:
 # MAGIC print("✓ Message truncation functions defined (keeps last 5 message turns, 10 turn_history)")
 # MAGIC
 # MAGIC # ==============================================================================
-# MAGIC # Fast-Path Routing Heuristics (Phase 2 Optimization)
-# MAGIC # ==============================================================================
-# MAGIC
-# MAGIC def should_use_fast_path(query: str, turn_history: List) -> Dict[str, Any]:
-# MAGIC     """
-# MAGIC     Determine if query can skip full LLM analysis using fast-path heuristics.
-# MAGIC     
-# MAGIC     Heuristics for obvious cases that don't need full intent detection:
-# MAGIC     1. First query that is detailed and clear (>15 words with SQL keywords)
-# MAGIC     2. Follow-up refinements with clear action verbs
-# MAGIC     3. Simple data retrieval queries
-# MAGIC     
-# MAGIC     Args:
-# MAGIC         query: Current user query
-# MAGIC         turn_history: Conversation history
-# MAGIC     
-# MAGIC     Returns:
-# MAGIC         Dict with:
-# MAGIC         - use_fast_path: bool - Whether to skip full LLM analysis
-# MAGIC         - intent_type: str - Inferred intent type
-# MAGIC         - confidence: float - Confidence in fast-path decision
-# MAGIC         - reasoning: str - Explanation
-# MAGIC     """
-# MAGIC     query_lower = query.lower().strip()
-# MAGIC     word_count = len(query.split())
-# MAGIC     
-# MAGIC     # Heuristic 1: First detailed query with SQL-related keywords
-# MAGIC     sql_keywords = ['show', 'get', 'list', 'find', 'how many', 'count', 'sum', 'average', 
-# MAGIC                     'total', 'group by', 'where', 'patients', 'claims', 'providers']
-# MAGIC     has_sql_intent = any(kw in query_lower for kw in sql_keywords)
-# MAGIC     
-# MAGIC     if len(turn_history) == 0 and word_count >= 15 and has_sql_intent:
-# MAGIC         return {
-# MAGIC             "use_fast_path": True,
-# MAGIC             "intent_type": "new_question",
-# MAGIC             "confidence": 0.85,
-# MAGIC             "reasoning": f"First detailed query ({word_count} words) with clear SQL intent",
-# MAGIC             "question_clear": True
-# MAGIC         }
-# MAGIC     
-# MAGIC     # Heuristic 2: Follow-up refinements with clear action verbs
-# MAGIC     refinement_keywords = ['filter', 'narrow', 'exclude', 'include', 'only', 'just', 
-# MAGIC                            'limit to', 'restrict', 'add', 'remove', 'without', 'with']
-# MAGIC     has_refinement_intent = any(kw in query_lower for kw in refinement_keywords)
-# MAGIC     
-# MAGIC     if len(turn_history) > 0 and has_refinement_intent and word_count >= 5:
-# MAGIC         return {
-# MAGIC             "use_fast_path": True,
-# MAGIC             "intent_type": "refinement",
-# MAGIC             "confidence": 0.80,
-# MAGIC             "reasoning": f"Follow-up refinement with clear intent ({word_count} words)",
-# MAGIC             "question_clear": True
-# MAGIC         }
-# MAGIC     
-# MAGIC     # Heuristic 3: Simple retrieval queries (show me, get me, list)
-# MAGIC     simple_commands = query_lower.startswith(('show ', 'get ', 'list ', 'display ', 'give me'))
-# MAGIC     if simple_commands and word_count >= 6 and has_sql_intent:
-# MAGIC         intent = "new_question" if len(turn_history) == 0 else "continuation"
-# MAGIC         return {
-# MAGIC             "use_fast_path": True,
-# MAGIC             "intent_type": intent,
-# MAGIC             "confidence": 0.75,
-# MAGIC             "reasoning": f"Simple retrieval command with clear structure",
-# MAGIC             "question_clear": True
-# MAGIC         }
-# MAGIC     
-# MAGIC     # No fast-path: use full LLM analysis
-# MAGIC     return {
-# MAGIC         "use_fast_path": False,
-# MAGIC         "reasoning": "Query requires full LLM analysis for accurate classification"
-# MAGIC     }
-# MAGIC
-# MAGIC print("✓ Fast-path routing heuristics defined (-500ms to -1s for obvious queries)")
-# MAGIC
-# MAGIC # ==============================================================================
-# MAGIC # Unified Intent, Context, and Clarification Node (Simplified - No kumc_poc imports)
+# MAGIC # Unified Intent, Context, and Clarification Node (Simplified - self-contained)
 # MAGIC # ==============================================================================
 # MAGIC
 # MAGIC def check_clarification_rate_limit(turn_history: List[ConversationTurn], window_size: int = 5) -> bool:
@@ -3127,7 +3448,6 @@ if instance_exists:
 # MAGIC     Streaming behavior:
 # MAGIC     - Markdown content is streamed to UI as LLM generates it (better TTFT)
 # MAGIC     - JSON metadata is parsed after streaming completes for routing decisions
-# MAGIC     - Fast-path optimization bypasses LLM entirely for simple refinements
 # MAGIC     
 # MAGIC     Returns: Dictionary with state updates
 # MAGIC     """
@@ -3205,66 +3525,8 @@ if instance_exists:
 # MAGIC     print(f"Query: {current_query}")
 # MAGIC     print(f"Turn history: {len(turn_history)} turns")
 # MAGIC     
-# MAGIC     # PHASE 2 OPTIMIZATION: Check if we can use fast-path routing
-# MAGIC     fast_path_result = should_use_fast_path(current_query, turn_history)
-# MAGIC     
-# MAGIC     if fast_path_result["use_fast_path"]:
-# MAGIC         print(f"🚀 FAST-PATH ACTIVATED: {fast_path_result['reasoning']}")
-# MAGIC         print(f"   Intent: {fast_path_result['intent_type']} (confidence: {fast_path_result['confidence']:.2f})")
-# MAGIC         print(f"   Skipping full LLM analysis (-500ms to -1s)")
-# MAGIC         
-# MAGIC         writer({
-# MAGIC             "type": "fast_path_activated",
-# MAGIC             "intent_type": fast_path_result['intent_type'],
-# MAGIC             "confidence": fast_path_result['confidence'],
-# MAGIC             "reasoning": fast_path_result['reasoning']
-# MAGIC         })
-# MAGIC         
-# MAGIC         # Create simplified context summary for fast-path
-# MAGIC         context_summary = f"{current_query}"
-# MAGIC         if turn_history:
-# MAGIC             last_query = turn_history[-1]['query']
-# MAGIC             context_summary = f"Building on previous query '{last_query}', user asks: {current_query}"
-# MAGIC         
-# MAGIC         # Create conversation turn with fast-path results
-# MAGIC         turn = create_conversation_turn(
-# MAGIC             query=current_query,
-# MAGIC             intent_type=fast_path_result['intent_type'],
-# MAGIC             parent_turn_id=None,
-# MAGIC             context_summary=context_summary,
-# MAGIC             triggered_clarification=False,
-# MAGIC             metadata={"fast_path": True, "confidence": fast_path_result['confidence']}
-# MAGIC         )
-# MAGIC         
-# MAGIC         # Create intent metadata
-# MAGIC         intent_metadata = IntentMetadata(
-# MAGIC             intent_type=fast_path_result['intent_type'],
-# MAGIC             confidence=fast_path_result['confidence'],
-# MAGIC             reasoning=fast_path_result['reasoning'],
-# MAGIC             topic_change_score=0.5,
-# MAGIC             domain=None,
-# MAGIC             operation=None,
-# MAGIC             complexity="simple" if fast_path_result['intent_type'] == "refinement" else "moderate",
-# MAGIC             parent_turn_id=None
-# MAGIC         )
-# MAGIC         
-# MAGIC         # Return early - skip to planning
-# MAGIC         # NOTE: Fast-path bypasses LLM entirely, so no streaming occurs
-# MAGIC         # Streaming only applies to full LLM analysis path below
-# MAGIC         return {
-# MAGIC             "current_turn": turn,
-# MAGIC             "turn_history": [turn],
-# MAGIC             "intent_metadata": intent_metadata,
-# MAGIC             "question_clear": True,  # Fast-path assumes clear queries
-# MAGIC             "pending_clarification": None,
-# MAGIC             "next_agent": "planning",
-# MAGIC             "messages": [
-# MAGIC                 SystemMessage(content=f"Fast-path: {fast_path_result['intent_type']} (skipped LLM analysis)")
-# MAGIC             ]
-# MAGIC         }
-# MAGIC     
-# MAGIC     # If not fast-path, continue with full LLM analysis (WITH STREAMING)
-# MAGIC     print("🔄 Using full LLM analysis with streaming (query requires detailed classification)")
+# MAGIC     # Analyze query with full LLM (intent + context + clarity + meta-question detection)
+# MAGIC     print("🔄 Analyzing query with LLM (intent + context + clarity + meta-question detection)")
 # MAGIC     
 # MAGIC     # Format conversation context
 # MAGIC     conversation_context = ""
@@ -3292,8 +3554,31 @@ if instance_exists:
 # MAGIC Available Data Sources:
 # MAGIC {json.dumps(space_context, indent=2)}
 # MAGIC
-# MAGIC ## Task 1: Detect Meta-Questions (NEW)
-# MAGIC First, determine if this is a META-QUESTION about the system itself:
+# MAGIC ## Task 0: Detect Irrelevant Questions (NEW)
+# MAGIC FIRST, determine if this is an IRRELEVANT question completely unrelated to data analytics:
+# MAGIC - Greetings, small talk, casual conversation (e.g., "Hello", "How are you?", "What's up?")
+# MAGIC - Questions about weather, sports, politics, entertainment, current events
+# MAGIC - Personal questions about the AI/system itself (e.g., "Who created you?", "Are you sentient?")
+# MAGIC - Jokes, riddles, creative writing requests, role-playing
+# MAGIC - Questions about topics outside of data analysis and business intelligence
+# MAGIC - Programming help, homework, recipes, travel advice, etc.
+# MAGIC
+# MAGIC Examples of irrelevant questions (all should set is_irrelevant=true):
+# MAGIC - "What's the weather like today?"
+# MAGIC - "Tell me a joke"
+# MAGIC - "Who won the Super Bowl?"
+# MAGIC - "How do I make pasta?"
+# MAGIC - "What are your thoughts on politics?"
+# MAGIC
+# MAGIC If it's irrelevant, you MUST:
+# MAGIC 1. Set "is_irrelevant": true
+# MAGIC 2. Provide a polite refusal explaining you're a data analytics assistant
+# MAGIC 3. Redirect the user to ask questions about the available data sources
+# MAGIC
+# MAGIC NOTE: If a question mentions data but in an irrelevant context (e.g., "What's the weather like in my data?"), treat it as irrelevant.
+# MAGIC
+# MAGIC ## Task 1: Detect Meta-Questions
+# MAGIC Next, determine if this is a META-QUESTION about the system itself:
 # MAGIC - Questions about available tables, data sources, spaces, schemas
 # MAGIC - Questions about system capabilities, what data is available
 # MAGIC - Questions about the structure or organization of data
@@ -3328,6 +3613,33 @@ if instance_exists:
 # MAGIC
 # MAGIC Your response format depends on the situation:
 # MAGIC
+# MAGIC **CASE 0: Irrelevant Question** (is_irrelevant=true)
+# MAGIC Output polite refusal markdown FIRST, then JSON metadata:
+# MAGIC
+# MAGIC I'm a data analytics assistant focused on helping you analyze and query the available data sources.
+# MAGIC
+# MAGIC I can help you with questions about the data domains available in the system. To see what data is available, you can ask:
+# MAGIC - "What data sources are available?"
+# MAGIC - "What tables can I query?"
+# MAGIC - "Show me example questions I can ask"
+# MAGIC
+# MAGIC Could you rephrase your question to focus on analyzing the available data?
+# MAGIC
+# MAGIC ```json
+# MAGIC {{{{
+# MAGIC   "is_irrelevant": true,
+# MAGIC   "is_meta_question": false,
+# MAGIC   "meta_answer": null,
+# MAGIC   "intent_type": "new_question",
+# MAGIC   "confidence": 0.95,
+# MAGIC   "context_summary": "User asked an irrelevant question unrelated to data analytics",
+# MAGIC   "question_clear": true,
+# MAGIC   "clarification_reason": null,
+# MAGIC   "clarification_options": null,
+# MAGIC   "metadata": {{{{"domain": "irrelevant", "complexity": "simple", "topic_change_score": 1.0}}}}
+# MAGIC }}}}
+# MAGIC ```
+# MAGIC
 # MAGIC **CASE 1: Meta-Question** (is_meta_question=true)
 # MAGIC Output markdown answer FIRST, then JSON metadata:
 # MAGIC
@@ -3337,6 +3649,7 @@ if instance_exists:
 # MAGIC
 # MAGIC ```json
 # MAGIC {{
+# MAGIC   "is_irrelevant": false,
 # MAGIC   "is_meta_question": true,
 # MAGIC   "meta_answer": null,
 # MAGIC   "intent_type": "new_question",
@@ -3358,6 +3671,7 @@ if instance_exists:
 # MAGIC
 # MAGIC ```json
 # MAGIC {{
+# MAGIC   "is_irrelevant": false,
 # MAGIC   "is_meta_question": false,
 # MAGIC   "meta_answer": null,
 # MAGIC   "intent_type": "new_question",
@@ -3375,6 +3689,7 @@ if instance_exists:
 # MAGIC
 # MAGIC ```json
 # MAGIC {{
+# MAGIC   "is_irrelevant": false,
 # MAGIC   "is_meta_question": false,
 # MAGIC   "meta_answer": null,
 # MAGIC   "intent_type": "new_question" | "refinement" | "continuation" | "clarification_response",
@@ -3392,10 +3707,10 @@ if instance_exists:
 # MAGIC ```
 # MAGIC
 # MAGIC CRITICAL: 
-# MAGIC - For meta-questions and clarifications: markdown FIRST (will be streamed to user), then JSON
+# MAGIC - For irrelevant questions, meta-questions, and clarifications: markdown FIRST (will be streamed to user), then JSON
 # MAGIC - For regular clear queries: JSON ONLY (no markdown needed)
 # MAGIC - Always use proper markdown formatting with ##/### headings, **bold**, bullet lists
-# MAGIC - Use professional but friendly tone for healthcare analytics
+# MAGIC - Use professional but friendly tone for data analytics
 # MAGIC """
 # MAGIC     
 # MAGIC     # Call LLM with stream for immediate markdown output (using pooled connection)
@@ -3461,6 +3776,7 @@ if instance_exists:
 # MAGIC         result = json.loads(json_section)
 # MAGIC         
 # MAGIC         # Extract results
+# MAGIC         is_irrelevant = result.get("is_irrelevant", False)
 # MAGIC         is_meta_question = result.get("is_meta_question", False)
 # MAGIC         meta_answer = result.get("meta_answer")
 # MAGIC         intent_type = result["intent_type"].lower()
@@ -3474,6 +3790,7 @@ if instance_exists:
 # MAGIC         print(f"✓ Intent: {intent_type} (confidence: {confidence:.2f})")
 # MAGIC         print(f"  Context: {context_summary[:100]}...")
 # MAGIC         print(f"  Question clear: {question_clear}")
+# MAGIC         print(f"  Irrelevant: {is_irrelevant}")
 # MAGIC         print(f"  Meta-question: {is_meta_question}")
 # MAGIC         
 # MAGIC         # Create conversation turn
@@ -3505,6 +3822,57 @@ if instance_exists:
 # MAGIC             "confidence": confidence,
 # MAGIC             "complexity": metadata.get("complexity", "moderate")
 # MAGIC         })
+# MAGIC         
+# MAGIC         # NEW: Check if this is an irrelevant question - handle immediately
+# MAGIC         if is_irrelevant:
+# MAGIC             print("🚫 Irrelevant question detected - providing polite refusal")
+# MAGIC             
+# MAGIC             # Create turn for irrelevant question
+# MAGIC             turn["metadata"]["is_irrelevant"] = True
+# MAGIC             
+# MAGIC             # Emit metadata event (markdown was already streamed during LLM call)
+# MAGIC             writer({
+# MAGIC                 "type": "irrelevant_question_detected",
+# MAGIC                 "note": "Irrelevant refusal markdown already streamed to UI"
+# MAGIC             })
+# MAGIC             
+# MAGIC             # Use the markdown section that was streamed (from hybrid output)
+# MAGIC             # If no markdown section (edge case), format a simple response
+# MAGIC             if markdown_section and markdown_section.strip():
+# MAGIC                 irrelevant_display = markdown_section
+# MAGIC             else:
+# MAGIC                 irrelevant_display = """I'm a data analytics assistant focused on helping you analyze and query the available data sources.
+# MAGIC
+# MAGIC I can help you with questions about the data domains available in the system. To see what data is available, you can ask:
+# MAGIC - "What data sources are available?"
+# MAGIC - "What tables can I query?"
+# MAGIC - "Show me example questions I can ask"
+# MAGIC
+# MAGIC Could you rephrase your question to focus on analyzing the available data?"""
+# MAGIC             
+# MAGIC             # Return with irrelevant flag to skip SQL generation
+# MAGIC             return {
+# MAGIC                 "current_turn": turn,
+# MAGIC                 "turn_history": [turn],
+# MAGIC                 "intent_metadata": IntentMetadata(
+# MAGIC                     intent_type=intent_type,
+# MAGIC                     confidence=confidence,
+# MAGIC                     reasoning=f"Irrelevant question: {intent_type}",
+# MAGIC                     topic_change_score=1.0,
+# MAGIC                     domain="irrelevant",
+# MAGIC                     operation=None,
+# MAGIC                     complexity=metadata.get("complexity", "simple"),
+# MAGIC                     parent_turn_id=None
+# MAGIC                 ),
+# MAGIC                 "question_clear": True,  # Set to True so it doesn't trigger clarification
+# MAGIC                 "is_irrelevant": True,  # Flag for routing
+# MAGIC                 "is_meta_question": False,
+# MAGIC                 "pending_clarification": None,
+# MAGIC                 "messages": [
+# MAGIC                     AIMessage(content=irrelevant_display),
+# MAGIC                     SystemMessage(content="Irrelevant question detected, skipping SQL generation")
+# MAGIC                 ]
+# MAGIC             }
 # MAGIC         
 # MAGIC         # NEW: Check if this is a meta-question - handle immediately
 # MAGIC         if is_meta_question:
@@ -3868,7 +4236,7 @@ if instance_exists:
 # MAGIC         writer({"type": "agent_step", "agent": "sql_synthesis_table", "step": "analyzing_plan", "content": f"📋 Analyzing execution plan for {len(relevant_space_ids)} relevant spaces"})
 # MAGIC         
 # MAGIC         # Emit tool preparation event
-# MAGIC         uc_functions = ["get_space_summary", "get_table_overview", "get_column_detail", "get_space_details"]
+# MAGIC         uc_functions = ["get_space_summary", "get_table_overview", "get_column_detail", "get_space_instructions", "get_space_details"]
 # MAGIC         writer({"type": "tools_available", "agent": "sql_synthesis_table", "tools": uc_functions, "content": f"🔧 Available UC functions: {', '.join(uc_functions)}"})
 # MAGIC         
 # MAGIC         # Emit query strategy
@@ -3885,20 +4253,29 @@ if instance_exists:
 # MAGIC         explanation = result.get("explanation", "")
 # MAGIC         has_sql = result.get("has_sql", False)
 # MAGIC         
-# MAGIC         if has_sql and sql_query and explanation:
-# MAGIC             print("✓ SQL query synthesized successfully")
-# MAGIC             print(f"SQL Preview: {sql_query[:200]}...")
+# MAGIC         # Extract all SQL queries using helper function
+# MAGIC         sql_queries, query_labels = extract_sql_queries_from_agent_result(result, "sql_synthesis_table")
+# MAGIC         
+# MAGIC         if sql_queries:
+# MAGIC             # Multi-query support
+# MAGIC             print(f"✓ Extracted {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
+# MAGIC             for i, query in enumerate(sql_queries, 1):
+# MAGIC                 label_info = f" [{query_labels[i-1]}]" if i <= len(query_labels) and query_labels[i-1] else ""
+# MAGIC                 print(f"  Query {i}{label_info} preview: {query[:100]}...")
+# MAGIC             
 # MAGIC             if explanation:
 # MAGIC                 print(f"Agent Explanation: {explanation[:200]}...")
 # MAGIC             
 # MAGIC             # Emit detailed success events
-# MAGIC             writer({"type": "sql_generated", "agent": "sql_synthesis_table", "query_preview": sql_query[:200], "content": f"💻 SQL Query Generated ({len(sql_query)} chars)"})
+# MAGIC             writer({"type": "sql_generated", "agent": "sql_synthesis_table", "query_preview": sql_queries[0][:200], "content": f"💻 {len(sql_queries)} SQL Quer{'y' if len(sql_queries) == 1 else 'ies'} Generated"})
 # MAGIC             writer({"type": "agent_result", "agent": "sql_synthesis_table", "result": "success", "content": f"✅ SQL synthesis complete: {explanation[:150]}..."})
 # MAGIC             
 # MAGIC             # Return updates for successful synthesis
 # MAGIC             return {
-# MAGIC                 "sql_query": sql_query,
-# MAGIC                 "has_sql": has_sql,
+# MAGIC                 "sql_queries": sql_queries,
+# MAGIC                 "sql_query_labels": query_labels,
+# MAGIC                 "sql_query": sql_queries[0],  # For backward compatibility
+# MAGIC                 "has_sql": True,
 # MAGIC                 "sql_synthesis_explanation": explanation,
 # MAGIC                 "next_agent": "sql_execution",
 # MAGIC                 "messages": [
@@ -4025,22 +4402,30 @@ if instance_exists:
 # MAGIC         explanation = result.get("explanation", "")
 # MAGIC         has_sql = result.get("has_sql", False)
 # MAGIC         
-# MAGIC         # Update explicit state
-# MAGIC         if has_sql and sql_query and explanation:
-# MAGIC             print("✓ SQL fragments combined successfully")
-# MAGIC             print(f"SQL Preview: {sql_query[:200]}...")
+# MAGIC         # Extract all SQL queries using helper function
+# MAGIC         sql_queries, query_labels = extract_sql_queries_from_agent_result(result, "sql_synthesis_genie")
+# MAGIC         
+# MAGIC         if sql_queries:
+# MAGIC             # Multi-query support
+# MAGIC             print(f"✓ Extracted {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
+# MAGIC             for i, query in enumerate(sql_queries, 1):
+# MAGIC                 label_info = f" [{query_labels[i-1]}]" if i <= len(query_labels) and query_labels[i-1] else ""
+# MAGIC                 print(f"  Query {i}{label_info} preview: {query[:100]}...")
+# MAGIC             
 # MAGIC             if explanation:
 # MAGIC                 print(f"Agent Explanation: {explanation[:200]}...")
 # MAGIC             
 # MAGIC             # Emit detailed success events
-# MAGIC             writer({"type": "sql_generated", "agent": "sql_synthesis_genie", "query_preview": sql_query[:200], "content": f"💻 Combined SQL Query Generated ({len(sql_query)} chars)"})
+# MAGIC             writer({"type": "sql_generated", "agent": "sql_synthesis_genie", "query_preview": sql_queries[0][:200], "content": f"💻 {len(sql_queries)} SQL Quer{'y' if len(sql_queries) == 1 else 'ies'} Generated"})
 # MAGIC             writer({"type": "agent_result", "agent": "sql_synthesis_genie", "result": "success", "content": f"✅ SQL synthesis complete: {explanation[:150]}..."})
-# MAGIC             writer({"type": "agent_thinking", "agent": "sql_synthesis_genie", "content": f"🎯 Successfully combined SQL from {len(genie_route_plan)} Genie agents"})
+# MAGIC             writer({"type": "agent_thinking", "agent": "sql_synthesis_genie", "content": f"🎯 Successfully extracted {len(sql_queries)} SQL queries from {len(genie_route_plan)} Genie agents"})
 # MAGIC             
 # MAGIC             # Return updates for successful synthesis
 # MAGIC             return {
-# MAGIC                 "sql_query": sql_query,
-# MAGIC                 "has_sql": has_sql,
+# MAGIC                 "sql_queries": sql_queries,
+# MAGIC                 "sql_query_labels": query_labels,
+# MAGIC                 "sql_query": sql_queries[0],  # For backward compatibility
+# MAGIC                 "has_sql": True,
 # MAGIC                 "sql_synthesis_explanation": explanation,
 # MAGIC                 "next_agent": "sql_execution",
 # MAGIC                 "messages": [
@@ -4081,6 +4466,7 @@ if instance_exists:
 # MAGIC def sql_execution_node(state: AgentState) -> dict:
 # MAGIC     """
 # MAGIC     SQL execution node wrapping SQLExecutionAgent class.
+# MAGIC     Supports executing multiple SQL queries for multi-part questions.
 # MAGIC     Combines OOP modularity with explicit state management.
 # MAGIC     
 # MAGIC     OPTIMIZED: Uses minimal state extraction to reduce token usage
@@ -4095,53 +4481,72 @@ if instance_exists:
 # MAGIC     print("🚀 SQL EXECUTION AGENT (Token Optimized)")
 # MAGIC     print("="*80)
 # MAGIC     
-# MAGIC     # OPTIMIZATION: Extract only minimal context needed for execution
-# MAGIC     context = extract_execution_context(state)
-# MAGIC     print(f"📊 State optimization: Using {len(context)} fields (vs {len([k for k in state.keys() if state.get(k) is not None])} in full state)")
+# MAGIC     # NEW: Support multiple queries
+# MAGIC     sql_queries = state.get("sql_queries", [])
 # MAGIC     
-# MAGIC     sql_query = context.get("sql_query")
+# MAGIC     # Fallback to single query for backward compatibility
+# MAGIC     if not sql_queries:
+# MAGIC         single_query = state.get("sql_query")
+# MAGIC         if single_query:
+# MAGIC             sql_queries = [single_query]
 # MAGIC     
-# MAGIC     if not sql_query:
-# MAGIC         print("❌ No SQL query to execute")
+# MAGIC     if not sql_queries:
+# MAGIC         print("❌ No SQL queries to execute")
 # MAGIC         # Return error update
 # MAGIC         return {
-# MAGIC             "execution_error": "No SQL query provided"
+# MAGIC             "execution_error": "No SQL queries provided",
+# MAGIC             "next_agent": "summarize"
 # MAGIC         }
 # MAGIC     
-# MAGIC     # Emit validation start event
-# MAGIC     writer({"type": "sql_validation_start", "query": sql_query[:200]})
-# MAGIC     
-# MAGIC     # Emit execution start event
-# MAGIC     writer({"type": "sql_execution_start", "estimated_complexity": "standard"})
+# MAGIC     print(f"📊 Executing {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
 # MAGIC     
 # MAGIC     # Use OOP agent with SQL Warehouse
 # MAGIC     execution_agent = SQLExecutionAgent(warehouse_id=SQL_WAREHOUSE_ID)
-# MAGIC     result = execution_agent(sql_query)
 # MAGIC     
-# MAGIC     # Prepare updates based on result
+# MAGIC     # Emit start events before parallel execution
+# MAGIC     for i, query in enumerate(sql_queries, 1):
+# MAGIC         writer({"type": "sql_validation_start", "query": query[:200], "query_number": i})
+# MAGIC         writer({"type": "sql_execution_start", "estimated_complexity": "standard", "query_number": i})
+# MAGIC     
+# MAGIC     # Execute queries in parallel (ThreadPoolExecutor inside the class)
+# MAGIC     execution_results = execution_agent.execute_sql_parallel(sql_queries)
+# MAGIC     all_successful = all(r["success"] for r in execution_results)
+# MAGIC     
+# MAGIC     # Emit completion events after parallel execution (writer is not thread-safe)
+# MAGIC     for result in execution_results:
+# MAGIC         i = result["query_number"]
+# MAGIC         if result["success"]:
+# MAGIC             print(f"✓ Query {i} succeeded: {result['row_count']} rows")
+# MAGIC             writer({"type": "sql_execution_complete", "rows": result['row_count'], "columns": result['columns'], "query_number": i})
+# MAGIC         else:
+# MAGIC             print(f"❌ Query {i} failed: {result.get('error')}")
+# MAGIC     
+# MAGIC     # Prepare updates (both single and multiple for backward compatibility)
 # MAGIC     updates = {
-# MAGIC         "execution_result": result,
+# MAGIC         "execution_results": execution_results,
+# MAGIC         "execution_result": execution_results[0],  # For backward compatibility
 # MAGIC         "next_agent": "summarize",
 # MAGIC         "messages": []
 # MAGIC     }
 # MAGIC     
-# MAGIC     if result["success"]:
-# MAGIC         print(f"✓ Query executed successfully!")
-# MAGIC         print(f"📊 Rows returned: {result['row_count']}")
-# MAGIC         print(f"📋 Columns: {', '.join(result['columns'])}")
-# MAGIC         
-# MAGIC         # Emit execution complete event
-# MAGIC         writer({"type": "sql_execution_complete", "rows": result['row_count'], "columns": result['columns']})
+# MAGIC     if all_successful:
+# MAGIC         total_rows = sum(r["row_count"] for r in execution_results)
+# MAGIC         success_msg = f"Executed {len(sql_queries)} quer{'y' if len(sql_queries) == 1 else 'ies'} successfully. Total rows: {total_rows}"
+# MAGIC         print(f"\n✅ {success_msg}")
 # MAGIC         
 # MAGIC         updates["messages"].append(
-# MAGIC             SystemMessage(content=f"Execution successful: {result['row_count']} rows returned")
+# MAGIC             SystemMessage(content=success_msg)
 # MAGIC         )
 # MAGIC     else:
-# MAGIC         print(f"❌ SQL execution failed: {result.get('error', 'Unknown error')}")
-# MAGIC         updates["execution_error"] = result.get("error")
+# MAGIC         failed_count = sum(1 for r in execution_results if not r["success"])
+# MAGIC         success_count = len(sql_queries) - failed_count
+# MAGIC         error_msg = f"{failed_count} of {len(sql_queries)} queries failed"
 # MAGIC         
+# MAGIC         print(f"\n⚠️ Partial success: {success_count} succeeded, {failed_count} failed")
+# MAGIC         
+# MAGIC         updates["execution_error"] = error_msg
 # MAGIC         updates["messages"].append(
-# MAGIC             SystemMessage(content=f"Execution failed: {result.get('error')}")
+# MAGIC             SystemMessage(content=f"{success_count} queries succeeded, {failed_count} failed")
 # MAGIC         )
 # MAGIC     
 # MAGIC     return updates
@@ -4351,7 +4756,11 @@ if instance_exists:
 # MAGIC     
 # MAGIC     # Define routing logic based on explicit state
 # MAGIC     def route_after_unified(state: AgentState) -> str:
-# MAGIC         """Route after unified node: planning or END (clarification/meta-question)"""
+# MAGIC         """Route after unified node: planning or END (clarification/meta-question/irrelevant)"""
+# MAGIC         # Check if irrelevant question - go directly to END with refusal
+# MAGIC         if state.get("is_irrelevant", False):
+# MAGIC             return END
+# MAGIC         
 # MAGIC         # Check if meta-question - go directly to END with answer
 # MAGIC         if state.get("is_meta_question", False):
 # MAGIC             return END
@@ -4431,7 +4840,7 @@ if instance_exists:
 # MAGIC     app_graph = workflow
 # MAGIC     
 # MAGIC     print("✓ Workflow nodes added:")
-# MAGIC     print("  1. Unified Intent+Context+Clarification Node (SIMPLIFIED - no kumc_poc imports)")
+# MAGIC     print("  1. Unified Intent+Context+Clarification Node (SIMPLIFIED - self-contained)")
 # MAGIC     print("  2. Planning Agent (OOP)")
 # MAGIC     print("  3. SQL Synthesis Agent - Table Route (OOP)")
 # MAGIC     print("  4. SQL Synthesis Agent - Genie Route (OOP)")
@@ -5249,6 +5658,18 @@ result1 = AGENT.predict(ResponsesAgentRequest(
 
 # COMMAND ----------
 
+# DBTITLE 1,test irrelevant questions
+follow_up_msg =  "Can I buy milk here?"
+print("thread_id in use:", thread_id)
+# follow up of thread from above, update here
+# First message
+result1 = AGENT.predict(ResponsesAgentRequest(
+    input=[{"role": "user", "content": f"{follow_up_msg}"}],
+    custom_inputs={"thread_id": f"{thread_id}"}
+))
+
+# COMMAND ----------
+
 # DBTITLE 1,no clarify but actaully a new question msg
 follow_up_msg =  "What are top 10 patients with highest medical charges?"
 print("thread_id in use:", thread_id)
@@ -5311,6 +5732,19 @@ result1 = AGENT.predict(ResponsesAgentRequest(
 
 # COMMAND ----------
 
+# DBTITLE 1,new thread new topic
+follow_up_msg =  "What is the average cost of medical claims for patients diagnosed with diabetes, broken down by insurance payer type and patient age group? use Genie route"
+thread_id = f"test-streaming-{str(uuid4())[:8]}"
+print("thread_id in use:", thread_id)
+# follow up of thread from above, update here
+# First message
+result1 = AGENT.predict(ResponsesAgentRequest(
+    input=[{"role": "user", "content": f"{follow_up_msg}"}],
+    custom_inputs={"thread_id": f"{thread_id}"}
+))
+
+# COMMAND ----------
+
 # DBTITLE 1,response to clarify
 follow_up_msg =  "you decide"
 print("thread_id in use:", thread_id)
@@ -5347,7 +5781,16 @@ result1 = AGENT.predict(ResponsesAgentRequest(
 
 # COMMAND ----------
 
+# DBTITLE 1,multi-part question example
+# Example of multi-part question: Start a new conversation
+thread_id = str(uuid4())
+print(f"Starting conversation with thread_id: {thread_id}")
 
+# First message
+result1 = AGENT.predict(ResponsesAgentRequest(
+    input=[{"role": "user", "content": "What diagnoses are most common? Which procedures are performed together?"}],
+    custom_inputs={"thread_id": thread_id}
+))
 
 # COMMAND ----------
 
@@ -5561,6 +6004,7 @@ resources = [
     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_summary"),
     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_table_overview"),
     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_column_detail"),
+    DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_instructions"),
     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_details"),
 ]
 """)
@@ -5628,6 +6072,7 @@ from pkg_resources import get_distribution
 #     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_summary"),
 #     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_table_overview"),
 #     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_column_detail"),
+#     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_instructions"),
 #     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_details"),
 # ]
 
@@ -5661,12 +6106,13 @@ resources = [
     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_summary"),
     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_table_overview"),
     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_column_detail"),
+    DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_instructions"),
     DatabricksFunction(function_name=f"{CATALOG}.{SCHEMA}.get_space_details"),
 ]
 
 
 input_example = {
-    "input": [{"role": "user", "content": "Show me patient data"}],
+    "input": [{"role": "user", "content": "How many diabetes patients we have?"}],
     "custom_inputs": {"thread_id": "example-123"},
     "context": {"conversation_id": "sess-001", "user_id": "user@example.com"}
 }
@@ -5695,7 +6141,7 @@ with mlflow.start_run():
         resources=resources,
         # ⚠️ CRITICAL: Pass production config via ModelConfig (Databricks best practice!)
         # This config overrides the development_config in agent.py
-        model_config="../prod_config.yaml",  # Production configuration
+        model_config="../../prod_config.yaml",  # Production configuration
         pip_requirements=[
             f"databricks-sdk=={get_distribution('databricks-sdk').version}",  # Required for Config() unified auth
             f"databricks-sql-connector=={get_distribution('databricks-sql-connector').version}",  # Required for SQLExecutionAgent

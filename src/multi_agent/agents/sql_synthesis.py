@@ -5,7 +5,7 @@ This module provides two SQL synthesis strategies for the multi-agent system:
 
 1. Table Route (sql_synthesis_table_node):
    - Fast SQL synthesis using Unity Catalog (UC) function tools
-   - Queries metadata directly from UC functions (get_space_summary, get_table_overview, etc.)
+   - Queries metadata directly from UC functions (get_space_summary, get_table_overview, get_space_instructions, etc.)
    - Optimized for single-space or simple multi-space queries
    - Uses cached SQLSynthesisTableAgent instance for performance
 
@@ -30,104 +30,23 @@ from typing import Dict, List, Optional, Any, Callable
 from langchain_core.messages import AIMessage
 from langgraph.config import get_stream_writer
 
-# Type imports - these should be imported from the appropriate module
-# For standalone usage, AgentState should be imported from conversation_models or defined here
-try:
-    from kumc_poc.conversation_models import AgentState
-except ImportError:
-    # Fallback: define minimal AgentState type if import fails
-    from typing_extensions import TypedDict
-    class AgentState(TypedDict, total=False):
-        plan: Optional[Dict[str, Any]]
-        relevant_space_ids: Optional[List[str]]
-        relevant_spaces: Optional[List[Dict[str, Any]]]
-        genie_route_plan: Optional[Dict[str, str]]
-        sql_query: Optional[str]
-        sql_synthesis_explanation: Optional[str]
-        synthesis_error: Optional[str]
-        has_sql: Optional[bool]
-        next_agent: Optional[str]
-        messages: List
+# Type imports
+from ..core.state import AgentState
 
-# Agent class imports - these should be imported from the appropriate module
-# For standalone usage, these classes should be imported or defined elsewhere
-try:
-    from kumc_poc.agents.sql_synthesis_agents import (
-        SQLSynthesisTableAgent,
-        SQLSynthesisGenieAgent
-    )
-except ImportError:
-    # If classes don't exist in a separate module, they need to be imported from the notebook
-    # or defined here. For now, we'll assume they're available via import
-    SQLSynthesisTableAgent = None  # type: ignore
-    SQLSynthesisGenieAgent = None  # type: ignore
+# Agent class imports
+from .sql_synthesis_agents import (
+    SQLSynthesisTableAgent,
+    SQLSynthesisGenieAgent
+)
+
+# SQL extraction utilities for multi-query support
+from ..utils.sql_extraction import extract_sql_queries_from_agent_result
 
 # LLM and utility imports
 try:
     from databricks_langchain import ChatDatabricks
 except ImportError:
     ChatDatabricks = None  # type: ignore
-
-# Configuration constants - these should be imported from config or passed as parameters
-# For standalone usage, these should be provided via function parameters or environment
-# They can be initialized using initialize_config() function below
-LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = None  # Should be set from config
-LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = None  # Should be set from config
-CATALOG = None  # Should be set from config
-SCHEMA = None  # Should be set from config
-
-
-def initialize_config(
-    llm_endpoint_sql_synthesis_table: str,
-    llm_endpoint_sql_synthesis_genie: str,
-    catalog: str,
-    schema: str
-):
-    """
-    Initialize module-level configuration constants.
-    
-    This function should be called before using the SQL synthesis nodes,
-    or the constants can be set directly.
-    
-    Args:
-        llm_endpoint_sql_synthesis_table: LLM endpoint for table route SQL synthesis
-        llm_endpoint_sql_synthesis_genie: LLM endpoint for genie route SQL synthesis
-        catalog: Unity Catalog catalog name
-        schema: Unity Catalog schema name
-    """
-    global LLM_ENDPOINT_SQL_SYNTHESIS_TABLE
-    global LLM_ENDPOINT_SQL_SYNTHESIS_GENIE
-    global CATALOG
-    global SCHEMA
-    
-    LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = llm_endpoint_sql_synthesis_table
-    LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = llm_endpoint_sql_synthesis_genie
-    CATALOG = catalog
-    SCHEMA = schema
-
-
-def initialize_config_from_module():
-    """
-    Initialize configuration from the config module.
-    
-    Attempts to load configuration from config.get_config().
-    This is useful when running in environments where config.py is available.
-    """
-    try:
-        from config import get_config
-        config = get_config()
-        
-        initialize_config(
-            llm_endpoint_sql_synthesis_table=config.llm.sql_synthesis_table_endpoint,
-            llm_endpoint_sql_synthesis_genie=config.llm.sql_synthesis_genie_endpoint,
-            catalog=config.unity_catalog.catalog_name,
-            schema=config.unity_catalog.schema_name
-        )
-        print("✓ Configuration initialized from config module")
-    except ImportError:
-        print("⚠️ config module not available. Set configuration manually using initialize_config()")
-    except Exception as e:
-        print(f"⚠️ Failed to initialize config: {e}. Set configuration manually using initialize_config()")
 
 # Performance metrics storage (module-level)
 _performance_metrics = {
@@ -267,7 +186,7 @@ def measure_node_time(node_name: str):
     return decorator
 
 
-def get_cached_sql_table_agent():
+def get_cached_sql_table_agent(llm_endpoint=None, catalog=None, schema=None):
     """
     Get or create cached SQLSynthesisTableAgent instance.
     Expected gain: -500ms to -1s per request
@@ -275,17 +194,27 @@ def get_cached_sql_table_agent():
     if SQLSynthesisTableAgent is None:
         raise ImportError("SQLSynthesisTableAgent is not available. Import it from the appropriate module.")
     
-    if LLM_ENDPOINT_SQL_SYNTHESIS_TABLE is None:
+    if llm_endpoint is None or catalog is None or schema is None:
+        from ..core.config import get_config
+        config = get_config()
+        if llm_endpoint is None:
+            llm_endpoint = config.llm.sql_synthesis_table_endpoint
+        if catalog is None:
+            catalog = config.unity_catalog.catalog_name
+        if schema is None:
+            schema = config.unity_catalog.schema_name
+            
+    if llm_endpoint is None:
         raise ValueError("LLM_ENDPOINT_SQL_SYNTHESIS_TABLE must be configured")
     
-    if CATALOG is None or SCHEMA is None:
+    if catalog is None or schema is None:
         raise ValueError("CATALOG and SCHEMA must be configured")
     
     if "sql_table" not in _agent_cache:
         record_cache_miss("agent_cache")
         print("⚡ Creating SQLSynthesisTableAgent (first use)...")
-        llm = get_pooled_llm(LLM_ENDPOINT_SQL_SYNTHESIS_TABLE)
-        _agent_cache["sql_table"] = SQLSynthesisTableAgent(llm, CATALOG, SCHEMA)
+        llm = get_pooled_llm(llm_endpoint)
+        _agent_cache["sql_table"] = SQLSynthesisTableAgent(llm, catalog, schema)
         print("✓ SQLSynthesisTableAgent cached")
     else:
         record_cache_hit("agent_cache")
@@ -323,9 +252,16 @@ def sql_synthesis_table_node(state: AgentState) -> dict:
     # Emit synthesis start event
     writer({"type": "sql_synthesis_start", "route": "table", "spaces": relevant_space_ids})
     
+    # Get configuration
+    from ..core.config import get_config
+    config = get_config()
+    llm_endpoint = config.llm.sql_synthesis_table_endpoint
+    catalog = config.unity_catalog.catalog_name
+    schema = config.unity_catalog.schema_name
+    
     # OPTIMIZATION: Use cached agent instance
-    sql_agent = get_cached_sql_table_agent()
-    track_agent_model_usage("sql_synthesis_table", LLM_ENDPOINT_SQL_SYNTHESIS_TABLE)
+    sql_agent = get_cached_sql_table_agent(llm_endpoint, catalog, schema)
+    track_agent_model_usage("sql_synthesis_table", llm_endpoint)
     
     print("plan loaded from state is:", plan)
     print(json.dumps(plan, indent=2))
@@ -338,7 +274,7 @@ def sql_synthesis_table_node(state: AgentState) -> dict:
         writer({"type": "agent_step", "agent": "sql_synthesis_table", "step": "analyzing_plan", "content": f"📋 Analyzing execution plan for {len(relevant_space_ids)} relevant spaces"})
         
         # Emit tool preparation event
-        uc_functions = ["get_space_summary", "get_table_overview", "get_column_detail", "get_space_details"]
+        uc_functions = ["get_space_summary", "get_table_overview", "get_column_detail", "get_space_instructions", "get_space_details"]
         writer({"type": "tools_available", "agent": "sql_synthesis_table", "tools": uc_functions, "content": f"🔧 Available UC functions: {', '.join(uc_functions)}"})
         
         # Emit query strategy
@@ -355,20 +291,29 @@ def sql_synthesis_table_node(state: AgentState) -> dict:
         explanation = result.get("explanation", "")
         has_sql = result.get("has_sql", False)
         
-        if has_sql and sql_query and explanation:
-            print("✓ SQL query synthesized successfully")
-            print(f"SQL Preview: {sql_query[:200]}...")
+        # Extract all SQL queries using helper function
+        sql_queries, query_labels = extract_sql_queries_from_agent_result(result, "sql_synthesis_table")
+        
+        if sql_queries:
+            # Multi-query support
+            print(f"✓ Extracted {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
+            for i, query in enumerate(sql_queries, 1):
+                label_info = f" [{query_labels[i-1]}]" if i <= len(query_labels) and query_labels[i-1] else ""
+                print(f"  Query {i}{label_info} preview: {query[:100]}...")
+            
             if explanation:
                 print(f"Agent Explanation: {explanation[:200]}...")
             
             # Emit detailed success events
-            writer({"type": "sql_generated", "agent": "sql_synthesis_table", "query_preview": sql_query[:200], "content": f"💻 SQL Query Generated ({len(sql_query)} chars)"})
+            writer({"type": "sql_generated", "agent": "sql_synthesis_table", "query_preview": sql_queries[0][:200], "content": f"💻 {len(sql_queries)} SQL Quer{'y' if len(sql_queries) == 1 else 'ies'} Generated"})
             writer({"type": "agent_result", "agent": "sql_synthesis_table", "result": "success", "content": f"✅ SQL synthesis complete: {explanation[:150]}..."})
             
             # Return updates for successful synthesis
             return {
-                "sql_query": sql_query,
-                "has_sql": has_sql,
+                "sql_queries": sql_queries,
+                "sql_query_labels": query_labels,
+                "sql_query": sql_queries[0],  # For backward compatibility
+                "has_sql": True,
                 "sql_synthesis_explanation": explanation,
                 "next_agent": "sql_execution",
                 "messages": [
@@ -434,12 +379,14 @@ def sql_synthesis_genie_node(state: AgentState) -> dict:
     # Emit synthesis start event
     writer({"type": "sql_synthesis_start", "route": "genie", "spaces": relevant_space_ids})
     
+    # Get configuration
+    from ..core.config import get_config
+    config = get_config()
+    llm_endpoint = config.llm.sql_synthesis_genie_endpoint
+    
     # Use dedicated SQL_SYNTHESIS_GENIE endpoint for orchestrating multiple Genie agents
     # This agent requires stronger reasoning for complex coordination
-    if LLM_ENDPOINT_SQL_SYNTHESIS_GENIE is None:
-        raise ValueError("LLM_ENDPOINT_SQL_SYNTHESIS_GENIE must be configured")
-    
-    llm = get_pooled_llm(LLM_ENDPOINT_SQL_SYNTHESIS_GENIE, temperature=0.1)
+    llm = get_pooled_llm(llm_endpoint, temperature=0.1)
     
     if not relevant_spaces:
         print("❌ No relevant_spaces found in state")
@@ -453,7 +400,7 @@ def sql_synthesis_genie_node(state: AgentState) -> dict:
         raise ImportError("SQLSynthesisGenieAgent is not available. Import it from the appropriate module.")
     
     sql_agent = SQLSynthesisGenieAgent(llm, relevant_spaces)
-    track_agent_model_usage("sql_synthesis_genie", LLM_ENDPOINT_SQL_SYNTHESIS_GENIE)
+    track_agent_model_usage("sql_synthesis_genie", llm_endpoint)
     
     # Use minimal context (already extracted)
     plan = context.get("plan", {})
@@ -499,22 +446,30 @@ def sql_synthesis_genie_node(state: AgentState) -> dict:
         explanation = result.get("explanation", "")
         has_sql = result.get("has_sql", False)
         
-        # Update explicit state
-        if has_sql and sql_query and explanation:
-            print("✓ SQL fragments combined successfully")
-            print(f"SQL Preview: {sql_query[:200]}...")
+        # Extract all SQL queries using helper function
+        sql_queries, query_labels = extract_sql_queries_from_agent_result(result, "sql_synthesis_genie")
+        
+        if sql_queries:
+            # Multi-query support
+            print(f"✓ Extracted {len(sql_queries)} SQL quer{'y' if len(sql_queries) == 1 else 'ies'}")
+            for i, query in enumerate(sql_queries, 1):
+                label_info = f" [{query_labels[i-1]}]" if i <= len(query_labels) and query_labels[i-1] else ""
+                print(f"  Query {i}{label_info} preview: {query[:100]}...")
+            
             if explanation:
                 print(f"Agent Explanation: {explanation[:200]}...")
             
             # Emit detailed success events
-            writer({"type": "sql_generated", "agent": "sql_synthesis_genie", "query_preview": sql_query[:200], "content": f"💻 Combined SQL Query Generated ({len(sql_query)} chars)"})
+            writer({"type": "sql_generated", "agent": "sql_synthesis_genie", "query_preview": sql_queries[0][:200], "content": f"💻 {len(sql_queries)} SQL Quer{'y' if len(sql_queries) == 1 else 'ies'} Generated"})
             writer({"type": "agent_result", "agent": "sql_synthesis_genie", "result": "success", "content": f"✅ SQL synthesis complete: {explanation[:150]}..."})
-            writer({"type": "agent_thinking", "agent": "sql_synthesis_genie", "content": f"🎯 Successfully combined SQL from {len(genie_route_plan)} Genie agents"})
+            writer({"type": "agent_thinking", "agent": "sql_synthesis_genie", "content": f"🎯 Successfully extracted {len(sql_queries)} SQL queries from {len(genie_route_plan)} Genie agents"})
             
             # Return updates for successful synthesis
             return {
-                "sql_query": sql_query,
-                "has_sql": has_sql,
+                "sql_queries": sql_queries,
+                "sql_query_labels": query_labels,
+                "sql_query": sql_queries[0],  # For backward compatibility
+                "has_sql": True,
                 "sql_synthesis_explanation": explanation,
                 "next_agent": "sql_execution",
                 "messages": [
@@ -560,7 +515,5 @@ __all__ = [
     "get_cached_sql_table_agent",
     "get_pooled_llm",
     "track_agent_model_usage",
-    "measure_node_time",
-    "initialize_config",
-    "initialize_config_from_module",
+    "measure_node_time"
 ]

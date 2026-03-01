@@ -1,0 +1,62 @@
+graph TD
+    %% ============================================================
+    %% Simple Architecture Diagram
+    %% ============================================================
+
+    User[👤 User Query] 
+    Tagline[✨ Product Advantages:<br/>1. Accuracy<br/>2. Curation<br/>3. Speed]
+    
+    User ~~~ Tagline
+
+    User --> Supervisor[🤖 Supervisor Agent<br/>Orchestrator]
+    
+    subgraph Planning["Planning Phase"]
+        direction TB
+        Planner[🧠 Thinking & Planning Agent<br/>Query Analysis & Planning]
+    end
+    
+    Supervisor -->|Delegates to| Planner
+    
+    subgraph Routing["Routing & Synthesis Phase"]
+        direction LR
+        SynthTable[SQL Synthesis Agent<br/>Table Route]
+        SynthGenie[SQL Synthesis Agent<br/>Genie Route]
+        Genie[🧞 Genie Agents<br/>Domain-specific Data]
+        
+        SynthGenie <-->|Query| Genie
+    end
+    
+    Planner -->|Table Data Plan| SynthTable
+    Planner -->|Genie Spaces Plan| SynthGenie
+    
+    subgraph Execution["Execution & Summary Phase"]
+        direction TB
+        Exec[⚙️ SQL Execution Agent<br/>Execute Queries]
+        Summarize[📝 Summarize Agent<br/>Format & Synthesize]
+        
+        Exec -->|Query Results| Summarize
+    end
+    
+    SynthTable -->|Synthesized SQL| Exec
+    SynthGenie -->|Synthesized SQL| Exec
+    
+    Tagline ~~~ Execution
+    
+    Summarize --> Answer[✅ Final Answer]
+    
+    %% ============================================================
+    %% Styling
+    %% ============================================================
+    classDef userClass fill:#E94B3C,stroke:#A33428,stroke-width:2px,color:#fff,rx:10,ry:10
+    classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff,rx:10,ry:10
+    classDef routeClass fill:#F5A623,stroke:#C17D11,stroke-width:2px,color:#000,rx:10,ry:10
+    classDef execClass fill:#1ABC9C,stroke:#16A085,stroke-width:2px,color:#fff,rx:10,ry:10
+    classDef answerClass fill:#50C878,stroke:#2E7D4E,stroke-width:2px,color:#fff,rx:10,ry:10
+    classDef taglineClass fill:#8E44AD,stroke:#6C3483,stroke-width:2px,color:#fff,rx:10,ry:10
+
+    class User userClass
+    class Supervisor,Planner,Genie,Summarize agentClass
+    class SynthTable,SynthGenie routeClass
+    class Exec execClass
+    class Answer answerClass
+    class Tagline taglineClass
