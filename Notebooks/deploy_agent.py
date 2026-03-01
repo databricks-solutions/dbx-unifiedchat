@@ -505,7 +505,8 @@ while elapsed_time < max_wait_time:
     try:
         endpoint_status = w.serving_endpoints.get(name=deployment_info.endpoint_name)
         state = endpoint_status.state.config_update if endpoint_status.state.config_update else endpoint_status.state.ready
-        
+        state = state.value
+
         print(f"  Endpoint state: {state} (elapsed: {elapsed_time}s)")
         
         if state == "READY":
