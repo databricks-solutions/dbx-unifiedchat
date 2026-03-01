@@ -80,3 +80,6 @@ logs/
 
 # node modules
 **/src/tables_genies/ui/node_modules/
+
+# assets for icons
+assets/

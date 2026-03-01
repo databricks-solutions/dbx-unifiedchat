@@ -1,6 +1,8 @@
+![DBX-UnifiedChat Logo](docs/logos/dbx-unifiedchat-logo-pacman-eating-data-full-console.png.png)
+
 # DBX-UnifiedChat - Databricks Unified Chat
 
-> A multi-agent system for intelligent cross-domain data queries using LangGraph, Databricks Genie, Lakebase, Model Serving built for Databricks Platform.
+> A multi-agent system for intelligent cross-domain data queries built with LangGraph, Databricks Genie, Lakebase, and Claude models/skills on Databricks Platform.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-Databricks-blue.svg)](LICENSE.md)
@@ -9,6 +11,8 @@
 [![MLflow](https://img.shields.io/badge/MLflow-≥3.6.0-orange.svg)](https://mlflow.org/)
 [![Databricks SDK](https://img.shields.io/badge/Databricks%20SDK-≥0.20.0-red.svg)](https://github.com/databricks/databricks-sdk-py)
 [![Pydantic](https://img.shields.io/badge/Pydantic-≥2.0.0-blue.svg)](https://github.com/pydantic/pydantic)
+[![Claude Models](https://img.shields.io/badge/Claude-Sonnet%2FHaiku_4.5-purple.svg)](https://www.anthropic.com/claude)
+[![Claude Skills](https://img.shields.io/badge/Claude-Skills-purple.svg)](https://www.anthropic.com/claude)
 
 ---
 
@@ -18,9 +22,21 @@ Organizations struggle to query data across multiple domains and data sources, r
 
 Built on LangGraph, Databricks Genie and Lakebase, this solution enables business users to ask questions spanning multiple data domains without needing to understand the underlying data architecture or write complex SQL queries.
 
----
+> ### Why use DBX-UnifiedChat?
+- **Accuracy of Answer** 
+    - Validated with customers and partners, e.g., tumor outcome data analysis.
+- **Explanation and Curation** 
+    - Results are curated and explained by SQL answer returned and associated explanations.
+- **Speed**
+    - Optimized with parallel/cache/token reduction/architecture design
+    - Achieves 1-2 seconds TTFT
+    - For complex query across domains, we see it achieves 1/3 to 1/2 of the time of the No/Low-Code custom agent solution.
+
+
 
 ## Architecture
+
+![Agent Architecture](docs/architecture/architecture_diagram_simple_v2.png)
 
 The system uses a multi-agent architecture powered by LangGraph:
 
