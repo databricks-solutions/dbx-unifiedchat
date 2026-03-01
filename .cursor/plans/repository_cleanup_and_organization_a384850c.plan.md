@@ -64,7 +64,7 @@ Both configuration systems must be maintained and documented.
 - **Configuration files** (dual-purpose):
   - `dev_config.yaml` + `prod_config.yaml` - For Databricks deployment
   - `config.py` + `.env` - For local development
-- `kumc_poc/` - Well-structured package (will rename to remove client-specific naming)
+- Legacy package structure has been migrated to `src/multi_agent/`
 - Core agent functionality in `Notebooks/Super_Agent_hybrid.py`
 - ETL pipeline in `Notebooks_Tested_On_Databricks/`
 - All architecture diagram files (will organize into dedicated folder)
@@ -80,7 +80,7 @@ Both configuration systems must be maintained and documented.
   - `Notebooks/Super_Agent_hybrid.py` must work with BOTH config systems
 2. **Naming Conventions**:
   - Rename `kumc_agent` → `multi_agent` throughout (remove client-specific naming)
-  - Keep `kumc_poc/` package but document it's legacy structure
+  - Legacy `kumc_poc/` package has been migrated to `src/multi_agent/`
 3. **File Organization**:
   - Keep ALL architecture diagram files (svg, png, pdf, mmd, csv) → move to `docs/architecture/`
   - Keep ALL plan files in `.cursor/plans/` (already organized)
@@ -829,7 +829,7 @@ Extract from `Notebooks/Super_Agent_hybrid.py` (6,833 lines) into modules:
   - Extract vector search tools from `Notebooks/agent_uc_functions.py`
   - Extract UC functions
 6. **Utilities** → `src/multi_agent/utils/`:
-  - Conversation management from `kumc_poc/conversation_models.py`
+  - Conversation management from `src/multi_agent/core/state.py` and `src/multi_agent/utils/conversation.py`
   - Memory management utilities
 
 ### Create Entry Points

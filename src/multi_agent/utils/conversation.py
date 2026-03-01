@@ -151,6 +151,17 @@ class AgentState(TypedDict):
     question_clear: bool  # Legacy field for routing logic
     
     # -------------------------------------------------------------------------
+    # Meta-question handling
+    # -------------------------------------------------------------------------
+    is_meta_question: Optional[bool]
+    meta_answer: Optional[str]
+    
+    # -------------------------------------------------------------------------
+    # Irrelevant question handling
+    # -------------------------------------------------------------------------
+    is_irrelevant: Optional[bool]
+    
+    # -------------------------------------------------------------------------
     # Planning
     # -------------------------------------------------------------------------
     plan: Optional[Dict[str, Any]]
@@ -168,13 +179,17 @@ class AgentState(TypedDict):
     # SQL Synthesis
     # -------------------------------------------------------------------------
     sql_query: Optional[str]
+    sql_queries: Optional[List[str]]  # Multi-part question: list of all SQL queries
+    sql_query_labels: Optional[List[str]]  # Multi-part question: per-query labels
     sql_synthesis_explanation: Optional[str]
     synthesis_error: Optional[str]
+    has_sql: Optional[bool]  # Whether SQL was successfully extracted
     
     # -------------------------------------------------------------------------
     # Execution
     # -------------------------------------------------------------------------
     execution_result: Optional[Dict[str, Any]]
+    execution_results: Optional[List[Dict[str, Any]]]  # Multi-part question: list of all execution results
     execution_error: Optional[str]
     
     # -------------------------------------------------------------------------
@@ -221,6 +236,9 @@ def get_reset_state_template() -> Dict[str, Any]:
         # Clarification fields (per-query)
         "pending_clarification": None,
         "question_clear": False,
+        "is_meta_question": False,
+        "meta_answer": None,
+        "is_irrelevant": False,
         
         # Planning fields (per-query)
         "plan": None,
@@ -236,11 +254,15 @@ def get_reset_state_template() -> Dict[str, Any]:
         
         # SQL fields (per-query)
         "sql_query": None,
+        "sql_queries": None,
+        "sql_query_labels": None,
         "sql_synthesis_explanation": None,
         "synthesis_error": None,
+        "has_sql": None,
         
         # Execution fields (per-query)
         "execution_result": None,
+        "execution_results": None,
         "execution_error": None,
         
         # Summary (per-query)

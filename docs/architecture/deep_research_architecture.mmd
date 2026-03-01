@@ -1,0 +1,114 @@
+graph TB
+    %% ============================================================
+    %% Deep Research Architecture - Module Level
+    %% ============================================================
+
+    %% Entry Point
+    User[👤 User] -->|High-level<br/>deep research question| SuperAgent[🤖 Super Agent<br/>with Memory]
+
+    %% Intent Detection identifies Deep Research
+    SuperAgent --> Intent[🎯 Intent Detection]
+    Intent --> IntentType{Intent<br/>Type?}
+
+    IntentType -->|Standard Query| StandardFlow[Existing Standard Flow<br/>Planning → Routing → Execution]
+    IntentType -->|Deep Research| InterpretAgent
+
+    %% ============================================================
+    %% NEW: Interpret Agent Module
+    %% ============================================================
+    subgraph InterpretModule["🔬 Interpret Agent Module (NEW)"]
+        direction TB
+        InterpretAgent[🧠 Interpret Agent<br/>Deep Question Translator]
+        
+        InterpretAgent --> Decompose[Decompose High-Level Question<br/>into Storyline Structure]
+        
+        Decompose --> StorylineQ["📋 Multi-Part Questions<br/>with Storyline Arc"]
+        
+        StorylineQ --> QList["Q1: Identify top 5% highest-cost patients<br/>Q2: Profile by demographics<br/>Q3: Enrollment characteristics<br/>Q4: Primary diagnoses<br/>Q5: Frequent procedures & specialties<br/>Q6: Cross-cutting insights"]
+    end
+
+    %% ============================================================
+    %% Planning Agent receives structured multi-part questions
+    %% ============================================================
+    subgraph PlanningModule["🧠 Planning Agent Module (ENHANCED)"]
+        direction TB
+        PlanningAgent[📐 Planning Agent<br/>Overall & Per-Question Plans]
+        
+        PlanningAgent --> OverallPlan[📝 Overall Analysis Plan<br/>Storyline-Aware Strategy]
+        
+        OverallPlan --> SubPlans["Per-Question Plans<br/>Q1 Plan → Q2 Plan → ... → QN Plan<br/>Each with analysis approach<br/>& insight extraction points"]
+    end
+
+    QList --> PlanningAgent
+    PlanningAgent --> VSSearch[🔍 Vector Search<br/>Relevant Spaces per Q]
+    VSIndex[(📚 Vector Search Index)] --> VSSearch
+    VSSearch --> PlanningAgent
+
+    %% ============================================================
+    %% Execution Engine - Iterates through sub-questions
+    %% ============================================================
+    subgraph ExecutionModule["⚙️ Execution Engine (EXISTING)"]
+        direction TB
+        
+        Orchestrator[🔄 Sub-Question Orchestrator<br/>Sequential / Parallel Dispatch]
+        
+        Orchestrator --> ExecQ1[Execute Q1<br/>Route → Agent → SQL → Result]
+        Orchestrator --> ExecQ2[Execute Q2<br/>Route → Agent → SQL → Result]
+        Orchestrator --> ExecQN[Execute QN<br/>Route → Agent → SQL → Result]
+        
+        ExecQ1 --> Insight1[💡 Insight Extraction<br/>Q1 Findings]
+        ExecQ2 --> Insight2[💡 Insight Extraction<br/>Q2 Findings]
+        ExecQN --> InsightN[💡 Insight Extraction<br/>QN Findings]
+    end
+
+    SubPlans --> Orchestrator
+    DeltaTables[(💾 Delta Tables)] -.-> ExecutionModule
+
+    %% ============================================================
+    %% Synthesis Module - Weave results together
+    %% ============================================================
+    subgraph SynthesisModule["📊 Synthesis Module (ENHANCED)"]
+        direction TB
+        
+        Weaver[🧵 Result Weaver<br/>Storyline-Aware Synthesis]
+        
+        Weaver --> StepInsights["Step-by-Step Insights<br/>Narrative thread across Q1→QN"]
+        StepInsights --> FinalSynthesis["📈 Final Synthesis<br/>Cross-cutting patterns<br/>Key findings & recommendations"]
+    end
+
+    Insight1 --> Weaver
+    Insight2 --> Weaver
+    InsightN --> Weaver
+
+    %% Back to Super Agent
+    FinalSynthesis --> SuperAgent
+    StandardFlow --> SuperAgent
+    SuperAgent -->|Deep research report<br/>with storyline narrative| User
+
+    %% Memory & Context
+    Lakebase[(🗄️ Lakebase<br/>Memory)] -.-> SuperAgent
+    SuperAgent -.checkpoints.-> Lakebase
+
+    %% MLflow Integration
+    MLflow[📈 MLflow<br/>Logging & Tracing] -.logs.-> InterpretAgent
+    MLflow -.logs.-> PlanningAgent
+    MLflow -.logs.-> Orchestrator
+
+    %% ============================================================
+    %% Styling
+    %% ============================================================
+    classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff
+    classDef dataClass fill:#50C878,stroke:#2E7D4E,stroke-width:2px,color:#fff
+    classDef processClass fill:#F5A623,stroke:#C17D11,stroke-width:2px,color:#000
+    classDef decisionClass fill:#E94B3C,stroke:#A33428,stroke-width:2px,color:#fff
+    classDef newModuleClass fill:#8E44AD,stroke:#6C3483,stroke-width:2px,color:#fff
+    classDef insightClass fill:#1ABC9C,stroke:#16A085,stroke-width:2px,color:#fff
+    classDef existingClass fill:#7F8C8D,stroke:#566573,stroke-width:2px,color:#fff
+
+    class SuperAgent,PlanningAgent,InterpretAgent agentClass
+    class VSIndex,DeltaTables,Lakebase dataClass
+    class Intent,VSSearch,Decompose,OverallPlan,SubPlans,Orchestrator,ExecQ1,ExecQ2,ExecQN,Weaver,StepInsights processClass
+    class IntentType decisionClass
+    class StorylineQ,QList newModuleClass
+    class Insight1,Insight2,InsightN,FinalSynthesis insightClass
+    class StandardFlow existingClass

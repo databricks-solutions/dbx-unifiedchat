@@ -70,6 +70,55 @@ LLM_ENDPOINT_PLANNING: Optional[str] = None
 # Helper Functions
 # ==============================================================================
 
+# Agent cache (module-level)
+_agent_cache = {}
+
+def get_cached_planning_agent():
+    """
+    Get or create cached PlanningAgent instance.
+    Expected gain: -500ms to -1s per request
+    """
+    global LLM_ENDPOINT_PLANNING, VECTOR_SEARCH_INDEX
+    
+    # Lazy load config if not set
+    if LLM_ENDPOINT_PLANNING is None or VECTOR_SEARCH_INDEX is None:
+        try:
+            from ..core.config import get_config
+            config = get_config()
+            if LLM_ENDPOINT_PLANNING is None:
+                LLM_ENDPOINT_PLANNING = config.llm.planning_endpoint
+            if VECTOR_SEARCH_INDEX is None:
+                # Construct the full index name
+                VECTOR_SEARCH_INDEX = f"{config.unity_catalog.catalog_name}.{config.unity_catalog.schema_name}.{'enriched_genie_docs_chunks_vs_index'}"
+        except Exception as e:
+            print(f"⚠️ Failed to load config: {e}")
+            
+    if "planning" not in _agent_cache:
+        record_cache_miss("agent_cache")
+        print("⚡ Creating PlanningAgent (first use)...")
+        
+        try:
+            from databricks_langchain import ChatDatabricks
+            from .planning_agent import PlanningAgent
+            
+            if LLM_ENDPOINT_PLANNING is None:
+                raise ValueError("LLM_ENDPOINT_PLANNING must be configured")
+            if VECTOR_SEARCH_INDEX is None:
+                raise ValueError("VECTOR_SEARCH_INDEX must be configured")
+                
+            llm = ChatDatabricks(endpoint=LLM_ENDPOINT_PLANNING, temperature=0.1)
+            _agent_cache["planning"] = PlanningAgent(llm, VECTOR_SEARCH_INDEX)
+            print("✓ PlanningAgent cached")
+        except ImportError:
+            raise ImportError(
+                "Failed to import required dependencies (ChatDatabricks or PlanningAgent)."
+            )
+    else:
+        record_cache_hit("agent_cache")
+        print("✓ Using cached PlanningAgent")
+        
+    return _agent_cache["planning"]
+
 def extract_planning_context(state: AgentState) -> dict:
     """Extract minimal context for planning."""
     return {
@@ -210,15 +259,12 @@ def planning_node(state: AgentState) -> dict:
     # NOTE: get_cached_planning_agent must be imported or defined elsewhere
     # This function should return a cached PlanningAgent instance
     try:
-        from ..utils.cache import get_cached_planning_agent
         planning_agent = get_cached_planning_agent()
-    except ImportError:
+    except Exception as e:
         # Fallback: PlanningAgent and get_cached_planning_agent need to be provided
         # This is a placeholder - in production, these should be properly imported
         raise ImportError(
-            "get_cached_planning_agent not found. "
-            "Please ensure PlanningAgent and caching utilities are available. "
-            "They should be imported from the appropriate module or defined in utils.cache."
+            f"Failed to get planning agent: {e}"
         )
     track_agent_model_usage("planning", LLM_ENDPOINT_PLANNING)
     

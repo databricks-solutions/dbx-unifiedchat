@@ -47,6 +47,19 @@ print(f"Embedding Model: {embedding_model}")
 print(f"Pipeline Type: {pipeline_type}")
 print("\nNote: Using multi-level chunks table with space_summary, table_overview, and column_detail chunks")
 
+# Ensure catalog/schema context is set (each serverless task is a separate session)
+try:
+    spark.sql(f"CREATE CATALOG IF NOT EXISTS `{catalog_name}`")
+except Exception:
+    pass
+spark.sql(f"USE CATALOG `{catalog_name}`")
+try:
+    spark.sql(f"CREATE SCHEMA IF NOT EXISTS `{schema_name}`")
+except Exception:
+    pass
+spark.sql(f"USE SCHEMA `{schema_name}`")
+print(f"✓ Using {catalog_name}.{schema_name}")
+
 # COMMAND ----------
 
 # DBTITLE 1,Verify Source Table

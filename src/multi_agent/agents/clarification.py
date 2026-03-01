@@ -8,6 +8,8 @@ This module provides the unified clarification agent that combines:
 - Meta-question detection and direct answering
 
 The agent uses streaming LLM calls with hybrid output format for immediate user feedback.
+TODO: 1. separate agent class and agent node like all other agents; now it is crammed here.
+      2. many tasks, consider skill this.
 """
 
 import json
@@ -66,8 +68,14 @@ def _load_space_context_uncached(table_name: str) -> Dict[str, str]:
     Returns:
         Dictionary mapping space_id to searchable_content
     """
-    from pyspark.sql import SparkSession
-    spark = SparkSession.builder.getOrCreate()
+    try:
+        from databricks.connect import DatabricksSession
+        # You must add .serverless() or .clusterId("your-cluster-id") here
+        spark = DatabricksSession.builder.serverless().getOrCreate()
+    except ImportError:
+        # This only runs inside Databricks where databricks-connect isn't installed
+        from pyspark.sql import SparkSession
+        spark = SparkSession.builder.getOrCreate()
     
     df = spark.sql(f"""
         SELECT space_id, searchable_content
@@ -194,76 +202,6 @@ def record_cache_miss(cache_type: str):
         _performance_metrics["cache_stats"][key] += 1
 
 
-def should_use_fast_path(query: str, turn_history: List) -> Dict[str, Any]:
-    """
-    Determine if query can skip full LLM analysis using fast-path heuristics.
-    
-    Heuristics for obvious cases that don't need full intent detection:
-    1. First query that is detailed and clear (>15 words with SQL keywords)
-    2. Follow-up refinements with clear action verbs
-    3. Simple data retrieval queries
-    
-    Args:
-        query: Current user query
-        turn_history: Conversation history
-    
-    Returns:
-        Dict with:
-        - use_fast_path: bool - Whether to skip full LLM analysis
-        - intent_type: str - Inferred intent type
-        - confidence: float - Confidence in fast-path decision
-        - reasoning: str - Explanation
-    """
-    query_lower = query.lower().strip()
-    word_count = len(query.split())
-    
-    # Heuristic 1: First detailed query with SQL-related keywords
-    sql_keywords = ['show', 'get', 'list', 'find', 'how many', 'count', 'sum', 'average', 
-                    'total', 'group by', 'where', 'patients', 'claims', 'providers']
-    has_sql_intent = any(kw in query_lower for kw in sql_keywords)
-    
-    if len(turn_history) == 0 and word_count >= 15 and has_sql_intent:
-        return {
-            "use_fast_path": True,
-            "intent_type": "new_question",
-            "confidence": 0.85,
-            "reasoning": f"First detailed query ({word_count} words) with clear SQL intent",
-            "question_clear": True
-        }
-    
-    # Heuristic 2: Follow-up refinements with clear action verbs
-    refinement_keywords = ['filter', 'narrow', 'exclude', 'include', 'only', 'just', 
-                           'limit to', 'restrict', 'add', 'remove', 'without', 'with']
-    has_refinement_intent = any(kw in query_lower for kw in refinement_keywords)
-    
-    if len(turn_history) > 0 and has_refinement_intent and word_count >= 5:
-        return {
-            "use_fast_path": True,
-            "intent_type": "refinement",
-            "confidence": 0.80,
-            "reasoning": f"Follow-up refinement with clear intent ({word_count} words)",
-            "question_clear": True
-        }
-    
-    # Heuristic 3: Simple retrieval queries (show me, get me, list)
-    simple_commands = query_lower.startswith(('show ', 'get ', 'list ', 'display ', 'give me'))
-    if simple_commands and word_count >= 6 and has_sql_intent:
-        intent = "new_question" if len(turn_history) == 0 else "continuation"
-        return {
-            "use_fast_path": True,
-            "intent_type": intent,
-            "confidence": 0.75,
-            "reasoning": f"Simple retrieval command with clear structure",
-            "question_clear": True
-        }
-    
-    # No fast-path: use full LLM analysis
-    return {
-        "use_fast_path": False,
-        "reasoning": "Query requires full LLM analysis for accurate classification"
-    }
-
-
 def check_clarification_rate_limit(turn_history: List[ConversationTurn], window_size: int = 5) -> bool:
     """
     Check if clarification was triggered in the last N turns (sliding window).
@@ -325,7 +263,6 @@ def unified_intent_context_clarification_node(
     Streaming behavior:
     - Markdown content is streamed to UI as LLM generates it (better TTFT)
     - JSON metadata is parsed after streaming completes for routing decisions
-    - Fast-path optimization bypasses LLM entirely for simple refinements
     
     Args:
         state: Current agent state
@@ -423,66 +360,8 @@ def unified_intent_context_clarification_node(
     print(f"Query: {current_query}")
     print(f"Turn history: {len(turn_history)} turns")
     
-    # PHASE 2 OPTIMIZATION: Check if we can use fast-path routing
-    fast_path_result = should_use_fast_path(current_query, turn_history)
-    
-    if fast_path_result["use_fast_path"]:
-        print(f"🚀 FAST-PATH ACTIVATED: {fast_path_result['reasoning']}")
-        print(f"   Intent: {fast_path_result['intent_type']} (confidence: {fast_path_result['confidence']:.2f})")
-        print(f"   Skipping full LLM analysis (-500ms to -1s)")
-        
-        writer({
-            "type": "fast_path_activated",
-            "intent_type": fast_path_result['intent_type'],
-            "confidence": fast_path_result['confidence'],
-            "reasoning": fast_path_result['reasoning']
-        })
-        
-        # Create simplified context summary for fast-path
-        context_summary = f"{current_query}"
-        if turn_history:
-            last_query = turn_history[-1]['query']
-            context_summary = f"Building on previous query '{last_query}', user asks: {current_query}"
-        
-        # Create conversation turn with fast-path results
-        turn = create_conversation_turn(
-            query=current_query,
-            intent_type=fast_path_result['intent_type'],
-            parent_turn_id=None,
-            context_summary=context_summary,
-            triggered_clarification=False,
-            metadata={"fast_path": True, "confidence": fast_path_result['confidence']}
-        )
-        
-        # Create intent metadata
-        intent_metadata = IntentMetadata(
-            intent_type=fast_path_result['intent_type'],
-            confidence=fast_path_result['confidence'],
-            reasoning=fast_path_result['reasoning'],
-            topic_change_score=0.5,
-            domain=None,
-            operation=None,
-            complexity="simple" if fast_path_result['intent_type'] == "refinement" else "moderate",
-            parent_turn_id=None
-        )
-        
-        # Return early - skip to planning
-        # NOTE: Fast-path bypasses LLM entirely, so no streaming occurs
-        # Streaming only applies to full LLM analysis path below
-        return {
-            "current_turn": turn,
-            "turn_history": [turn],
-            "intent_metadata": intent_metadata,
-            "question_clear": True,  # Fast-path assumes clear queries
-            "pending_clarification": None,
-            "next_agent": "planning",
-            "messages": [
-                SystemMessage(content=f"Fast-path: {fast_path_result['intent_type']} (skipped LLM analysis)")
-            ]
-        }
-    
-    # If not fast-path, continue with full LLM analysis (WITH STREAMING)
-    print("🔄 Using full LLM analysis with streaming (query requires detailed classification)")
+    # Analyze query with full LLM (intent + context + clarity + meta-question detection)
+    print("🔄 Analyzing query with LLM (intent + context + clarity + meta-question detection)")
     
     # Format conversation context
     conversation_context = ""
@@ -510,11 +389,45 @@ Conversation History:
 Available Data Sources:
 {json.dumps(space_context, indent=2)}
 
-## Task 1: Detect Meta-Questions (NEW)
-First, determine if this is a META-QUESTION about the system itself:
+## Task 0: Detect Irrelevant Questions (NEW)
+FIRST, determine if this is an IRRELEVANT question completely unrelated to data analytics:
+- Greetings, small talk, casual conversation (e.g., "Hello", "How are you?", "What's up?")
+- Questions about weather, sports, politics, entertainment, current events
+- Personal questions about the AI/system itself (e.g., "Who created you?", "Are you sentient?")
+- Jokes, riddles, creative writing requests, role-playing
+- Questions about topics outside of data analysis and business intelligence
+- Programming help, homework, recipes, travel advice, etc.
+
+Examples of irrelevant questions (all should set is_irrelevant=true):
+- "What's the weather like today?"
+- "Tell me a joke"
+- "Who won the Super Bowl?"
+- "How do I make pasta?"
+- "What are your thoughts on politics?"
+- "I want to buy some milk."
+- "Trim me a haircut."
+
+If it's irrelevant, you MUST:
+1. Set "is_irrelevant": true
+2. Provide a polite refusal explaining you're a data analytics assistant
+3. Redirect the user to ask questions about the available data sources
+
+NOTE: If a question mentions data but in an irrelevant context (e.g., "What's the weather like in my data?"), treat it as irrelevant.
+
+## Task 1: Detect Meta-Questions
+Next, determine if this is a META-QUESTION about the system itself:
 - Questions about available tables, data sources, spaces, schemas
 - Questions about system capabilities, what data is available
 - Questions about the structure or organization of data
+- Questions asking for EXAMPLE QUERIES or SAMPLE QUESTIONS they can ask (e.g., "give me 10 example questions I can ask", "what kinds of questions can I ask?", "show me sample questions", "what can I query?")
+
+Examples of meta-questions (all should set is_meta_question=true):
+- "What tables are available?"
+- "Give me 10 example questions I can ask"
+- "What kinds of questions can I ask this system?"
+- "Show me sample queries I can run"
+- "What data do you have access to?"
+- "What can I query here?"
 
 If it's a meta-question, you MUST:
 1. Set "is_meta_question": true
@@ -546,6 +459,33 @@ Determine if the query is clear enough to generate SQL:
 
 Your response format depends on the situation:
 
+**CASE 0: Irrelevant Question** (is_irrelevant=true)
+Output polite refusal markdown FIRST, then JSON metadata:
+
+I'm a data analytics assistant focused on helping you analyze and query the available data sources.
+
+I can help you with questions about the data domains available in the system. To see what data is available, you can ask:
+- "What data sources are available?"
+- "What tables can I query?"
+- "Show me example questions I can ask"
+
+Could you rephrase your question to focus on analyzing the available data?
+
+```json
+{{{{
+  "is_irrelevant": true,
+  "is_meta_question": false,
+  "meta_answer": null,
+  "intent_type": "new_question",
+  "confidence": 0.95,
+  "context_summary": "User asked an irrelevant question unrelated to data analytics",
+  "question_clear": true,
+  "clarification_reason": null,
+  "clarification_options": null,
+  "metadata": {{{{"domain": "irrelevant", "complexity": "simple", "topic_change_score": 1.0}}}}
+}}}}
+```
+
 **CASE 1: Meta-Question** (is_meta_question=true)
 Output markdown answer FIRST, then JSON metadata:
 
@@ -555,6 +495,7 @@ Output markdown answer FIRST, then JSON metadata:
 
 ```json
 {{
+  "is_irrelevant": false,
   "is_meta_question": true,
   "meta_answer": null,
   "intent_type": "new_question",
@@ -576,6 +517,7 @@ Output clarification markdown FIRST, then JSON metadata:
 
 ```json
 {{
+  "is_irrelevant": false,
   "is_meta_question": false,
   "meta_answer": null,
   "intent_type": "new_question",
@@ -593,6 +535,7 @@ Output ONLY JSON (no markdown prefix):
 
 ```json
 {{
+  "is_irrelevant": false,
   "is_meta_question": false,
   "meta_answer": null,
   "intent_type": "new_question" | "refinement" | "continuation" | "clarification_response",
@@ -610,10 +553,10 @@ Output ONLY JSON (no markdown prefix):
 ```
 
 CRITICAL: 
-- For meta-questions and clarifications: markdown FIRST (will be streamed to user), then JSON
+- For irrelevant questions, meta-questions, and clarifications: markdown FIRST (will be streamed to user), then JSON
 - For regular clear queries: JSON ONLY (no markdown needed)
 - Always use proper markdown formatting with ##/### headings, **bold**, bullet lists
-- Use professional but friendly tone for healthcare analytics
+- Use professional but friendly tone for data analytics
 """
     
     # Call LLM with stream for immediate markdown output (using pooled connection)
@@ -679,6 +622,7 @@ CRITICAL:
         result = json.loads(json_section)
         
         # Extract results
+        is_irrelevant = result.get("is_irrelevant", False)
         is_meta_question = result.get("is_meta_question", False)
         meta_answer = result.get("meta_answer")
         intent_type = result["intent_type"].lower()
@@ -692,6 +636,7 @@ CRITICAL:
         print(f"✓ Intent: {intent_type} (confidence: {confidence:.2f})")
         print(f"  Context: {context_summary[:100]}...")
         print(f"  Question clear: {question_clear}")
+        print(f"  Irrelevant: {is_irrelevant}")
         print(f"  Meta-question: {is_meta_question}")
         
         # Create conversation turn
@@ -723,6 +668,57 @@ CRITICAL:
             "confidence": confidence,
             "complexity": metadata.get("complexity", "moderate")
         })
+        
+        # NEW: Check if this is an irrelevant question - handle immediately
+        if is_irrelevant:
+            print("🚫 Irrelevant question detected - providing polite refusal")
+            
+            # Create turn for irrelevant question
+            turn["metadata"]["is_irrelevant"] = True
+            
+            # Emit metadata event (markdown was already streamed during LLM call)
+            writer({
+                "type": "irrelevant_question_detected",
+                "note": "Irrelevant refusal markdown already streamed to UI"
+            })
+            
+            # Use the markdown section that was streamed (from hybrid output)
+            # If no markdown section (edge case), format a simple response
+            if markdown_section and markdown_section.strip():
+                irrelevant_display = markdown_section
+            else:
+                irrelevant_display = """I'm a data analytics assistant focused on helping you analyze and query the available data sources.
+
+I can help you with questions about the data domains available in the system. To see what data is available, you can ask:
+- "What data sources are available?"
+- "What tables can I query?"
+- "Show me example questions I can ask"
+
+Could you rephrase your question to focus on analyzing the available data?"""
+            
+            # Return with irrelevant flag to skip SQL generation
+            return {
+                "current_turn": turn,
+                "turn_history": [turn],
+                "intent_metadata": IntentMetadata(
+                    intent_type=intent_type,
+                    confidence=confidence,
+                    reasoning=f"Irrelevant question: {intent_type}",
+                    topic_change_score=1.0,
+                    domain="irrelevant",
+                    operation=None,
+                    complexity=metadata.get("complexity", "simple"),
+                    parent_turn_id=None
+                ),
+                "question_clear": True,  # Set to True so it doesn't trigger clarification
+                "is_irrelevant": True,  # Flag for routing
+                "is_meta_question": False,
+                "pending_clarification": None,
+                "messages": [
+                    AIMessage(content=irrelevant_display),
+                    SystemMessage(content="Irrelevant question detected, skipping SQL generation")
+                ]
+            }
         
         # NEW: Check if this is a meta-question - handle immediately
         if is_meta_question:

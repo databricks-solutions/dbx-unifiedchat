@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1920, height=1080, initial-scale=1">
+<title>DBX-UnifiedChat - One Slide Overview</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #0f172a;
+    color: #f8fafc;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    padding: 20px;
+  }
+
+  .slide {
+    width: 1280px;
+    min-height: 720px;
+    background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0f172a 100%);
+    border-radius: 12px;
+    padding: 48px 56px 40px;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 25px 60px rgba(0,0,0,0.5);
+  }
+
+  .slide::before {
+    content: '';
+    position: absolute;
+    top: 0; right: 0;
+    width: 600px; height: 600px;
+    background: radial-gradient(circle, rgba(255,54,33,0.08) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .slide::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0;
+    width: 500px; height: 500px;
+    background: radial-gradient(circle, rgba(59,130,246,0.06) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 28px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .title-block h1 {
+    font-size: 32px;
+    font-weight: 800;
+    background: linear-gradient(135deg, #FF3621 0%, #FF6B4A 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    letter-spacing: -0.5px;
+    line-height: 1.1;
+  }
+
+  .title-block .subtitle {
+    font-size: 14px;
+    color: #94a3b8;
+    margin-top: 4px;
+    font-weight: 400;
+  }
+
+  .tagline {
+    background: linear-gradient(135deg, rgba(255,54,33,0.12), rgba(59,130,246,0.08));
+    border: 1px solid rgba(255,54,33,0.2);
+    border-radius: 8px;
+    padding: 8px 16px;
+    font-size: 12px;
+    color: #e2e8f0;
+    max-width: 320px;
+    text-align: right;
+    line-height: 1.4;
+  }
+
+  .tagline strong { color: #FF6B4A; }
+
+  .main-content {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 20px;
+    position: relative;
+    z-index: 1;
+  }
+
+  .section {
+    background: rgba(30,41,59,0.6);
+    border: 1px solid rgba(148,163,184,0.1);
+    border-radius: 10px;
+    padding: 20px;
+    position: relative;
+  }
+
+  .section:nth-child(1) { border-top: 3px solid #FF3621; }
+  .section:nth-child(2) { border-top: 3px solid #3b82f6; }
+  .section:nth-child(3) { border-top: 3px solid #10b981; }
+
+  .section-number {
+    position: absolute;
+    top: -14px;
+    left: 16px;
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 700;
+    color: #fff;
+  }
+
+  .section:nth-child(1) .section-number { background: #FF3621; }
+  .section:nth-child(2) .section-number { background: #3b82f6; }
+  .section:nth-child(3) .section-number { background: #10b981; }
+
+  .section h2 {
+    font-size: 16px;
+    font-weight: 700;
+    color: #f1f5f9;
+    margin-bottom: 4px;
+    padding-left: 24px;
+  }
+
+  .section .section-tag {
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.2px;
+    margin-bottom: 12px;
+    padding-left: 24px;
+  }
+
+  .section:nth-child(1) .section-tag { color: #FF6B4A; }
+  .section:nth-child(2) .section-tag { color: #60a5fa; }
+  .section:nth-child(3) .section-tag { color: #34d399; }
+
+  .section p {
+    font-size: 11.5px;
+    color: #cbd5e1;
+    line-height: 1.5;
+    margin-bottom: 12px;
+  }
+
+  .feature-list {
+    list-style: none;
+    padding: 0;
+  }
+
+  .feature-list li {
+    font-size: 11px;
+    color: #94a3b8;
+    padding: 3px 0;
+    padding-left: 18px;
+    position: relative;
+    line-height: 1.4;
+  }
+
+  .feature-list li::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 8px;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+  }
+
+  .section:nth-child(1) .feature-list li::before { background: rgba(255,54,33,0.5); }
+  .section:nth-child(2) .feature-list li::before { background: rgba(59,130,246,0.5); }
+  .section:nth-child(3) .feature-list li::before { background: rgba(16,185,129,0.5); }
+
+  .architecture-mini {
+    background: rgba(15,23,42,0.5);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-family: 'Fira Code', 'Consolas', monospace;
+    font-size: 9.5px;
+    color: #64748b;
+    line-height: 1.6;
+    margin-top: 10px;
+    border: 1px solid rgba(148,163,184,0.08);
+  }
+
+  .architecture-mini .highlight-red { color: #FF6B4A; }
+  .architecture-mini .highlight-blue { color: #60a5fa; }
+  .architecture-mini .highlight-green { color: #34d399; }
+  .architecture-mini .highlight-purple { color: #a78bfa; }
+  .architecture-mini .highlight-yellow { color: #fbbf24; }
+  .architecture-mini .dim { color: #475569; }
+
+  .bottom-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid rgba(148,163,184,0.1);
+    position: relative;
+    z-index: 1;
+  }
+
+  .tech-badges {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .badge {
+    font-size: 9px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 4px;
+    letter-spacing: 0.3px;
+  }
+
+  .badge-orange { background: rgba(255,54,33,0.15); color: #FF6B4A; border: 1px solid rgba(255,54,33,0.25); }
+  .badge-blue { background: rgba(59,130,246,0.15); color: #60a5fa; border: 1px solid rgba(59,130,246,0.25); }
+  .badge-green { background: rgba(16,185,129,0.15); color: #34d399; border: 1px solid rgba(16,185,129,0.25); }
+  .badge-purple { background: rgba(167,139,250,0.15); color: #a78bfa; border: 1px solid rgba(167,139,250,0.25); }
+  .badge-yellow { background: rgba(251,191,36,0.15); color: #fbbf24; border: 1px solid rgba(251,191,36,0.25); }
+
+  .credits {
+    font-size: 10px;
+    color: #475569;
+    text-align: right;
+  }
+
+  .credits strong { color: #64748b; }
+
+  .flow-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    top: 50%;
+    right: -14px;
+    transform: translateY(-50%);
+    z-index: 2;
+    color: #475569;
+    font-size: 16px;
+  }
+
+  .section:nth-child(3) .flow-arrow { display: none; }
+
+  .value-prop {
+    background: rgba(255,54,33,0.06);
+    border-left: 2px solid rgba(255,54,33,0.3);
+    padding: 6px 10px;
+    margin-top: 10px;
+    border-radius: 0 4px 4px 0;
+  }
+
+  .value-prop span {
+    font-size: 10px;
+    color: #e2e8f0;
+    font-style: italic;
+  }
+</style>
+</head>
+<body>
+
+<div class="slide">
+  <!-- Header -->
+  <div class="header">
+    <div class="title-block">
+      <h1>DBX-UnifiedChat</h1>
+      <div class="subtitle">Intelligent Cross-Domain Data Queries with Multi-Agent AI &mdash; Built on Databricks</div>
+    </div>
+    <div class="tagline">
+      <strong>Ask questions across all your data domains</strong> in natural language &mdash; no SQL expertise required. Powered by LangGraph + Genie + Lakebase.
+    </div>
+  </div>
+
+  <!-- Three Columns -->
+  <div class="main-content">
+
+    <!-- Column 1: Agent System -->
+    <div class="section">
+      <div class="section-number">1</div>
+      <div class="section-tag">Core Intelligence</div>
+      <h2>Multi-Agent System</h2>
+      <p>
+        7 specialized AI agents orchestrated by LangGraph analyze, route, and answer
+        cross-domain data queries &mdash; turning natural language into precise SQL across any number of data sources.
+      </p>
+      <ul class="feature-list">
+        <li><strong style="color:#e2e8f0">Supervisor + Planning Agents</strong> &mdash; Intelligent query analysis &amp; routing</li>
+        <li><strong style="color:#e2e8f0">Genie Agents (parallel)</strong> &mdash; NL-to-SQL for each data domain</li>
+        <li><strong style="color:#e2e8f0">SQL Synthesis + Execution</strong> &mdash; Complex cross-domain JOINs</li>
+        <li><strong style="color:#e2e8f0">Clarification &amp; Summarize</strong> &mdash; Handles ambiguity, formats answers</li>
+        <li><strong style="color:#e2e8f0">Memory (Lakebase)</strong> &mdash; Multi-turn chat with long-term recall</li>
+      </ul>
+      <div class="architecture-mini">
+        <span class="highlight-red">User Query</span> <span class="dim">&rarr;</span> <span class="highlight-yellow">Supervisor</span> <span class="dim">&rarr;</span> <span class="highlight-purple">Planner</span><br>
+        &nbsp;&nbsp;<span class="dim">&rarr;</span> <span class="highlight-blue">Genie Agents</span> <span class="dim">|</span> <span class="highlight-green">SQL Synth</span> <span class="dim">&rarr;</span> <span class="highlight-red">Execute</span><br>
+        &nbsp;&nbsp;<span class="dim">&rarr;</span> <span class="highlight-yellow">Summarize</span> <span class="dim">&rarr;</span> <span class="highlight-red">Answer</span>
+      </div>
+      <div class="flow-arrow">&rarr;</div>
+    </div>
+
+    <!-- Column 2: Tables-to-Genies App -->
+    <div class="section">
+      <div class="section-number">2</div>
+      <div class="section-tag">Self-Service Tooling</div>
+      <h2>Tables-to-Genies App</h2>
+      <p>
+        Full-stack Databricks App (React + FastAPI) that turns any Unity Catalog tables into
+        production-ready Genie Spaces through a guided 5-step visual workflow.
+      </p>
+      <ul class="feature-list">
+        <li><strong style="color:#e2e8f0">Browse &amp; Select</strong> &mdash; Explore UC catalogs, pick tables</li>
+        <li><strong style="color:#e2e8f0">LLM Enrichment</strong> &mdash; Auto-generate descriptions, data dictionaries</li>
+        <li><strong style="color:#e2e8f0">GraphRAG Explorer</strong> &mdash; Discover table relationships via LLM + structural analysis</li>
+        <li><strong style="color:#e2e8f0">Room Builder</strong> &mdash; Group tables into logical Genie rooms</li>
+        <li><strong style="color:#e2e8f0">One-Click Create</strong> &mdash; Deploy Genie Spaces to workspace</li>
+      </ul>
+      <div class="architecture-mini">
+        <span class="highlight-blue">Catalog Browser</span> <span class="dim">&rarr;</span> <span class="highlight-purple">Enrich</span> <span class="dim">&rarr;</span> <span class="highlight-green">Graph</span><br>
+        &nbsp;&nbsp;<span class="dim">&rarr;</span> <span class="highlight-yellow">Build Rooms</span> <span class="dim">&rarr;</span> <span class="highlight-red">Create Genies</span>
+      </div>
+      <div class="flow-arrow">&rarr;</div>
+    </div>
+
+    <!-- Column 3: ETL Pipeline -->
+    <div class="section">
+      <div class="section-number">3</div>
+      <div class="section-tag">Data Foundation</div>
+      <h2>ETL Pipeline</h2>
+      <p>
+        3-step metadata enrichment pipeline that powers the agent system &mdash; exporting Genie metadata,
+        enriching with statistics &amp; samples, and building a Vector Search index for semantic routing.
+      </p>
+      <ul class="feature-list">
+        <li><strong style="color:#e2e8f0">Export Genie Spaces</strong> &mdash; Capture metadata to Unity Catalog</li>
+        <li><strong style="color:#e2e8f0">Enrich Metadata</strong> &mdash; Samples, stats, column details via LLM</li>
+        <li><strong style="color:#e2e8f0">Vector Search Index</strong> &mdash; Semantic retrieval in &lt;1 second</li>
+        <li><strong style="color:#e2e8f0">3 Workflows</strong> &mdash; Local dev, Databricks test, production</li>
+        <li><strong style="color:#e2e8f0">Incremental &amp; Full</strong> &mdash; Supports sample and full modes</li>
+      </ul>
+      <div class="architecture-mini">
+        <span class="highlight-green">01</span> Export Genies <span class="dim">&rarr;</span> <span class="highlight-blue">02</span> Enrich Tables<br>
+        &nbsp;&nbsp;<span class="dim">&rarr;</span> <span class="highlight-purple">03</span> Build VS Index <span class="dim">&rarr;</span> <span class="highlight-red">Agents Ready</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Bottom Bar -->
+  <div class="bottom-bar">
+    <div class="tech-badges">
+      <span class="badge badge-orange">LangGraph</span>
+      <span class="badge badge-blue">Databricks Genie</span>
+      <span class="badge badge-green">Lakebase</span>
+      <span class="badge badge-purple">Vector Search</span>
+      <span class="badge badge-yellow">Claude Sonnet 4.5</span>
+      <span class="badge badge-blue">Unity Catalog</span>
+      <span class="badge badge-orange">MLflow</span>
+      <span class="badge badge-green">Model Serving</span>
+      <span class="badge badge-purple">React + FastAPI</span>
+    </div>
+    <div class="credits">
+      <strong>Databricks Field Solutions</strong><br>
+      88 tables &bull; 18 domains &bull; Production-ready
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
