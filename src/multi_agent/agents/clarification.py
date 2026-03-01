@@ -70,8 +70,10 @@ def _load_space_context_uncached(table_name: str) -> Dict[str, str]:
     """
     try:
         from databricks.connect import DatabricksSession
-        spark = DatabricksSession.builder.getOrCreate()
+        # You must add .serverless() or .clusterId("your-cluster-id") here
+        spark = DatabricksSession.builder.serverless().getOrCreate()
     except ImportError:
+        # This only runs inside Databricks where databricks-connect isn't installed
         from pyspark.sql import SparkSession
         spark = SparkSession.builder.getOrCreate()
     
