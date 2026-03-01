@@ -8,6 +8,8 @@ This module provides the unified clarification agent that combines:
 - Meta-question detection and direct answering
 
 The agent uses streaming LLM calls with hybrid output format for immediate user feedback.
+TODO: 1. separate agent class and agent node like all other agents; now it is crammed here.
+      2. many tasks, consider skill this.
 """
 
 import json

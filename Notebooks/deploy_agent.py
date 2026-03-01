@@ -13,17 +13,18 @@ Original Super_Agent_hybrid.py (6,833 lines) archived in archive/ for reference.
 
 # COMMAND ----------
 
-# MAGIC %load_ext autoreload
-# MAGIC %autoreload 2
-
-# COMMAND ----------
-
 # DBTITLE 1,Install Packages
 # MAGIC %pip install python-dotenv databricks-sdk==0.84.0 databricks-sql-connector==4.2.4 databricks-langchain[memory]==0.12.1 databricks-vectorsearch==0.63 databricks-agents==1.9.3 mlflow[databricks]>=3.6.0 pyyaml
 
 # COMMAND ----------
 
 # MAGIC %restart_python
+
+# COMMAND ----------
+
+# DBTITLE 1,autoreload local package
+# MAGIC %load_ext autoreload
+# MAGIC %autoreload 2
 
 # COMMAND ----------
 
@@ -78,71 +79,6 @@ print(f"  Summarize: {LLM_ENDPOINT_SUMMARIZE}")
 print("="*80)
 print("✓ All dependencies imported successfully (including memory support)")
 
-
-# COMMAND ----------
-
-# DBTITLE 1,(deprecated syntax) Load Configuration from YAML
-# """
-# Load configuration from prod_config.yaml.
-
-# For deployment, we use YAML configuration which gets packaged with the model.
-# For local development, use config.py + .env instead.
-# """
-
-# import yaml
-# import os
-
-# # Load prod_config.yaml
-# config_path = "../prod_config.yaml"
-# with open(config_path, 'r') as f:
-#     yaml_config = yaml.safe_load(f)
-
-# # Extract configuration values
-# CATALOG = yaml_config['catalog_name']
-# SCHEMA = yaml_config['schema_name']
-# TABLE_NAME = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks"
-# VECTOR_SEARCH_INDEX = f"{CATALOG}.{SCHEMA}.enriched_genie_docs_chunks_vs_index"
-
-# # LLM Endpoints - Diversified by Agent Role
-# LLM_ENDPOINT_CLARIFICATION = yaml_config.get('llm_endpoint_clarification', yaml_config['llm_endpoint'])
-# LLM_ENDPOINT_PLANNING = yaml_config.get('llm_endpoint_planning', yaml_config['llm_endpoint'])
-# LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = yaml_config.get('llm_endpoint_sql_synthesis_table', yaml_config['llm_endpoint'])
-# LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = yaml_config.get('llm_endpoint_sql_synthesis_genie', yaml_config['llm_endpoint'])
-# LLM_ENDPOINT_EXECUTION = yaml_config.get('llm_endpoint_execution', yaml_config['llm_endpoint'])
-# LLM_ENDPOINT_SUMMARIZE = yaml_config.get('llm_endpoint_summarize', yaml_config['llm_endpoint'])
-
-# # Lakebase configuration
-# LAKEBASE_INSTANCE_NAME = yaml_config['lakebase_instance_name']
-# EMBEDDING_ENDPOINT = yaml_config['lakebase_embedding_endpoint']
-# EMBEDDING_DIMS = yaml_config['lakebase_embedding_dims']
-
-# # SQL Warehouse
-# SQL_WAREHOUSE_ID = yaml_config['sql_warehouse_id']
-
-# # Genie Spaces
-# GENIE_SPACE_IDS = yaml_config['genie_space_ids']
-
-# # Validate SQL_WAREHOUSE_ID
-# if not SQL_WAREHOUSE_ID:
-#     raise ValueError("SQL_WAREHOUSE_ID must be configured in prod_config.yaml")
-
-# print("="*80)
-# print("CONFIGURATION LOADED FROM prod_config.yaml")
-# print("="*80)
-# print(f"Catalog: {CATALOG}")
-# print(f"Schema: {SCHEMA}")
-# print(f"Vector Search Index: {VECTOR_SEARCH_INDEX}")
-# print(f"SQL Warehouse ID: {SQL_WAREHOUSE_ID}")
-# print(f"Genie Spaces: {len(GENIE_SPACE_IDS)} spaces")
-# print(f"Lakebase Instance: {LAKEBASE_INSTANCE_NAME}")
-# print("\nLLM Endpoints (Diversified by Agent):")
-# print(f"  Clarification: {LLM_ENDPOINT_CLARIFICATION}")
-# print(f"  Planning: {LLM_ENDPOINT_PLANNING}")
-# print(f"  SQL Synthesis Table: {LLM_ENDPOINT_SQL_SYNTHESIS_TABLE}")
-# print(f"  SQL Synthesis Genie: {LLM_ENDPOINT_SQL_SYNTHESIS_GENIE}")
-# print(f"  Execution: {LLM_ENDPOINT_EXECUTION}")
-# print(f"  Summarize: {LLM_ENDPOINT_SUMMARIZE}")
-# print("="*80)
 
 # COMMAND ----------
 

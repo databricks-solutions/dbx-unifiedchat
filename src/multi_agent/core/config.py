@@ -3,6 +3,7 @@ Configuration file for Multi-Agent Genie System
 
 This module provides centralized configuration management for the entire
 multi-agent system, including environment variables, defaults, and validation.
+TODO: retire `print(f"  Function: {self.vector_search.function_name}")` related since vector_search function is not used anymore.
 """
 
 import os

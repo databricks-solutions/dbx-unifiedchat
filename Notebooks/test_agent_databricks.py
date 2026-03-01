@@ -15,6 +15,21 @@ Use this for:
 
 # COMMAND ----------
 
+# DBTITLE 1,Install Packages
+# MAGIC %pip install python-dotenv databricks-sdk==0.84.0 databricks-sql-connector==4.2.4 databricks-langchain[memory]==0.12.1 databricks-vectorsearch==0.63 databricks-agents==1.9.3 mlflow[databricks]>=3.6.0 pyyaml
+
+# COMMAND ----------
+
+# MAGIC %restart_python
+
+# COMMAND ----------
+
+# DBTITLE 1,dev_package_autoreload
+# MAGIC %load_ext autoreload
+# MAGIC %autoreload 2
+
+# COMMAND ----------
+
 # DBTITLE 1,Setup: Add src to Path
 import sys
 import os
@@ -26,6 +41,16 @@ if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
 print(f"✓ Added to path: {src_path}")
+
+# COMMAND ----------
+
+# DBTITLE 1,Setting up module level logger
+import logging
+logger = logging.getLogger(__name__)
+
+# COMMAND ----------
+
+import mlflow
 
 # COMMAND ----------
 
@@ -107,11 +132,57 @@ Create the agent graph using modular code.
 This creates the same graph that would be deployed to Model Serving.
 """
 
-# Create workflow
+# Create workflow as pure langchain/graph object
 super_agent_hybrid = create_super_agent_hybrid()
 
-# Create the deployable ResponsesAgent
-agent = SuperAgentHybridResponsesAgent(super_agent_hybrid)
+# Create the deployable ResponsesAgent as mlflow.pyfunc model, which databricks preferred
+AGENT = SuperAgentHybridResponsesAgent(super_agent_hybrid)
+
+
+print("\n" + "="*80)
+print("✅ HYBRID SUPER AGENT RESPONSES AGENT CREATED")
+print("="*80)
+print("Architecture: OOP Agents + Explicit State Management")
+print("Benefits:")
+print("  ✓ Modular and testable agent classes")
+print("  ✓ Full state observability for debugging")
+print("  ✓ Production-ready with development-friendly design")
+print("\nThis agent is now ready for:")
+print("  1. Local testing with AGENT.predict()")
+print("  2. Logging with mlflow.pyfunc.log_model()")
+print("  3. Deployment to Databricks Model Serving")
+print("\nMemory Features:")
+print("  ✓ Short-term memory: Multi-turn conversations (CheckpointSaver)")
+print("  ✓ Long-term memory: User preferences (DatabricksStore)")
+print("  ✓ Works in distributed Model Serving (shared state via Lakebase)")
+print("="*80)
+print("\n🎉 Enhanced Granular Streaming Features:")
+print("  ✓ Agent thinking and reasoning visibility")
+print("  ✓ Intent detection (new question vs follow-up)")
+print("  ✓ Clarity analysis with reasoning")
+print("  ✓ Vector search progress and results")
+print("  ✓ Execution plan formulation")
+print("  ✓ UC function calls and Genie agent invocations")
+print("  ✓ SQL generation progress")
+print("  ✓ SQL validation and execution progress")
+print("  ✓ Tool calls and tool results")
+print("  ✓ Routing decisions between agents")
+print("  ✓ Summary generation progress")
+print("  ✓ Custom events for detailed execution tracking")
+print("  ✓ Task lifecycle monitoring (start/finish/errors)")
+print("  ✓ Per-node execution timing for performance analysis")
+print("="*80)
+
+# Set the agent for MLflow tracking
+# Enable autologging with run_tracer_inline for proper async context propagation
+try:
+    mlflow.langchain.autolog(run_tracer_inline=True)
+    logger.info("✓ MLflow LangChain autologging enabled with async context support")
+except Exception as e:
+    logger.warning(f"⚠️ MLflow autolog initialization failed: {e}")
+    logger.warning("Continuing without MLflow tracing...")
+
+mlflow.models.set_model(AGENT)
 
 print("✓ Agent graph created from modular code")
 print("✓ ResponsesAgent wrapper initialized")
@@ -119,7 +190,26 @@ print("✓ Ready for testing with real Databricks services")
 
 # COMMAND ----------
 
-# DBTITLE 1,Test with Sample Query
+# DBTITLE 1,testing-related library import
+from uuid import uuid4
+from mlflow.types.responses import ResponsesAgentRequest
+
+# COMMAND ----------
+
+# DBTITLE 1,predict (a wrapper of predict_stream)
+follow_up_msg =  "What is the average cost of medical claims for patients diagnosed with diabetes, broken down by insurance payer type and patient age group? use table route"
+thread_id = f"test-streaming-{str(uuid4())[:8]}"
+print("thread_id in use:", thread_id)
+# follow up of thread from above, update here
+# First message
+result1 = AGENT.predict(ResponsesAgentRequest(
+    input=[{"role": "user", "content": f"{follow_up_msg}"}],
+    custom_inputs={"thread_id": f"{thread_id}"}
+))
+
+# COMMAND ----------
+
+# DBTITLE 1,Test with predict_stream
 """
 Test the agent with a sample query.
 
@@ -127,17 +217,16 @@ This tests the complete workflow with real Databricks services using the Respons
 """
 
 from mlflow.types.responses import ResponsesAgentRequest
-from mlflow.types.llm import ChatMessage
 
 # Sample query
-test_query = "Show me patient demographics"
+test_query = "Show me patient demographics. Use Genie Route"
 
 print("="*80)
 print(f"TESTING QUERY: {test_query}")
 print("="*80)
 
 request = ResponsesAgentRequest(
-    input=[ChatMessage(role="user", content=test_query)],
+    input=[{"role": "user", "content": f"{test_query}"}],
     custom_inputs={"thread_id": "test-thread-001", "user_id": "test_user"}
 )
 
@@ -146,7 +235,7 @@ print("\nStreaming response:")
 print("-" * 40)
 
 try:
-    for event in agent.predict_stream(request):
+    for event in AGENT.predict_stream(request):
         if event.type == "response.output_item.delta":
             # Stream the text chunks
             content = event.item.get("content", [])
@@ -163,86 +252,6 @@ except Exception as e:
     traceback.print_exc()
 
 print("\n" + "="*80)
-
-# COMMAND ----------
-
-# DBTITLE 1,Test with Your Own Query
-"""
-Run your own test queries here.
-
-Change the query below and run this cell to test different scenarios.
-"""
-
-# YOUR QUERY HERE
-my_query = "Show me patients with high blood pressure and their medications"
-
-print(f"Query: {my_query}\n")
-
-request = ResponsesAgentRequest(
-    input=[ChatMessage(role="user", content=my_query)],
-    custom_inputs={"thread_id": "test-thread-002", "user_id": "test_user"}
-)
-
-print("\nStreaming response:")
-print("-" * 40)
-
-for event in agent.predict_stream(request):
-    if event.type == "response.output_item.delta":
-        content = event.item.get("content", [])
-        if content and content[0].get("type") == "text":
-            print(content[0].get("text", ""), end="", flush=True)
-    elif event.type == "response.output_item.done":
-        content = event.item.get("content", [])
-        if content and content[0].get("type") == "text":
-            print(f"\n[Event] {content[0].get('text', '')}")
-
-# COMMAND ----------
-
-# DBTITLE 1,Test Multi-Turn Conversation
-"""
-Test multi-turn conversation with checkpointer.
-
-This tests conversation state persistence across requests using the same thread_id.
-"""
-
-# Thread ID for conversation
-thread_id = "multi-turn-test-123"
-
-# First turn
-print("="*80)
-print("MULTI-TURN CONVERSATION TEST")
-print("="*80)
-
-print("\n👤 Turn 1: Show me patients")
-request1 = ResponsesAgentRequest(
-    input=[ChatMessage(role="user", content="Show me patients")],
-    custom_inputs={"thread_id": thread_id, "user_id": "test_user"}
-)
-
-print("🤖 Agent: ", end="")
-for event in agent.predict_stream(request1):
-    if event.type == "response.output_item.delta":
-        content = event.item.get("content", [])
-        if content and content[0].get("type") == "text":
-            print(content[0].get("text", ""), end="", flush=True)
-print()
-
-# Second turn (follow-up)
-print("\n👤 Turn 2: What about their medications?")
-request2 = ResponsesAgentRequest(
-    input=[ChatMessage(role="user", content="What about their medications?")],
-    custom_inputs={"thread_id": thread_id, "user_id": "test_user"}
-)
-
-print("🤖 Agent: ", end="")
-for event in agent.predict_stream(request2):
-    if event.type == "response.output_item.delta":
-        content = event.item.get("content", [])
-        if content and content[0].get("type") == "text":
-            print(content[0].get("text", ""), end="", flush=True)
-print()
-
-print("\n✓ Multi-turn conversation test complete")
 
 # COMMAND ----------
 

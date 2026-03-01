@@ -45,7 +45,7 @@ def load_deployment_config(config_file: str = "../prod_config.yaml"):
         "EMBEDDING_ENDPOINT": model_config.get("lakebase_embedding_endpoint"),
         "EMBEDDING_DIMS": model_config.get("lakebase_embedding_dims"),
         
-        "GENIE_SPACE_IDS": model_config.get("genie_space_ids", []),
+        "GENIE_SPACE_IDS": model_config.get("genie_space_ids"),
         "SQL_WAREHOUSE_ID": model_config.get("sql_warehouse_id"),
         
         "UC_FUNCTION_NAMES": [
