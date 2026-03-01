@@ -83,3 +83,7 @@ logs/
 
 # assets for icons
 assets/
+
+#
+mlflow.db
+src/mlflow.db

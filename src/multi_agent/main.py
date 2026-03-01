@@ -11,6 +11,8 @@ import argparse
 import sys
 from typing import Optional
 
+from langchain_core.messages import HumanMessage
+
 from .core.graph import create_agent_graph
 from .core.config import get_config
 from .core.state import get_initial_state
@@ -38,7 +40,7 @@ def run_query(query: str, thread_id: Optional[str] = None, verbose: bool = False
         
         # Prepare input
         initial_state = get_initial_state(thread_id=thread_id)
-        initial_state["messages"] = [{"role": "user", "content": query}]
+        initial_state["messages"] = [HumanMessage(content=query)]
         
         if verbose:
             print(f"\nQuery: {query}")
@@ -55,7 +57,7 @@ def run_query(query: str, thread_id: Optional[str] = None, verbose: bool = False
             print("RESPONSE")
             print("="*80)
         
-        final_response = response.get("final_response") or response.get("meta_answer")
+        final_response = response.get("final_response") or response.get("meta_answer") or response.get("final_summary")
         if final_response:
             print(final_response)
         elif response.get("pending_clarification"):
@@ -126,14 +128,14 @@ def run_interactive():
             
             # Prepare state
             state = get_initial_state(thread_id=thread_id)
-            state["messages"] = [{"role": "user", "content": query}]
+            state["messages"] = [HumanMessage(content=query)]
             
             # Invoke agent
             print("\n🤖 Agent: Processing...")
             response = agent.invoke(state)
             
             # Print response
-            final_response = response.get("final_response") or response.get("meta_answer")
+            final_response = response.get("final_response") or response.get("meta_answer") or response.get("final_summary")
             if final_response:
                 print(f"\n🤖 Agent: {final_response}")
             elif response.get("pending_clarification"):

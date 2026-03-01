@@ -28,7 +28,7 @@ import re
 from typing import Dict, List, Any, Optional
 
 from langchain_core.runnables import Runnable
-from databricks_langchain import VectorSearchRetrieverTool
+from databricks_langchain import DatabricksVectorSearch
 
 
 class PlanningAgent:
@@ -65,21 +65,19 @@ class PlanningAgent:
             - searchable_content: Space description/content
             - score: Relevance score from vector search
         """
-        vs_tool = VectorSearchRetrieverTool(
+        dvs = DatabricksVectorSearch(
             index_name=self.vector_search_index,
-            num_results=num_results,
             columns=["space_id", "space_title", "searchable_content"],
-            filters={"chunk_type": "space_summary"},
-            query_type="ANN",
-            include_metadata=True,
-            include_score=True
         )
-        
-        docs = vs_tool.invoke({"query": query})
-        
+
+        docs = dvs.similarity_search(
+            query,
+            k=num_results,
+            filter={"chunk_type": "space_summary"},
+        )
+
         relevant_spaces = []
         for doc in docs:
-            print(doc)
             relevant_spaces.append({
                 "space_id": doc.metadata.get("space_id", ""),
                 "space_title": doc.metadata.get("space_title", ""),
