@@ -489,6 +489,10 @@ print("="*80)
 
 # COMMAND ----------
 
+endpoint_status = w.serving_endpoints.get(name=deployment_info.endpoint_name)
+
+# COMMAND ----------
+
 # DBTITLE 1,Test Deployed Endpoint with Readiness Check
 from databricks.sdk import WorkspaceClient
 import time
@@ -509,7 +513,7 @@ while elapsed_time < max_wait_time:
 
         print(f"  Endpoint state: {state} (elapsed: {elapsed_time}s)")
         
-        if state == "READY":
+        if state in ["READY", "NOT_UPDATING"]:
             print("\n✓ Endpoint is ready!")
             break
         elif state in ["UPDATE_FAILED", "CRASHED"]:
@@ -538,15 +542,20 @@ test_input = {
 }
 
 try:
+    # Use dataframe_records for MLflow pyfunc models
     response = w.serving_endpoints.query(
         name=deployment_info.endpoint_name,
-        inputs=[test_input]
+        dataframe_records=[test_input]
     )
     print("\n✓ Endpoint responding successfully")
-    print(f"Response preview: {str(response)[:200]}...")
+    print(f"Response preview: {str(response)[:500]}...")
 except Exception as e:
     print(f"\n✗ Error querying endpoint: {e}")
     print("Check Model Serving UI and logs for details.")
+
+# COMMAND ----------
+
+response.predictions
 
 # COMMAND ----------
 

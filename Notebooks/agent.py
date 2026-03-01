@@ -20,9 +20,24 @@ logger = logging.getLogger(__name__)
 # Add src to path to import modular code
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../src"))
 
-from multi_agent.core.graph import create_super_agent_hybrid
-from multi_agent.core.responses_agent import SuperAgentHybridResponsesAgent
 
+"""
+Import agent code from src/multi_agent/ package.
+
+This imports the same code that gets deployed via code_paths parameter.
+"""
+
+try:
+    from multi_agent.core.graph import create_super_agent_hybrid
+    from multi_agent.core.responses_agent import SuperAgentHybridResponsesAgent
+    print("✓ Successfully imported modular agent code from src/multi_agent/")
+except ImportError as e:
+    print(f"❌ Import Error: {e}")
+    print("\nTroubleshooting:")
+    print("1. Make sure src/multi_agent/ directory is synced to Databricks")
+    print("2. Verify the path was added correctly (see cell above)")
+    print("3. Check that all __init__.py files exist in src/multi_agent/")
+    raise
 ###################
 # Create the Hybrid Super Agent workflow from modular code, pure langchain/graph object
 ###################
@@ -69,7 +84,10 @@ print("="*80)
 # Set the agent for MLflow tracking
 # Enable autologging with run_tracer_inline for proper async context propagation
 try:
-    mlflow.langchain.autolog(run_tracer_inline=True)
+    # mlflow.langchain.autolog(run_tracer_inline=True)
+    # logger.info("✓ MLflow LangChain autologging enabled with sync context support: setting run_tracer_inline=True forces MLflow to process the traces synchronously (inline with your main code execution).")
+
+    mlflow.langchain.autolog(run_tracer_inline=False)
     logger.info("✓ MLflow LangChain autologging enabled with async context support")
 except Exception as e:
     logger.warning(f"⚠️ MLflow autolog initialization failed: {e}")
