@@ -179,8 +179,7 @@ def create_agent_graph(config=None, with_checkpointer: bool = False):
         # Compile with checkpointer
         return workflow.compile(checkpointer=checkpointer)
     else:
-        # Return uncompiled workflow
-        return workflow
+        return workflow.compile()
 
 
 # For backwards compatibility
