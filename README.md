@@ -78,7 +78,11 @@ See [Architecture Documentation](docs/ARCHITECTURE.md) for detailed design.
 
 ## Presentation
 
-* [**View Project Slides (Interactive HTML)**](docs/decks/slides_2slide.html) - A comprehensive overview of the multi-agent system, and its associated tool kits for table migration and metadata enrichment.
+<a href="https://blitzbricksteryy-db.github.io/dbx-unifiedchat/docs/decks/slides_2slide.html" target="_blank">
+  <img src="docs/logos/deck_logo.png" width="600px" alt="View Presentation Slides" />
+  <br />
+  <b>🚀 Click here to view the Interactive Presentation Slides</b>
+</a>
 
 ---
 
