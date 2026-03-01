@@ -1,6 +1,0 @@
-command: ["python", "app.py"]
-
-resources:
-  - name: genie_warehouse
-    sql_warehouse:
-      id: a4ed2ccbda385db9

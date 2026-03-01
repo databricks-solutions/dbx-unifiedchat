@@ -1,5 +1,5 @@
-# Production Configuration for Multi-Agent Genie System
-# This config is used for production deployment to Model Serving
+# Development Configuration for Multi-Agent Genie System
+# This config is used for Development in Databricks workspace
 
 # Unity Catalog Configuration (sync with databricks.yml prod target)
 catalog_name: serverless_dbx_unifiedchat_catalog
