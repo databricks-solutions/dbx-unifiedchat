@@ -444,7 +444,7 @@
       </div>
       <div class="s1-metrics">
         <div class="metric-box">
-          <div class="metric-value mv-red">2–15s</div>
+          <div class="metric-value mv-red">1–2s</div>
           <div class="metric-label">Response time</div>
         </div>
         <div class="metric-box">
@@ -514,8 +514,8 @@
           <div class="feat-row">
             <div class="feat-icon fi-teal">🔍</div>
             <div class="feat-content">
-              <div class="feat-name">Semantic Routing</div>
-              <div class="feat-desc">Vector search picks the right Genie space automatically</div>
+              <div class="feat-name">Multi-Step Instructed Retrieval</div>
+              <div class="feat-desc">Being Detective and collect most relevant clues for solving the question</div>
             </div>
           </div>
           <div class="feat-row">
@@ -556,7 +556,7 @@
         <span class="stack-chip">Claude 4.5 Sonnet/Haiku</span>
         <span class="stack-chip">Model Serving</span>
       </div>
-      <a class="cta-link" href="#">databricks.com/field-solutions ›</a>
+      <a class="cta-link" href="https://github.com/databricks-solutions/dbx-unifiedchat" target="_blank">https://github.com/databricks-solutions ›</a>
     </div>
 
   </div>
@@ -618,7 +618,7 @@
               <div class="wz-title">Enrichment Runner</div>
               <div class="wz-desc">Column metadata, sample values &amp; statistics with live progress tracking</div>
             </div>
-            <div class="wz-badge">SQL Connector</div>
+            <div class="wz-badge">AI_query</div>
           </div>
           <div class="wizard-step">
             <div class="wz-num">3</div>
@@ -649,8 +649,8 @@
         <div class="integration-row">
           <div class="integ-card">
             <div class="integ-emoji">📦</div>
-            <div class="integ-name">88 Tables</div>
-            <div class="integ-role">across 18 demo domains</div>
+            <div class="integ-name">Tables</div>
+            <div class="integ-role">across multiple domains</div>
           </div>
           <div class="integ-card">
             <div class="integ-emoji">🕸️</div>
@@ -678,7 +678,7 @@
         <div class="panel-desc">
           A prerequisite 3-step pipeline that exports Genie space metadata,
           enriches table information with AI-ready context, and builds the
-          semantic vector index that powers intelligent query routing in the agent system.
+          semantic vector index that powers intelligent query routing and multi-level UC metadata table for instructed retrieval in the agent system.
         </div>
 
         <div class="etl-flow">
@@ -688,7 +688,7 @@
               <div class="etl-title">Export Genie Spaces</div>
               <div class="etl-desc">Exports all Genie space configs and metadata to Unity Catalog volume</div>
             </div>
-            <div class="etl-tag">~5 min</div>
+            <div class="etl-tag">~1 min (based on 3 genie spaces and 8 total tables in testing)</div>
           </div>
           <div class="etl-block">
             <div class="etl-num">02</div>
@@ -696,25 +696,25 @@
               <div class="etl-title">Enrich Table Metadata</div>
               <div class="etl-desc">Adds column details, sample values, stats → creates enriched_genie_docs table</div>
             </div>
-            <div class="etl-tag">~15 min</div>
+            <div class="etl-tag">~5 min</div>
           </div>
           <div class="etl-block">
             <div class="etl-num">03</div>
             <div class="etl-content">
               <div class="etl-title">Build Vector Search Index</div>
-              <div class="etl-desc">Creates semantic vector index from enriched chunks — enables agent routing</div>
+              <div class="etl-desc">Creates semantic vector index from enriched chunks</div>
             </div>
-            <div class="etl-tag">~30 min</div>
+            <div class="etl-tag">~2 min</div>
           </div>
         </div>
 
         <div class="outcome-box">
           <div class="outcome-title">✅ Pipeline Outputs</div>
           <div class="outcome-items">
-            <span class="outcome-item">enriched_genie_docs table</span>
-            <span class="outcome-item">enriched_genie_docs_chunks table</span>
-            <span class="outcome-item">Vector Search index (ready)</span>
-            <span class="outcome-item">Agents can query semantically</span>
+            <span class="outcome-item">Enriched Genie Space-level metadata table</span>
+            <span class="outcome-item">Enriched <Multi-level></Multi-level> metadata table</span>
+            <span class="outcome-item">Vector Search index (ready for semantic retrieval)</span>
+            <span class="outcome-item">Agents can query semantically or instructed retrieval</span>
           </div>
         </div>
 
@@ -746,14 +746,14 @@
     <div class="s-footer">
       <div class="stack-row">
         <span class="stack-label">Stack:</span>
-        <span class="stack-chip">Dash + dash-bootstrap</span>
-        <span class="stack-chip">NetworkX + Cytoscape</span>
+        <span class="stack-chip">FastAPI + React</span>
+        <span class="stack-chip">Vite + Tailwind</span>
+        <span class="stack-chip">TanStack Router</span>
+        <span class="stack-chip">NetworkX + Louvain</span>
         <span class="stack-chip">Databricks SDK</span>
-        <span class="stack-chip">Unity Catalog</span>
-        <span class="stack-chip">Vector Search</span>
         <span class="stack-chip">Databricks Apps</span>
       </div>
-      <a class="cta-link" href="#">databricks.com/field-solutions ›</a>
+      <a class="cta-link" href="https://github.com/databricks-solutions/dbx-unifiedchat" target="_blank">https://github.com/databricks-solutions ›</a>
     </div>
 
   </div>

@@ -1,4 +1,4 @@
-![DBX-UnifiedChat Logo](docs/logos/dbx-unifiedchat-logo-pacman-eating-data-full-console.png.png)
+![DBX-UnifiedChat Logo](docs/logos/dbx-unifiedchat-logo-pacman-eating-data.png)
 
 # DBX-UnifiedChat - Databricks Unified Chat
 
@@ -73,6 +73,12 @@ The system leverages:
 * **Lakebase with Long/Short-term Memory** - Persistent memory management for maintaining context across conversations
 
 See [Architecture Documentation](docs/ARCHITECTURE.md) for detailed design.
+
+---
+
+## Presentation
+
+* [**View Project Slides (Interactive HTML)**](docs/decks/slides_2slide.html) - A comprehensive overview of the multi-agent system, architecture, and performance metrics.
 
 ---
 
