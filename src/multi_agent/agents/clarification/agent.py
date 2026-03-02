@@ -217,8 +217,8 @@ Intent types:
 - continuation: Follow-up exploring the same topic from a different angle
 - clarification_response: User is answering a previous clarification request
 
-Context summary: 2-3 sentences that synthesize the conversation and state clearly
-what the user wants — actionable for SQL query planning.""")
+Context summary: a sentence summary that will (1) synthesize the conversation history
+(2) states clearly what the user wants and (3) is actionable for SQL query planning""")
 
         try:
             result: IntentClassification = self.intent_llm.invoke([system_prompt, *messages])
@@ -289,7 +289,7 @@ Irrelevant: greetings, small talk, weather, sports, politics, recipes, personal 
 creative writing, or anything unrelated to data analytics and business intelligence.
 
 Meta-question: questions about available tables/data sources/schemas, system capabilities,
-what data is available, or requests for example queries.
+what data is available, or requests for example queries. Meta questions are simply questions about the metadata rather than those requiring queries of the data itself.
 """
 
         try:
