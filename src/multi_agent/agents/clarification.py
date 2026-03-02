@@ -26,8 +26,8 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
-from ...core.base_agent import BaseAgent
-from ...core.state import (
+from ..core.base_agent import BaseAgent
+from ..core.state import (
     AgentState,
     ConversationTurn,
     IntentMetadata,
@@ -222,29 +222,29 @@ Context summary: a sentence summary that will (1) synthesize the conversation hi
 
         try:
             result: IntentClassification = self.intent_llm.invoke([system_prompt, *messages])
-            print(f"[classify_intent] intent={result.intent_type} confidence={result.confidence:.2f}")
+            print(f"[classify_intent] intent={result['intent_type']} confidence={result['confidence']:.2f}")
 
             turn = create_conversation_turn(
                 query=current_query,
-                intent_type=result.intent_type,
-                context_summary=result.context_summary,
+                intent_type=result["intent_type"],
+                context_summary=result["context_summary"],
                 triggered_clarification=False,
                 metadata={
-                    "domain": result.domain,
-                    "complexity": result.complexity,
-                    "topic_change_score": result.topic_change_score,
+                    "domain": result["domain"],
+                    "complexity": result["complexity"],
+                    "topic_change_score": result["topic_change_score"],
                 },
             )
             return {
                 "current_turn": turn,
                 "intent_metadata": IntentMetadata(
-                    intent_type=result.intent_type,
-                    confidence=result.confidence,
-                    reasoning=f"classify_intent: {result.intent_type}",
-                    topic_change_score=result.topic_change_score,
-                    domain=result.domain,
+                    intent_type=result["intent_type"],
+                    confidence=result["confidence"],
+                    reasoning=f"classify_intent: {result['intent_type']}",
+                    topic_change_score=result["topic_change_score"],
+                    domain=result["domain"],
                     operation=None,
-                    complexity=result.complexity,
+                    complexity=result["complexity"],
                     parent_turn_id=None,
                 ),
             }
@@ -294,8 +294,8 @@ what data is available, or requests for example queries. Meta questions are simp
 
         try:
             result: QueryTypeClassification = self.query_type_llm.invoke(prompt)
-            print(f"[classify_query_type] irrelevant={result.is_irrelevant} meta={result.is_meta_question}")
-            return {"is_irrelevant": result.is_irrelevant, "is_meta_question": result.is_meta_question}
+            print(f"[classify_query_type] irrelevant={result['is_irrelevant']} meta={result['is_meta_question']}")
+            return {"is_irrelevant": result["is_irrelevant"], "is_meta_question": result["is_meta_question"]}
         except Exception as e:
             print(f"[classify_query_type] error: {e} — defaulting to regular query")
             return {"is_irrelevant": False, "is_meta_question": False}
@@ -390,9 +390,9 @@ If unclear, provide 2-3 specific clarification options.
 """
         try:
             result: ClarityCheck = self.clarity_llm.invoke(prompt)
-            question_clear = result.question_clear
-            clarification_reason = result.clarification_reason or "Query needs more specificity"
-            clarification_options = result.clarification_options or []
+            question_clear = result["question_clear"]
+            clarification_reason = result.get("clarification_reason") or "Query needs more specificity"
+            clarification_options = result.get("clarification_options") or []
             print(f"[check_clarity] clear={question_clear}")
         except Exception as e:
             print(f"[check_clarity] error: {e} — defaulting to clear")
