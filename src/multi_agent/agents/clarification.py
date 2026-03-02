@@ -23,6 +23,7 @@ from typing import List, Literal, Optional
 
 from databricks_langchain import ChatDatabricks
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from typing_extensions import TypedDict
 
@@ -204,10 +205,12 @@ class ClarificationAgent(BaseAgent):
 
     def _classify_intent(self, state: AgentState) -> dict:
         """Structured LLM call: intent type + context summary. Runs in parallel."""
+        writer = get_stream_writer()
         messages = state.get("messages", [])
         human_messages = [m for m in messages if isinstance(m, HumanMessage)]
         current_query = human_messages[-1].content if human_messages else ""
         print(f"[classify_intent] query={current_query!r}")
+        writer({"type": "agent_start", "agent": "unified_intent_context_clarification"})
 
         system_prompt = SystemMessage(content="""Classify the intent of the most recent user query and generate a concise context summary.
 
@@ -223,6 +226,7 @@ Context summary: a sentence summary that will (1) synthesize the conversation hi
         try:
             result: IntentClassification = self.intent_llm.invoke([system_prompt, *messages])
             print(f"[classify_intent] intent={result['intent_type']} confidence={result['confidence']:.2f}")
+            writer({"type": "intent_detected", "intent_type": result["intent_type"]})
 
             turn = create_conversation_turn(
                 query=current_query,
@@ -346,12 +350,14 @@ Available Data Sources:
 Provide a clear, informative markdown answer about what's available.
 Use ## headings, **bold** keywords, and bullet lists. Be professional and helpful.
 """
+        writer = get_stream_writer()
         print("[generate_meta_answer] generating")
         try:
             content = ""
             for chunk in self.base_llm.stream(prompt):
                 if chunk.content:
                     content += chunk.content
+                    writer({"type": "clarification_chunk", "content": chunk.content})
             answer = content.strip()
         except Exception as e:
             print(f"[generate_meta_answer] error: {e}")
@@ -418,7 +424,9 @@ If unclear, provide 2-3 specific clarification options.
                 "messages": [SystemMessage(content=f"Clarification rate limited. Proceeding with: {context_summary}")],
             }
 
+        writer = get_stream_writer()
         print("[check_clarity] requesting clarification")
+        writer({"type": "clarification_requested", "note": "Clarification markdown already streamed"})
         turn = dict(turn)
         turn["triggered_clarification"] = True
 
