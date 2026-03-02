@@ -15,7 +15,7 @@ from .state import (
     reset_per_query_state,
     RESET_STATE_TEMPLATE,
 )
-from .graph import create_super_agent_hybrid, create_agent_graph, super_agent_hybrid
+from .graph import create_super_agent_hybrid, create_agent_graph
 from .config import get_config, AgentConfig
 
 __all__ = [
@@ -35,7 +35,6 @@ __all__ = [
     # Graph
     "create_super_agent_hybrid",
     "create_agent_graph",
-    "super_agent_hybrid",
     
     # Config
     "get_config",

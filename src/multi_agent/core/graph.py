@@ -9,34 +9,39 @@ from langgraph.graph.state import CompiledStateGraph
 from typing import Optional
 
 from ..core.state import AgentState
-from ..agents.clarification import unified_intent_context_clarification_node
+from ..agents.clarification import ClarificationAgent
 from ..agents.planning import planning_node
 from ..agents.sql_synthesis import sql_synthesis_table_node, sql_synthesis_genie_node
 from ..agents.sql_execution import sql_execution_node
 from ..agents.summarize import summarize_node
 
 
-def create_super_agent_hybrid() -> StateGraph:
+def create_super_agent_hybrid(config=None) -> StateGraph:
     """
     Create the Hybrid Super Agent LangGraph workflow.
-    
-    Combines:
-    - Function-based agent nodes for flexibility
-    - Explicit state management for observability
-    - Conditional routing for dynamic workflows
-    
+
     Returns:
         StateGraph: Uncompiled LangGraph workflow
     """
-    print("\n" + "="*80)
-    print("🏗️ BUILDING HYBRID SUPER AGENT WORKFLOW")
-    print("="*80)
-    
-    # Create the graph with explicit state
+    if config is None:
+        from .config import get_config
+        config = get_config()
+
+    table_name = (
+        f"{config.unity_catalog.catalog_name}"
+        f".{config.unity_catalog.schema_name}"
+        f".enriched_genie_docs_chunks"
+    )
+    clarification_agent = ClarificationAgent(
+        llm_endpoint=config.llm.clarification_endpoint,
+        table_name=table_name,
+    )
+
     workflow = StateGraph(AgentState)
-    
-    # Add nodes - SIMPLIFIED with unified node
-    workflow.add_node("unified_intent_context_clarification", unified_intent_context_clarification_node)
+
+    # The clarification subgraph shares AgentState so it is passed directly
+    # as a node per the LangGraph subgraph pattern — no wrapper needed.
+    workflow.add_node("unified_intent_context_clarification", clarification_agent.subgraph)
     workflow.add_node("planning", planning_node)
     workflow.add_node("sql_synthesis_table", sql_synthesis_table_node)
     workflow.add_node("sql_synthesis_genie", sql_synthesis_genie_node)
@@ -125,18 +130,6 @@ def create_super_agent_hybrid() -> StateGraph:
     # Summarize is the final node before END
     workflow.add_edge("summarize", END)
     
-    print("✓ Workflow nodes added:")
-    print("  1. Unified Intent+Context+Clarification Node")
-    print("  2. Planning Agent")
-    print("  3. SQL Synthesis Agent - Table Route")
-    print("  4. SQL Synthesis Agent - Genie Route")
-    print("  5. SQL Execution Agent")
-    print("  6. Result Summarize Agent - FINAL NODE")
-    print("\n✓ Conditional routing configured")
-    print("✓ All paths route to summarize node before END")
-    print("\n✅ Hybrid Super Agent workflow created successfully!")
-    print("="*80)
-    
     return workflow
 
 
@@ -151,7 +144,7 @@ def create_agent_graph(config=None, with_checkpointer: bool = False):
     Returns:
         StateGraph or CompiledStateGraph depending on with_checkpointer
     """
-    workflow = create_super_agent_hybrid()
+    workflow = create_super_agent_hybrid(config)
     
     if with_checkpointer:
         # Import checkpointer only if needed
@@ -182,5 +175,3 @@ def create_agent_graph(config=None, with_checkpointer: bool = False):
         return workflow.compile()
 
 
-# For backwards compatibility
-super_agent_hybrid = create_super_agent_hybrid()

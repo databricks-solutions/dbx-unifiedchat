@@ -24,7 +24,7 @@ from typing import List, Literal, Optional
 from databricks_langchain import ChatDatabricks
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
-from pydantic import BaseModel
+from typing_extensions import TypedDict
 
 from ...core.base_agent import BaseAgent
 from ...core.state import (
@@ -37,10 +37,10 @@ from ...core.state import (
 
 
 # ---------------------------------------------------------------------------
-# Pydantic schemas for structured LLM output
+# Schemas for structured LLM output (TypedDict — consistent with state.py)
 # ---------------------------------------------------------------------------
 
-class IntentClassification(BaseModel):
+class IntentClassification(TypedDict):
     intent_type: Literal["new_question", "refinement", "continuation", "clarification_response"]
     confidence: float
     context_summary: str
@@ -49,15 +49,15 @@ class IntentClassification(BaseModel):
     topic_change_score: float
 
 
-class QueryTypeClassification(BaseModel):
+class QueryTypeClassification(TypedDict):
     is_irrelevant: bool
     is_meta_question: bool
 
 
-class ClarityCheck(BaseModel):
+class ClarityCheck(TypedDict):
     question_clear: bool
-    clarification_reason: Optional[str] = None
-    clarification_options: Optional[List[str]] = None
+    clarification_reason: Optional[str]
+    clarification_options: Optional[List[str]]
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +141,7 @@ class ClarificationAgent(BaseAgent):
         self.clarity_llm = base_llm.with_structured_output(ClarityCheck)
         self.base_llm = base_llm
 
-        self._subgraph = self._build_subgraph()
+        self.subgraph = self._build_subgraph()
 
     # -----------------------------------------------------------------------
     # Graph construction
@@ -463,4 +463,4 @@ If unclear, provide 2-3 specific clarification options.
 
     def run(self, state: AgentState) -> dict:
         self.track_agent_model_usage(self.llm_endpoint)
-        return self._subgraph.invoke(state)
+        return self.subgraph.invoke(state)
