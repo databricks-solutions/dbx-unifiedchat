@@ -388,9 +388,69 @@ def summarize_node(state: AgentState) -> dict:
     # Emit summary completion event
     writer({"type": "summary_complete", "content": f"✅ Summary generated ({len(summary)} chars)"})
     
-    print(f"\n✅ Summary stored in final_summary field ({len(summary)} chars)")
-
+    # Build a concise final message for AIMessage (avoid duplication with final_summary)
+    # Only include execution results and errors (summary goes to final_summary field)
+    final_message_parts = []
+    
+    # 1. Execution Results (if available)
+    exec_result = state.get("execution_result")
+    if exec_result and exec_result.get("success"):
+        results = exec_result.get("result", [])
+        if results:
+            try:
+                import pandas as pd
+                df = pd.DataFrame(results)
+                
+                # Display DataFrame
+                print("\n" + "="*80)
+                print("📊 QUERY RESULTS (Pandas DataFrame)")
+                print("="*80)
+                try:
+                    # Try to use display() if available (Databricks notebook)
+                    display(df)
+                except NameError:
+                    # Fallback to string representation
+                    print(df.to_string())
+                print("="*80 + "\n")
+                
+                # Add compact results info to message
+                final_message_parts.append(f"\n📊 **Query Results:** {df.shape[0]} rows × {df.shape[1]} columns")
+                
+                # Show top 100 rows in markdown table format
+                display_rows = min(100, df.shape[0])
+                df_preview = df.head(display_rows)
+                
+                # Convert to markdown table
+                markdown_table = df_preview.to_markdown(index=False)
+                
+                final_message_parts.append(f"\n### Results Table (Top {display_rows} rows)\n\n{markdown_table}")
+                
+                # Add note if more rows exist
+                if df.shape[0] > display_rows:
+                    final_message_parts.append(f"\n*Showing {display_rows} of {df.shape[0]} total rows*")
+                
+            except Exception as e:
+                final_message_parts.append(f"\n⚠️ Could not format results: {e}")
+                final_message_parts.append(f"Raw results (first 3): {results[:3]}")
+    
+    # 2. Error messages (if any)
+    if state.get("synthesis_error"):
+        final_message_parts.append(f"\n❌ **SQL Synthesis Error:** {state['synthesis_error']}")
+    if state.get("execution_error"):
+        final_message_parts.append(f"\n❌ **Execution Error:** {state['execution_error']}")
+    
+    # Combine into final message (results/errors only - summary in final_summary field)
+    # If no results or errors, use a simple completion message
+    final_message = "\n".join(final_message_parts) if final_message_parts else "✅ Execution complete"
+    
+    print(f"\n✅ AIMessage created with results/errors ({len(final_message)} chars)")
+    print(f"✅ Summary stored in final_summary field ({len(summary)} chars)")
+    
+    # Route to END via fixed edge (summarize → END)
+    # Return: final_summary (displayed once) + AIMessage (results/errors only)
     return {
         "final_summary": summary,
-        "messages": [AIMessage(content=summary)]
+        "messages": [
+            AIMessage(content=final_message)
+        ]
     }
