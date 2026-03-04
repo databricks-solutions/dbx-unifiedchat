@@ -1,59 +1,40 @@
 """
 ClarificationAgent: Graph-based sub-agent for intent, classification, and clarity.
 
-Sub-graph flow (classify_intent and classify_query_type run in parallel):
+classify_query_type and check_clarity run in parallel, then fan-in at merge_classification:
 
     START
-      ├── classify_intent          (structured output)
-      └── classify_query_type      (structured output)
+      ├── classify_query_type      (is_irrelevant, is_meta_question)
+      └── check_clarity            (context_summary, is_followup, question_clear, current_turn)
               ↓ fan-in
           merge_classification
               ↓ route
               ├─ is_irrelevant=True    → handle_irrelevant    → END
               ├─ is_meta_question=True → generate_meta_answer → END
-              └─ else                 → check_clarity
-                                            ↓
-                                            ├─ unclear → interrupt() ← waits for user
-                                            │           resumes with user_response
-                                            │                ↓
-                                            │         confirm_continuation
-                                            │           ├─ answering clarification → handle_clear → END
-                                            │           └─ new question → classify_intent (loop back)
-                                            └─ clear   → confirm_continuation → handle_clear → END
+              └─ else                 → confirm_continuation
+                                            ├─ answering clarification → handle_clear → END
+                                            └─ new question → [classify_query_type,
+                                                               check_clarity] (loop back)
 """
 
 import json
 from datetime import datetime, timedelta
-from typing import List, Literal, Optional
+from typing import List, Optional
 
 from databricks_langchain import ChatDatabricks
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, convert_to_messages
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from typing_extensions import TypedDict
 
 from ..core.base_agent import BaseAgent
-from ..core.state import (
-    AgentState,
-    ConversationTurn,
-    IntentMetadata,
-    create_conversation_turn,
-)
+from ..core.state import AgentState, create_conversation_turn
 
 
 # ---------------------------------------------------------------------------
 # Schemas for structured LLM output (TypedDict — consistent with state.py)
 # ---------------------------------------------------------------------------
-
-class IntentClassification(TypedDict):
-    intent_type: Literal["new_question", "refinement", "continuation", "clarification_response"]
-    confidence: float
-    context_summary: str
-    domain: str
-    complexity: Literal["simple", "moderate", "complex"]
-    topic_change_score: float
-
 
 class QueryTypeClassification(TypedDict):
     is_irrelevant: bool
@@ -62,6 +43,7 @@ class QueryTypeClassification(TypedDict):
 
 class ClarityCheck(TypedDict):
     question_clear: bool
+    context_summary: str
     clarification_reason: Optional[str]
     clarification_options: Optional[List[str]]
 
@@ -74,6 +56,21 @@ class ContinuationCheck(TypedDict):
 # ---------------------------------------------------------------------------
 # Module-level helpers (stateless, no class dependency)
 # ---------------------------------------------------------------------------
+
+def _latest_human_content(messages: list) -> str:
+    """Extract the most recent human message content in any format.
+
+    Uses LangChain's convert_to_messages to normalise HumanMessage objects,
+    LangChain dicts {"type": "human"}, and OpenAI dicts {"role": "user"}.
+    """
+    try:
+        normalised = convert_to_messages(messages)
+    except Exception:
+        normalised = messages
+    for m in reversed(normalised):
+        if isinstance(m, HumanMessage):
+            return m.content
+    return ""
 
 _space_context_cache: dict = {"data": None, "timestamp": None, "table_name": None}
 _SPACE_CONTEXT_CACHE_TTL = timedelta(minutes=30)
@@ -131,7 +128,6 @@ class ClarificationAgent(BaseAgent):
         self.llm_endpoint = llm_endpoint
 
         base_llm = ChatDatabricks(endpoint=llm_endpoint, temperature=0.1)
-        self.intent_llm = base_llm.with_structured_output(IntentClassification)
         self.query_type_llm = base_llm.with_structured_output(QueryTypeClassification)
         self.clarity_llm = base_llm.with_structured_output(ClarityCheck)
         self.continuation_llm = base_llm.with_structured_output(ContinuationCheck)
@@ -146,29 +142,28 @@ class ClarificationAgent(BaseAgent):
     def _build_subgraph(self):
         graph = StateGraph(AgentState)
 
-        graph.add_node("classify_intent", self._classify_intent)
         graph.add_node("classify_query_type", self._classify_query_type)
+        graph.add_node("check_clarity", self._check_clarity)
         graph.add_node("merge_classification", self._merge_classification)
         graph.add_node("handle_irrelevant", self._handle_irrelevant)
         graph.add_node("generate_meta_answer", self._generate_meta_answer)
-        graph.add_node("check_clarity", self._check_clarity)
         graph.add_node("confirm_continuation", self._confirm_continuation)
         graph.add_node("handle_clear", self._handle_clear)
 
         # Parallel fan-out
-        graph.add_edge(START, "classify_intent")
         graph.add_edge(START, "classify_query_type")
+        graph.add_edge(START, "check_clarity")
 
         # Fan-in
-        graph.add_edge("classify_intent", "merge_classification")
         graph.add_edge("classify_query_type", "merge_classification")
+        graph.add_edge("check_clarity", "merge_classification")
 
         def route_after_classification(state: AgentState) -> str:
             if state.get("is_irrelevant"):
                 return "handle_irrelevant"
             if state.get("is_meta_question"):
                 return "generate_meta_answer"
-            return "check_clarity"
+            return "confirm_continuation"
 
         graph.add_conditional_edges(
             "merge_classification",
@@ -176,20 +171,15 @@ class ClarificationAgent(BaseAgent):
             {
                 "handle_irrelevant": "handle_irrelevant",
                 "generate_meta_answer": "generate_meta_answer",
-                "check_clarity": "check_clarity",
+                "confirm_continuation": "confirm_continuation",
             },
         )
 
-        # check_clarity proceeds to confirm_continuation — unclear queries pause
-        # via interrupt() inside the node and resume; confirm_continuation then
-        # decides whether the response is an answer or a brand-new question.
-        graph.add_edge("check_clarity", "confirm_continuation")
-
         def route_after_continuation(state: AgentState):
-            # New question: fan-out to both parallel classification nodes so
-            # the full sub-graph restarts (irrelevant/meta/clarity all available).
+            # New question: fan-out to both parallel nodes so the full
+            # sub-graph restarts (irrelevant/meta/clarity all available).
             if not state.get("question_clear", True):
-                return ["classify_intent", "classify_query_type"]
+                return ["classify_query_type", "check_clarity"]
             return "handle_clear"
 
         graph.add_conditional_edges(
@@ -202,88 +192,15 @@ class ClarificationAgent(BaseAgent):
         graph.add_edge("handle_clear", END)
 
         return graph.compile()
-        
+
     # -----------------------------------------------------------------------
     # Node methods
     # -----------------------------------------------------------------------
 
-    def _classify_intent(self, state: AgentState) -> dict:
-        """Structured LLM call: intent type + context summary. Runs in parallel."""
-        writer = get_stream_writer()
-        messages = state.get("messages", [])
-        human_messages = [m for m in messages if isinstance(m, HumanMessage)]
-        current_query = human_messages[-1].content if human_messages else ""
-        print(f"[classify_intent] query={current_query!r}")
-        writer({"type": "agent_start", "agent": "unified_intent_context_clarification"})
-
-        system_prompt = SystemMessage(content="""Classify the intent of the most recent user query and generate a concise context summary.
-
-Intent types:
-- new_question: Completely different topic from previous queries
-- refinement: Narrowing/filtering/modifying the previous query on the same topic
-- continuation: Follow-up exploring the same topic from a different angle
-- clarification_response: User is answering a previous clarification request
-
-Context summary: a sentence summary that will (1) synthesize the conversation history
-(2) states clearly what the user wants and (3) is actionable for SQL query planning""")
-
-        try:
-            result: IntentClassification = self.intent_llm.invoke([system_prompt, *messages])
-            print(f"[classify_intent] intent={result['intent_type']} confidence={result['confidence']:.2f}")
-            writer({"type": "intent_detected", "intent_type": result["intent_type"]})
-
-            turn = create_conversation_turn(
-                query=current_query,
-                intent_type=result["intent_type"],
-                context_summary=result["context_summary"],
-                triggered_clarification=False,
-                metadata={
-                    "domain": result["domain"],
-                    "complexity": result["complexity"],
-                    "topic_change_score": result["topic_change_score"],
-                },
-            )
-            return {
-                "current_turn": turn,
-                "intent_metadata": IntentMetadata(
-                    intent_type=result["intent_type"],
-                    confidence=result["confidence"],
-                    reasoning=f"classify_intent: {result['intent_type']}",
-                    topic_change_score=result["topic_change_score"],
-                    domain=result["domain"],
-                    operation=None,
-                    complexity=result["complexity"],
-                    parent_turn_id=None,
-                ),
-            }
-        except Exception as e:
-            print(f"[classify_intent] error: {e} — falling back to new_question")
-            turn = create_conversation_turn(
-                query=current_query,
-                intent_type="new_question",
-                context_summary=f"Query: {current_query}",
-                triggered_clarification=False,
-                metadata={},
-            )
-            return {
-                "current_turn": turn,
-                "intent_metadata": IntentMetadata(
-                    intent_type="new_question",
-                    confidence=0.5,
-                    reasoning=f"error fallback: {e}",
-                    topic_change_score=1.0,
-                    domain=None,
-                    operation=None,
-                    complexity="moderate",
-                    parent_turn_id=None,
-                ),
-            }
-
     def _classify_query_type(self, state: AgentState) -> dict:
         """Structured LLM call: is_irrelevant + is_meta_question. Runs in parallel."""
         messages = state.get("messages", [])
-        human_messages = [m for m in messages if isinstance(m, HumanMessage)]
-        current_query = human_messages[-1].content if human_messages else ""
+        current_query = _latest_human_content(messages)
         space_context = load_space_context(self.table_name)
 
         prompt = f"""You are screening a user query before routing it to a data analytics system.
@@ -304,7 +221,6 @@ e.g. "what tables are available?", "what can you do?", "show me example question
 
 If the query is a normal data or business intelligence question (even a vague one), set both to False.
 """
-
         try:
             result: QueryTypeClassification = self.query_type_llm.invoke(prompt)
             print(f"[classify_query_type] irrelevant={result['is_irrelevant']} meta={result['is_meta_question']}")
@@ -312,6 +228,102 @@ If the query is a normal data or business intelligence question (even a vague on
         except Exception as e:
             print(f"[classify_query_type] error: {e} — defaulting to regular query")
             return {"is_irrelevant": False, "is_meta_question": False}
+
+    def _check_clarity(self, state: AgentState) -> dict:
+        """Structured LLM call: summarize context, detect follow-up, check clarity.
+
+        Runs in parallel with classify_query_type. If unclear, interrupt() pauses
+        the graph for user input and resumes with the user's response.
+        """
+        writer = get_stream_writer()
+        writer({"type": "agent_start", "agent": "unified_intent_context_clarification"})
+
+        messages = state.get("messages", [])
+        current_query = _latest_human_content(messages)
+        print(f"[check_clarity] query={current_query!r} (messages count={len(messages)}, types={[type(m).__name__ for m in messages]})")
+        prior_turn = state.get("current_turn") or {}
+        prior_summary = prior_turn.get("context_summary", "")
+        # Derive is_followup from state — no need to ask the LLM
+        is_followup = len(state.get("turn_history", [])) > 0
+
+        prompt = f"""You are analyzing a user query for a data analytics assistant.
+
+Most recent user query: {current_query}
+Prior conversation context: {prior_summary or "None — this is the first message"}
+
+Answer the following:
+
+1. context_summary: A single sentence that (a) synthesizes the conversation history, (b) states
+   clearly what the user wants, and (c) is actionable for SQL query planning. If there is no prior
+   context, summarize only the current query.
+
+2. question_clear: True if there is enough information to write a SQL query. Be lenient — only
+   mark False if CRITICAL information is missing (e.g. no time range when it is required, ambiguous
+   metric with no way to infer it). Vague questions are usually still clear enough.
+
+3. clarification_reason: If question_clear=False, a brief explanation of what is missing.
+   Otherwise null.
+
+4. clarification_options: If question_clear=False, 2-3 specific options the user can choose from.
+   Otherwise null.
+"""
+        try:
+            result: ClarityCheck = self.clarity_llm.invoke(prompt)
+            question_clear = result["question_clear"]
+            context_summary = result.get("context_summary") or current_query
+            clarification_reason = result.get("clarification_reason") or "Query needs more specificity"
+            clarification_options = result.get("clarification_options") or []
+            print(f"[check_clarity] clear={question_clear} is_followup={is_followup}")
+        except Exception as e:
+            print(f"[check_clarity] error: {e} — defaulting to clear")
+            question_clear = True
+            context_summary = current_query
+            clarification_reason = ""
+            clarification_options = []
+
+        turn = create_conversation_turn(
+            query=current_query,
+            is_followup=is_followup,
+            context_summary=context_summary,
+            triggered_clarification=False,
+        )
+
+        if question_clear:
+            return {"current_turn": turn, "question_clear": True}
+
+        # Stream the clarification question to the client before pausing
+        markdown = f"### Clarification Needed\n\n{clarification_reason}\n\n"
+        if clarification_options:
+            markdown += "**Please choose from the following options:**\n\n"
+            for i, opt in enumerate(clarification_options, 1):
+                markdown += f"{i}. {opt}\n\n"
+        writer({"type": "clarification_chunk", "content": markdown.strip()})
+
+        print("[check_clarity] pausing via interrupt()")
+        # Graph pauses here — state is checkpointed. Resumes when client sends
+        # Command(resume=user_response) with the same thread_id.
+        user_response = interrupt({
+            "type": "clarification_request",
+            "reason": clarification_reason,
+            "options": clarification_options,
+            "markdown": markdown.strip(),
+        })
+
+        # Resumed — incorporate clarification Q&A into context_summary for planning
+        print(f"[check_clarity] resumed with: {user_response!r}")
+        turn = dict(turn)
+        turn["triggered_clarification"] = True
+        turn["context_summary"] = (
+            f"{context_summary} — "
+            f"Clarification asked: {clarification_reason} — "
+            f"User answered: {user_response}"
+        )
+        print(f"[check_clarity] updated context_summary: {turn['context_summary'][:100]}...")
+        return {
+            "current_turn": turn,
+            "question_clear": True,
+            "messages": [HumanMessage(content=user_response)],
+        }
 
     def _merge_classification(self, state: AgentState) -> dict:
         """Fan-in point after parallel classification nodes. No-op."""
@@ -344,8 +356,7 @@ If the query is a normal data or business intelligence question (even a vague on
     def _generate_meta_answer(self, state: AgentState) -> dict:
         """Streaming LLM call: markdown answer about available data."""
         messages = state.get("messages", [])
-        human_messages = [m for m in messages if isinstance(m, HumanMessage)]
-        current_query = human_messages[-1].content if human_messages else ""
+        current_query = _latest_human_content(messages)
         space_context = load_space_context(self.table_name)
 
         prompt = f"""The user is asking about what data or capabilities are available.
@@ -383,101 +394,25 @@ Use ## headings, **bold** keywords, and bullet lists. Be professional and helpfu
             "messages": [AIMessage(content=answer)],
         }
 
-    def _check_clarity(self, state: AgentState) -> dict:
-        """Structured LLM call: clarity check. If unclear, interrupt() for user input."""
-        messages = state.get("messages", [])
-        human_messages = [m for m in messages if isinstance(m, HumanMessage)]
-        current_query = human_messages[-1].content if human_messages else ""
-        turn = state.get("current_turn") or {}
-        context_summary = turn.get("context_summary", "")
-
-        prompt = f"""Determine if the query is clear enough to generate a SQL query.
-
-User Query: {current_query}
-Context Summary: {context_summary}
-
-Be lenient — only mark as unclear if CRITICAL information is missing.
-If unclear, provide 2-3 specific clarification options.
-"""
-        try:
-            result: ClarityCheck = self.clarity_llm.invoke(prompt)
-            question_clear = result["question_clear"]
-            clarification_reason = result.get("clarification_reason") or "Query needs more specificity"
-            clarification_options = result.get("clarification_options") or []
-            print(f"[check_clarity] clear={question_clear}")
-        except Exception as e:
-            print(f"[check_clarity] error: {e} — defaulting to clear")
-            question_clear = True
-            clarification_reason = ""
-            clarification_options = []
-
-        if question_clear:
-            return {
-                "current_turn": turn,
-                "turn_history": [turn] if turn else [],
-                "question_clear": True,
-            }
-
-        # Stream the clarification question to the client before pausing
-        writer = get_stream_writer()
-        markdown = f"### Clarification Needed\n\n{clarification_reason}\n\n"
-        if clarification_options:
-            markdown += "**Please choose from the following options:**\n\n"
-            for i, opt in enumerate(clarification_options, 1):
-                markdown += f"{i}. {opt}\n\n"
-        writer({"type": "clarification_chunk", "content": markdown.strip()})
-
-        print("[check_clarity] pausing via interrupt()")
-        # Graph pauses here — state is checkpointed. Resumes when client sends
-        # Command(resume=user_response) with the same thread_id.
-        user_response = interrupt({
-            "type": "clarification_request",
-            "reason": clarification_reason,
-            "options": clarification_options,
-            "markdown": markdown.strip(),
-        })
-
-        # Resumed — user_response is the user's answer
-        print(f"[check_clarity] resumed with: {user_response!r}")
-        turn = dict(turn)
-        turn["triggered_clarification"] = True
-        # Update context_summary to incorporate the clarification so planning
-        # receives the full intent: original query + what was asked + user's answer
-        original_summary = turn.get("context_summary") or current_query
-        turn["context_summary"] = (
-            f"{original_summary} — "
-            f"Clarification asked: {clarification_reason} — "
-            f"User answered: {user_response}"
-        )
-        print(f"[check_clarity] updated context_summary for planning: {turn['context_summary'][:100]}...")
-        return {
-            "current_turn": turn,
-            "question_clear": True,
-            "messages": [HumanMessage(content=user_response)],
-        }
-
     def _confirm_continuation(self, state: AgentState) -> dict:
-        """Check if the user's response actually answers the clarification or is a new question.
+        """Check if the user's response answers the clarification or is a new question.
 
         Pass-through when no clarification was triggered (question was already clear).
         If the user responded with a new, unrelated question, set question_clear=False
-        so the subgraph loops back to classify_intent for full re-classification.
+        so the subgraph loops back to the parallel classification nodes.
         """
         turn = state.get("current_turn") or {}
         if not turn.get("triggered_clarification"):
-            # No clarification was asked — proceed directly to handle_clear
             return {"question_clear": True}
 
         messages = state.get("messages", [])
-        human_messages = [m for m in messages if isinstance(m, HumanMessage)]
-        # The most recent HumanMessage is the user's clarification response
-        user_response = human_messages[-1].content if human_messages else ""
-        original_query = turn.get("context_summary", "")
+        user_response = _latest_human_content(messages)
+        original_context = turn.get("context_summary", "")
 
         prompt = f"""A user was asked a clarification question while answering a data analytics query.
 Determine whether their response directly answers the clarification or is a brand-new, unrelated question.
 
-Original context / clarification asked: {original_query}
+Original context / clarification asked: {original_context}
 User's response: {user_response}
 
 is_clarification_response=True  → they answered the clarification (even loosely)
@@ -494,25 +429,21 @@ is_clarification_response=False → they changed the subject or asked something 
         if is_continuation:
             return {"question_clear": True}
 
-        # New question — reset clarification flag and let the graph re-classify
-        print("[confirm_continuation] user asked a new question — looping back to classify_intent")
+        # New question — reset and loop back to full re-classification
+        print("[confirm_continuation] user asked a new question — restarting classification")
         turn = dict(turn)
         turn["triggered_clarification"] = False
-        return {
-            "current_turn": turn,
-            "question_clear": False,
-        }
+        return {"current_turn": turn, "question_clear": False}
 
     def _handle_clear(self, state: AgentState) -> dict:
         """Pure Python. Confirm clarity and forward to planning."""
         print("[handle_clear] query is clear")
         turn = state.get("current_turn", {})
-        intent_type = (state.get("intent_metadata") or {}).get("intent_type", "new_question")
         return {
             "current_turn": turn,
             "turn_history": [turn] if turn else [],
             "question_clear": True,
-            "messages": [SystemMessage(content=f"Intent: {intent_type}, proceeding to planning")],
+            "messages": [SystemMessage(content="Query understood, proceeding to planning")],
         }
 
     # -----------------------------------------------------------------------

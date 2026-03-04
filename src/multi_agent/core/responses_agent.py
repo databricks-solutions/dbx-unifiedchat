@@ -325,8 +325,7 @@ class SuperAgentHybridResponsesAgent(ResponsesAgent):
             # New clean streaming formatters
             "llm_streaming_start": lambda d: f"🤖 Streaming response from {d.get('agent', 'LLM')}...",
             "llm_token": lambda d: d.get('content', ''),  # Just the token content, no decoration
-            "intent_detected": lambda d: f"\n🎯 Intent: {d.get('intent_type', 'unknown')} (confidence: {d.get('confidence', 0):.0%})",
-            "meta_question_detected": lambda d: f"\n💡 Meta-question detected",
+"meta_question_detected": lambda d: f"\n💡 Meta-question detected",
             "clarification_requested": lambda d: f"\n❓ Clarification needed: {d.get('reason', 'unknown')}",
             "clarification_skipped": lambda d: f"\n⏭️ Clarification skipped: {d.get('reason', 'unknown')}",
             "agent_step": lambda d: f"\n📍 {d.get('agent', 'agent').upper()}: {d.get('content', d.get('step', 'processing'))}",

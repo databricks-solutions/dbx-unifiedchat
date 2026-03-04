@@ -5,7 +5,6 @@ Core infrastructure for the multi-agent system.
 from .state import (
     AgentState,
     ConversationTurn,
-    IntentMetadata,
     create_conversation_turn,
     get_reset_state_template,
     get_initial_state,
@@ -19,7 +18,6 @@ __all__ = [
     # State
     "AgentState",
     "ConversationTurn",
-    "IntentMetadata",
     "create_conversation_turn",
     "get_reset_state_template",
     "get_initial_state",
