@@ -1,20 +1,24 @@
 """
 ClarificationAgent: Graph-based sub-agent for intent, classification, and clarity.
 
-classify_query_type and check_clarity run in parallel, then fan-in at merge_classification:
+classify_query_type and check_clarity run in parallel, fan-in at merge_classification,
+which routes on all available state in one place:
 
     START
       ├── classify_query_type      (is_irrelevant, is_meta_question)
-      └── check_clarity            (context_summary, is_followup, question_clear, current_turn)
+      └── check_clarity            (context_summary, question_clear, current_turn)
               ↓ fan-in
           merge_classification
               ↓ route
-              ├─ is_irrelevant=True    → handle_irrelevant    → END
-              ├─ is_meta_question=True → generate_meta_answer → END
-              └─ else                 → confirm_continuation
-                                            ├─ answering clarification → handle_clear → END
-                                            └─ new question → [classify_query_type,
-                                                               check_clarity] (loop back)
+              ├─ is_irrelevant=True     → handle_irrelevant    → END
+              ├─ is_meta_question=True  → generate_meta_answer → END
+              ├─ question_clear=False   → clarify (always interrupts)
+              │                               ↓
+              │                         confirm_continuation
+              │                               ├─ answering → handle_clear → END
+              │                               └─ new question → [classify_query_type,
+              │                                                  check_clarity] (loop back)
+              └─ question_clear=True    → handle_clear → END
 """
 
 import json
@@ -147,6 +151,7 @@ class ClarificationAgent(BaseAgent):
         graph.add_node("merge_classification", self._merge_classification)
         graph.add_node("handle_irrelevant", self._handle_irrelevant)
         graph.add_node("generate_meta_answer", self._generate_meta_answer)
+        graph.add_node("clarify", self._clarify)
         graph.add_node("confirm_continuation", self._confirm_continuation)
         graph.add_node("handle_clear", self._handle_clear)
 
@@ -154,7 +159,7 @@ class ClarificationAgent(BaseAgent):
         graph.add_edge(START, "classify_query_type")
         graph.add_edge(START, "check_clarity")
 
-        # Fan-in
+        # Fan-in — route on all known state in one place
         graph.add_edge("classify_query_type", "merge_classification")
         graph.add_edge("check_clarity", "merge_classification")
 
@@ -163,7 +168,9 @@ class ClarificationAgent(BaseAgent):
                 return "handle_irrelevant"
             if state.get("is_meta_question"):
                 return "generate_meta_answer"
-            return "confirm_continuation"
+            if not state.get("question_clear", True):
+                return "clarify"
+            return "handle_clear"
 
         graph.add_conditional_edges(
             "merge_classification",
@@ -171,21 +178,21 @@ class ClarificationAgent(BaseAgent):
             {
                 "handle_irrelevant": "handle_irrelevant",
                 "generate_meta_answer": "generate_meta_answer",
-                "confirm_continuation": "confirm_continuation",
+                "clarify": "clarify",
+                "handle_clear": "handle_clear",
             },
         )
 
+        # clarify always interrupts, then confirm_continuation decides
+        # whether the response answers the question or is a new query
+        graph.add_edge("clarify", "confirm_continuation")
+
         def route_after_continuation(state: AgentState):
-            # New question: fan-out to both parallel nodes so the full
-            # sub-graph restarts (irrelevant/meta/clarity all available).
             if not state.get("question_clear", True):
                 return ["classify_query_type", "check_clarity"]
             return "handle_clear"
 
-        graph.add_conditional_edges(
-            "confirm_continuation",
-            route_after_continuation,
-        )
+        graph.add_conditional_edges("confirm_continuation", route_after_continuation)
 
         graph.add_edge("handle_irrelevant", END)
         graph.add_edge("generate_meta_answer", END)
@@ -281,49 +288,21 @@ Answer the following:
             clarification_reason = ""
             clarification_options = []
 
+        # Store clarification details in metadata so request_clarification can
+        # access them after routing — avoids adding transient fields to AgentState.
+        metadata = {}
+        if not question_clear:
+            metadata["clarification_reason"] = clarification_reason
+            metadata["clarification_options"] = clarification_options
+
         turn = create_conversation_turn(
             query=current_query,
             is_followup=is_followup,
             context_summary=context_summary,
             triggered_clarification=False,
+            metadata=metadata,
         )
-
-        if question_clear:
-            return {"current_turn": turn, "question_clear": True}
-
-        # Stream the clarification question to the client before pausing
-        markdown = f"### Clarification Needed\n\n{clarification_reason}\n\n"
-        if clarification_options:
-            markdown += "**Please choose from the following options:**\n\n"
-            for i, opt in enumerate(clarification_options, 1):
-                markdown += f"{i}. {opt}\n\n"
-        writer({"type": "clarification_chunk", "content": markdown.strip()})
-
-        print("[check_clarity] pausing via interrupt()")
-        # Graph pauses here — state is checkpointed. Resumes when client sends
-        # Command(resume=user_response) with the same thread_id.
-        user_response = interrupt({
-            "type": "clarification_request",
-            "reason": clarification_reason,
-            "options": clarification_options,
-            "markdown": markdown.strip(),
-        })
-
-        # Resumed — incorporate clarification Q&A into context_summary for planning
-        print(f"[check_clarity] resumed with: {user_response!r}")
-        turn = dict(turn)
-        turn["triggered_clarification"] = True
-        turn["context_summary"] = (
-            f"{context_summary} — "
-            f"Clarification asked: {clarification_reason} — "
-            f"User answered: {user_response}"
-        )
-        print(f"[check_clarity] updated context_summary: {turn['context_summary'][:100]}...")
-        return {
-            "current_turn": turn,
-            "question_clear": True,
-            "messages": [HumanMessage(content=user_response)],
-        }
+        return {"current_turn": turn, "question_clear": question_clear}
 
     def _merge_classification(self, state: AgentState) -> dict:
         """Fan-in point after parallel classification nodes. No-op."""
@@ -392,6 +371,44 @@ Use ## headings, **bold** keywords, and bullet lists. Be professional and helpfu
             "is_meta_question": True,
             "meta_answer": answer,
             "messages": [AIMessage(content=answer)],
+        }
+
+    def _clarify(self, state: AgentState) -> dict:
+        """Always interrupts for user input — only reached when question_clear=False."""
+        turn = state.get("current_turn") or {}
+        metadata = turn.get("metadata") or {}
+        clarification_reason = metadata.get("clarification_reason", "Query needs more specificity")
+        clarification_options = metadata.get("clarification_options") or []
+        context_summary = turn.get("context_summary", "")
+
+        writer = get_stream_writer()
+        markdown = f"### Clarification Needed\n\n{clarification_reason}\n\n"
+        if clarification_options:
+            markdown += "**Please choose from the following options:**\n\n"
+            for i, opt in enumerate(clarification_options, 1):
+                markdown += f"{i}. {opt}\n\n"
+        writer({"type": "clarification_chunk", "content": markdown.strip()})
+
+        print("[clarify] pausing via interrupt()")
+        user_response = interrupt({
+            "type": "clarification_request",
+            "reason": clarification_reason,
+            "options": clarification_options,
+            "markdown": markdown.strip(),
+        })
+
+        print(f"[clarify] resumed with: {user_response!r}")
+        turn = dict(turn)
+        turn["triggered_clarification"] = True
+        turn["context_summary"] = (
+            f"{context_summary} — "
+            f"Clarification asked: {clarification_reason} — "
+            f"User answered: {user_response}"
+        )
+        return {
+            "current_turn": turn,
+            "question_clear": True,
+            "messages": [HumanMessage(content=user_response)],
         }
 
     def _confirm_continuation(self, state: AgentState) -> dict:
