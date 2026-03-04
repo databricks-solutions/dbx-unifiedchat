@@ -456,7 +456,6 @@ is_clarification_response=False → they changed the subject or asked something 
             "current_turn": turn,
             "turn_history": [turn] if turn else [],
             "question_clear": True,
-            "messages": [SystemMessage(content="Query understood, proceeding to planning")],
         }
 
     # -----------------------------------------------------------------------

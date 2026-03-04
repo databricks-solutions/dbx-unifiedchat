@@ -33,7 +33,6 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Callable
 from functools import wraps
 
-from langchain_core.messages import SystemMessage
 from langgraph.config import get_stream_writer
 
 from ..core.state import AgentState
@@ -352,9 +351,6 @@ def planning_node(state: AgentState) -> dict:
         "vector_search_relevant_spaces_info": plan.get("vector_search_relevant_spaces_info", []),
         "relevant_spaces": relevant_spaces_full,
         "next_agent": next_agent,
-        "messages": [
-            SystemMessage(content=f"Execution plan: {json.dumps(plan, indent=2)}")
-        ]
     }
 
 
