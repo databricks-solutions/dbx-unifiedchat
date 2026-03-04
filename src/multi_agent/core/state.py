@@ -37,6 +37,11 @@ class IntentMetadata(TypedDict):
     parent_turn_id: Optional[str]
 
 
+class GraphInput(TypedDict):
+    """Minimal input schema exposed to LangGraph Studio / API callers."""
+    messages: Annotated[List[Any], operator.add]
+
+
 class AgentState(TypedDict):
     """Simplified agent state using turn-based context management."""
     # Turn Management

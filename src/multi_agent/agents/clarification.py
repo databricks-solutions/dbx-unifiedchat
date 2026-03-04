@@ -15,7 +15,11 @@ Sub-graph flow (classify_intent and classify_query_type run in parallel):
                                             ↓
                                             ├─ unclear → interrupt() ← waits for user
                                             │           resumes with user_response
-                                            └─ clear   → handle_clear → END
+                                            │                ↓
+                                            │         confirm_continuation
+                                            │           ├─ answering clarification → handle_clear → END
+                                            │           └─ new question → classify_intent (loop back)
+                                            └─ clear   → confirm_continuation → handle_clear → END
 """
 
 import json
@@ -60,6 +64,11 @@ class ClarityCheck(TypedDict):
     question_clear: bool
     clarification_reason: Optional[str]
     clarification_options: Optional[List[str]]
+
+
+class ContinuationCheck(TypedDict):
+    is_clarification_response: bool
+    reasoning: str
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +134,7 @@ class ClarificationAgent(BaseAgent):
         self.intent_llm = base_llm.with_structured_output(IntentClassification)
         self.query_type_llm = base_llm.with_structured_output(QueryTypeClassification)
         self.clarity_llm = base_llm.with_structured_output(ClarityCheck)
+        self.continuation_llm = base_llm.with_structured_output(ContinuationCheck)
         self.base_llm = base_llm
 
         self.subgraph = self._build_subgraph()
@@ -142,6 +152,7 @@ class ClarificationAgent(BaseAgent):
         graph.add_node("handle_irrelevant", self._handle_irrelevant)
         graph.add_node("generate_meta_answer", self._generate_meta_answer)
         graph.add_node("check_clarity", self._check_clarity)
+        graph.add_node("confirm_continuation", self._confirm_continuation)
         graph.add_node("handle_clear", self._handle_clear)
 
         # Parallel fan-out
@@ -169,9 +180,22 @@ class ClarificationAgent(BaseAgent):
             },
         )
 
-        # check_clarity always proceeds to handle_clear — unclear queries pause
-        # via interrupt() inside the node and resume with question_clear=True
-        graph.add_edge("check_clarity", "handle_clear")
+        # check_clarity proceeds to confirm_continuation — unclear queries pause
+        # via interrupt() inside the node and resume; confirm_continuation then
+        # decides whether the response is an answer or a brand-new question.
+        graph.add_edge("check_clarity", "confirm_continuation")
+
+        def route_after_continuation(state: AgentState):
+            # New question: fan-out to both parallel classification nodes so
+            # the full sub-graph restarts (irrelevant/meta/clarity all available).
+            if not state.get("question_clear", True):
+                return ["classify_intent", "classify_query_type"]
+            return "handle_clear"
+
+        graph.add_conditional_edges(
+            "confirm_continuation",
+            route_after_continuation,
+        )
 
         graph.add_edge("handle_irrelevant", END)
         graph.add_edge("generate_meta_answer", END)
@@ -262,18 +286,23 @@ Context summary: a sentence summary that will (1) synthesize the conversation hi
         current_query = human_messages[-1].content if human_messages else ""
         space_context = load_space_context(self.table_name)
 
-        prompt = f"""Classify whether this query is irrelevant to data analytics or a meta-question about the system.
+        prompt = f"""You are screening a user query before routing it to a data analytics system.
 
 User Query: {current_query}
 
 Available Data Sources:
 {json.dumps(space_context, indent=2)}
 
-Irrelevant: greetings, small talk, weather, sports, politics, recipes, personal questions,
-creative writing, or anything unrelated to data analytics and business intelligence.
+Most queries are regular data questions and should pass through with both flags set to False.
+Only set a flag to True when the query clearly and unambiguously matches the description below.
 
-Meta-question: questions about available tables/data sources/schemas, system capabilities,
-what data is available, or requests for example queries. Meta questions are simply questions about the metadata rather than those requiring queries of the data itself.
+is_irrelevant=True ONLY IF: the query is completely unrelated to data analytics — e.g. greetings,
+small talk, weather, sports, politics, recipes, personal advice, or creative writing.
+
+is_meta_question=True ONLY IF: the user is asking about the system itself rather than querying data —
+e.g. "what tables are available?", "what can you do?", "show me example questions", or "what data sources exist?".
+
+If the query is a normal data or business intelligence question (even a vague one), set both to False.
 """
 
         try:
@@ -423,9 +452,55 @@ If unclear, provide 2-3 specific clarification options.
         print(f"[check_clarity] updated context_summary for planning: {turn['context_summary'][:100]}...")
         return {
             "current_turn": turn,
-            "turn_history": [turn] if turn else [],
             "question_clear": True,
             "messages": [HumanMessage(content=user_response)],
+        }
+
+    def _confirm_continuation(self, state: AgentState) -> dict:
+        """Check if the user's response actually answers the clarification or is a new question.
+
+        Pass-through when no clarification was triggered (question was already clear).
+        If the user responded with a new, unrelated question, set question_clear=False
+        so the subgraph loops back to classify_intent for full re-classification.
+        """
+        turn = state.get("current_turn") or {}
+        if not turn.get("triggered_clarification"):
+            # No clarification was asked — proceed directly to handle_clear
+            return {"question_clear": True}
+
+        messages = state.get("messages", [])
+        human_messages = [m for m in messages if isinstance(m, HumanMessage)]
+        # The most recent HumanMessage is the user's clarification response
+        user_response = human_messages[-1].content if human_messages else ""
+        original_query = turn.get("context_summary", "")
+
+        prompt = f"""A user was asked a clarification question while answering a data analytics query.
+Determine whether their response directly answers the clarification or is a brand-new, unrelated question.
+
+Original context / clarification asked: {original_query}
+User's response: {user_response}
+
+is_clarification_response=True  → they answered the clarification (even loosely)
+is_clarification_response=False → they changed the subject or asked something entirely new
+"""
+        try:
+            result: ContinuationCheck = self.continuation_llm.invoke(prompt)
+            is_continuation = result["is_clarification_response"]
+            print(f"[confirm_continuation] is_continuation={is_continuation} reason={result['reasoning']!r}")
+        except Exception as e:
+            print(f"[confirm_continuation] error: {e} — assuming continuation")
+            is_continuation = True
+
+        if is_continuation:
+            return {"question_clear": True}
+
+        # New question — reset clarification flag and let the graph re-classify
+        print("[confirm_continuation] user asked a new question — looping back to classify_intent")
+        turn = dict(turn)
+        turn["triggered_clarification"] = False
+        return {
+            "current_turn": turn,
+            "question_clear": False,
         }
 
     def _handle_clear(self, state: AgentState) -> dict:

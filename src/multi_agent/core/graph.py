@@ -8,7 +8,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.state import CompiledStateGraph
 from typing import Optional
 
-from ..core.state import AgentState
+from ..core.state import AgentState, GraphInput
 from ..agents.clarification import ClarificationAgent
 from ..agents.planning import planning_node
 from ..agents.sql_synthesis import sql_synthesis_table_node, sql_synthesis_genie_node
@@ -37,7 +37,7 @@ def create_super_agent_hybrid(config=None) -> StateGraph:
         table_name=table_name,
     )
 
-    workflow = StateGraph(AgentState)
+    workflow = StateGraph(AgentState, input=GraphInput)
 
     # The clarification subgraph shares AgentState so it is passed directly
     # as a node per the LangGraph subgraph pattern — no wrapper needed.

@@ -28,7 +28,6 @@ dependencies = [
     "langgraph-supervisor==0.0.30",
     "langchain-core>=0.1.0",
     "langchain>=0.1.0",
-    
     # Databricks Integration
     "mlflow[databricks]>=3.6.0",
     "databricks-langchain[memory]>=0.12.1",
@@ -36,20 +35,18 @@ dependencies = [
     "databricks-vectorsearch>=0.63",
     "databricks-sdk>=0.20.0",
     "databricks-sql-connector>=3.0.0",
-    
     # Data Processing
     "pandas>=2.0.0",
     "numpy>=1.24.0",
     "pyarrow>=14.0.0",
-    
     # Configuration & Validation
     "pydantic>=2.0.0",
     "python-dotenv>=1.0.0",
     "pyyaml>=6.0",
-    
     # Utilities
     "requests>=2.31.0",
     "urllib3>=2.0.0",
+    "langgraph-cli[inmem]>=0.4.14",
 ]
 
 [project.optional-dependencies]
