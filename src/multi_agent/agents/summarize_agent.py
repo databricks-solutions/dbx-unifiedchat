@@ -171,8 +171,6 @@ class ResultSummarizeAgent:
         """Build the prompt for summary generation based on state."""
         
         original_query = state.get('original_query', 'N/A')
-        question_clear = state.get('question_clear', False)
-        pending_clarification = state.get('pending_clarification')
         execution_plan = state.get('execution_plan')
         join_strategy = state.get('join_strategy')
         sql_query = state.get('sql_query')
@@ -189,84 +187,132 @@ class ResultSummarizeAgent:
 
 """
         
-        # Add clarification info
-        if not question_clear and pending_clarification:
-            clarification_reason = pending_clarification.get('reason', 'Query needs clarification')
-            prompt += f"""**Status:** Query needs clarification
-**Clarification Needed:** {clarification_reason}
-**Summary:** The query was too vague or ambiguous. Requested user clarification before proceeding.
-"""
-        else:
-            # Add planning info
-            if execution_plan:
-                prompt += f"""**Planning:** {execution_plan}
+        # Add planning info
+        if execution_plan:
+            prompt += f"""**Planning:** {execution_plan}
 **Strategy:** {join_strategy or 'N/A'}
 
 """
-            
-            # NEW: Check for multiple SQL queries and results
-            sql_queries = state.get('sql_queries', [])
-            query_labels = state.get('sql_query_labels', [])
-            execution_results = state.get('execution_results', [])
-            
-            # Fallback to single query/result for backward compatibility
-            if not sql_queries and sql_query:
-                sql_queries = [sql_query]
-            if not execution_results and exec_result:
-                execution_results = [exec_result]
-            
-            # Add SQL synthesis info
-            if sql_queries:
-                if len(sql_queries) == 1:
-                    # Single query (original behavior)
-                    label = query_labels[0] if query_labels else ""
-                    label_display = f" — {label}" if label else ""
-                    prompt += f"""**SQL Generation:** ✅ Successful{label_display}
+        
+        # NEW: Check for multiple SQL queries and results
+        sql_queries = state.get('sql_queries', [])
+        query_labels = state.get('sql_query_labels', [])
+        execution_results = state.get('execution_results', [])
+        
+        # Fallback to single query/result for backward compatibility
+        if not sql_queries and sql_query:
+            sql_queries = [sql_query]
+        if not execution_results and exec_result:
+            execution_results = [exec_result]
+        
+        # Add SQL synthesis info
+        if sql_queries:
+            if len(sql_queries) == 1:
+                # Single query (original behavior)
+                label = query_labels[0] if query_labels else ""
+                label_display = f" — {label}" if label else ""
+                prompt += f"""**SQL Generation:** ✅ Successful{label_display}
 **SQL Query:** 
 ```sql
 {sql_queries[0]}
 ```
 
 """
-                else:
-                    # Multiple queries
-                    prompt += f"""**SQL Generation:** ✅ Successful ({len(sql_queries)} queries for multi-part question)
+            else:
+                # Multiple queries
+                prompt += f"""**SQL Generation:** ✅ Successful ({len(sql_queries)} queries for multi-part question)
 
 """
-                    for i, query in enumerate(sql_queries, 1):
-                        label = query_labels[i-1] if i <= len(query_labels) and query_labels[i-1] else ""
-                        label_display = f" — {label}" if label else ""
-                        prompt += f"""**SQL Query {i}{label_display}:** 
+                for i, query in enumerate(sql_queries, 1):
+                    label = query_labels[i-1] if i <= len(query_labels) and query_labels[i-1] else ""
+                    label_display = f" — {label}" if label else ""
+                    prompt += f"""**SQL Query {i}{label_display}:** 
 ```sql
 {query}
 ```
 
 """
-                
-                if sql_explanation:
-                    prompt += f"""**SQL Synthesis Explanation:** {sql_explanation[:2000]}{'...' if len(sql_explanation) > 2000 else ''}
+            
+            if sql_explanation:
+                prompt += f"""**SQL Synthesis Explanation:** {sql_explanation[:2000]}{'...' if len(sql_explanation) > 2000 else ''}
 
 """
-                
-                # TOKEN PROTECTION: Sample results to prevent huge prompts
-                MAX_PREVIEW_ROWS = 20
-                MAX_PREVIEW_COLS = 20
-                MAX_JSON_CHARS = 2000
-                
-                # Add execution info (single or multiple results)
-                if execution_results:
-                    if len(execution_results) == 1:
-                        # Single result (original behavior with token protection)
-                        result = execution_results[0]
+            
+            # TOKEN PROTECTION: Sample results to prevent huge prompts
+            MAX_PREVIEW_ROWS = 20
+            MAX_PREVIEW_COLS = 20
+            MAX_JSON_CHARS = 2000
+            
+            # Add execution info (single or multiple results)
+            if execution_results:
+                if len(execution_results) == 1:
+                    # Single result (original behavior with token protection)
+                    result = execution_results[0]
+                    if result.get('success'):
+                        row_count = result.get('row_count', 0)
+                        columns = result.get('columns', [])
+                        result_data = result.get('result', [])
+                        
+                        # Sample rows
+                        result_preview = result_data[:MAX_PREVIEW_ROWS] if len(result_data) > MAX_PREVIEW_ROWS else result_data
+                        
+                        # Sample columns (if result has too many columns)
+                        if result_preview and len(columns) > MAX_PREVIEW_COLS:
+                            sampled_cols = columns[:MAX_PREVIEW_COLS]
+                            result_preview = [
+                                {k: v for k, v in row.items() if k in sampled_cols}
+                                for row in result_preview
+                            ]
+                            col_display = ', '.join(sampled_cols) + f'... (+{len(columns) - MAX_PREVIEW_COLS} more columns)'
+                        else:
+                            col_display = ', '.join(columns[:10]) + ('...' if len(columns) > 10 else '')
+                        
+                        # Serialize to JSON
+                        result_json = self._safe_json_dumps(result_preview, indent=2)
+                        
+                        # Truncate JSON if too large
+                        if len(result_json) > MAX_JSON_CHARS:
+                            result_json = result_json[:MAX_JSON_CHARS] + f'\n... (truncated, {len(result_json) - MAX_JSON_CHARS} chars omitted)'
+                        
+                        prompt += f"""**Execution:** ✅ Successful
+**Rows:** {row_count} rows returned{f' (showing first {MAX_PREVIEW_ROWS})' if row_count > MAX_PREVIEW_ROWS else ''}
+**Columns:** {col_display}
+
+**Result Preview:** 
+{result_json}
+{f'... and {row_count - MAX_PREVIEW_ROWS} more rows' if row_count > MAX_PREVIEW_ROWS else ''}
+"""
+                    else:
+                        prompt += f"""**Execution:** ❌ Failed
+**Error:** {result.get('error', 'Unknown error')}
+
+"""
+                else:
+                    # Multiple results
+                    all_successful = all(r.get('success') for r in execution_results)
+                    total_rows = sum(r.get('row_count', 0) for r in execution_results if r.get('success'))
+                    
+                    if all_successful:
+                        prompt += f"""**Execution:** ✅ All {len(execution_results)} queries executed successfully
+**Total Rows Returned:** {total_rows}
+
+"""
+                    else:
+                        failed_count = sum(1 for r in execution_results if not r.get('success'))
+                        prompt += f"""**Execution:** ⚠️ Partial success ({len(execution_results) - failed_count} succeeded, {failed_count} failed)
+
+"""
+                    
+                    # Add details for each result
+                    for i, result in enumerate(execution_results, 1):
                         if result.get('success'):
                             row_count = result.get('row_count', 0)
                             columns = result.get('columns', [])
                             result_data = result.get('result', [])
                             
-                            # Sample rows
+                            # Token protection per result
                             result_preview = result_data[:MAX_PREVIEW_ROWS] if len(result_data) > MAX_PREVIEW_ROWS else result_data
                             
-                            # Sample columns (if result has too many columns)
                             if result_preview and len(columns) > MAX_PREVIEW_COLS:
                                 sampled_cols = columns[:MAX_PREVIEW_COLS]
                                 result_preview = [
@@ -277,85 +323,29 @@ class ResultSummarizeAgent:
                             else:
                                 col_display = ', '.join(columns[:10]) + ('...' if len(columns) > 10 else '')
                             
-                            # Serialize to JSON
                             result_json = self._safe_json_dumps(result_preview, indent=2)
-                            
-                            # Truncate JSON if too large
                             if len(result_json) > MAX_JSON_CHARS:
-                                result_json = result_json[:MAX_JSON_CHARS] + f'\n... (truncated, {len(result_json) - MAX_JSON_CHARS} chars omitted)'
+                                result_json = result_json[:MAX_JSON_CHARS] + f'\n... (truncated)'
                             
-                            prompt += f"""**Execution:** ✅ Successful
-**Rows:** {row_count} rows returned{f' (showing first {MAX_PREVIEW_ROWS})' if row_count > MAX_PREVIEW_ROWS else ''}
-**Columns:** {col_display}
-
-**Result Preview:** 
-{result_json}
-{f'... and {row_count - MAX_PREVIEW_ROWS} more rows' if row_count > MAX_PREVIEW_ROWS else ''}
-"""
-                        else:
-                            prompt += f"""**Execution:** ❌ Failed
-**Error:** {result.get('error', 'Unknown error')}
-
-"""
-                    else:
-                        # Multiple results
-                        all_successful = all(r.get('success') for r in execution_results)
-                        total_rows = sum(r.get('row_count', 0) for r in execution_results if r.get('success'))
-                        
-                        if all_successful:
-                            prompt += f"""**Execution:** ✅ All {len(execution_results)} queries executed successfully
-**Total Rows Returned:** {total_rows}
-
-"""
-                        else:
-                            failed_count = sum(1 for r in execution_results if not r.get('success'))
-                            prompt += f"""**Execution:** ⚠️ Partial success ({len(execution_results) - failed_count} succeeded, {failed_count} failed)
-
-"""
-                        
-                        # Add details for each result
-                        for i, result in enumerate(execution_results, 1):
-                            if result.get('success'):
-                                row_count = result.get('row_count', 0)
-                                columns = result.get('columns', [])
-                                result_data = result.get('result', [])
-                                
-                                # Token protection per result
-                                result_preview = result_data[:MAX_PREVIEW_ROWS] if len(result_data) > MAX_PREVIEW_ROWS else result_data
-                                
-                                if result_preview and len(columns) > MAX_PREVIEW_COLS:
-                                    sampled_cols = columns[:MAX_PREVIEW_COLS]
-                                    result_preview = [
-                                        {k: v for k, v in row.items() if k in sampled_cols}
-                                        for row in result_preview
-                                    ]
-                                    col_display = ', '.join(sampled_cols) + f'... (+{len(columns) - MAX_PREVIEW_COLS} more columns)'
-                                else:
-                                    col_display = ', '.join(columns[:10]) + ('...' if len(columns) > 10 else '')
-                                
-                                result_json = self._safe_json_dumps(result_preview, indent=2)
-                                if len(result_json) > MAX_JSON_CHARS:
-                                    result_json = result_json[:MAX_JSON_CHARS] + f'\n... (truncated)'
-                                
-                                prompt += f"""**Query {i} Result:**
+                            prompt += f"""**Query {i} Result:**
 - Rows: {row_count}{f' (showing first {MAX_PREVIEW_ROWS})' if row_count > MAX_PREVIEW_ROWS else ''}
 - Columns: {col_display}
 - Data: {result_json}
 
 """
-                            else:
-                                prompt += f"""**Query {i} Result:**
+                        else:
+                            prompt += f"""**Query {i} Result:**
 - Status: ❌ Failed
 - Error: {result.get('error', 'Unknown error')}
 
 """
-                elif execution_error:
-                    prompt += f"""**Execution:** ❌ Failed
+            elif execution_error:
+                prompt += f"""**Execution:** ❌ Failed
 **Error:** {execution_error}
 
 """
-            elif synthesis_error:
-                prompt += f"""**SQL Generation:** ❌ Failed
+        elif synthesis_error:
+            prompt += f"""**SQL Generation:** ❌ Failed
 **Error:** {synthesis_error}
 **Explanation:** {sql_explanation or 'N/A'}
 

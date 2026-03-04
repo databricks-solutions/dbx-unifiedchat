@@ -12,8 +12,9 @@ Sub-graph flow (classify_intent and classify_query_type run in parallel):
               ├─ is_irrelevant=True    → handle_irrelevant    → END
               ├─ is_meta_question=True → generate_meta_answer → END
               └─ else                 → check_clarity
-                                            ↓ route
-                                            ├─ unclear → END
+                                            ↓
+                                            ├─ unclear → interrupt() ← waits for user
+                                            │           resumes with user_response
                                             └─ clear   → handle_clear → END
 """
 
@@ -25,6 +26,7 @@ from databricks_langchain import ChatDatabricks
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langgraph.config import get_stream_writer
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 from typing_extensions import TypedDict
 
 from ..core.base_agent import BaseAgent
@@ -32,7 +34,6 @@ from ..core.state import (
     AgentState,
     ConversationTurn,
     IntentMetadata,
-    create_clarification_request,
     create_conversation_turn,
 )
 
@@ -103,22 +104,6 @@ def load_space_context(table_name: str) -> dict:
     return context
 
 
-def check_clarification_rate_limit(
-    turn_history: List[ConversationTurn], window_size: int = 5
-) -> bool:
-    """Return True if clarification was already triggered within the last N turns."""
-    if not turn_history:
-        return False
-    if turn_history[-1].get("triggered_clarification", False):
-        return True
-    if len(turn_history) < 2:
-        return False
-    for turn in turn_history[max(0, len(turn_history) - window_size):-1]:
-        if turn.get("triggered_clarification", False):
-            return True
-    return False
-
-
 # ---------------------------------------------------------------------------
 # ClarificationAgent
 # ---------------------------------------------------------------------------
@@ -184,14 +169,9 @@ class ClarificationAgent(BaseAgent):
             },
         )
 
-        def route_after_clarity(state: AgentState) -> str:
-            return "handle_clear" if state.get("question_clear", True) else END
-
-        graph.add_conditional_edges(
-            "check_clarity",
-            route_after_clarity,
-            {"handle_clear": "handle_clear", END: END},
-        )
+        # check_clarity always proceeds to handle_clear — unclear queries pause
+        # via interrupt() inside the node and resume with question_clear=True
+        graph.add_edge("check_clarity", "handle_clear")
 
         graph.add_edge("handle_irrelevant", END)
         graph.add_edge("generate_meta_answer", END)
@@ -329,7 +309,6 @@ what data is available, or requests for example queries. Meta questions are simp
             "question_clear": True,
             "is_irrelevant": True,
             "is_meta_question": False,
-            "pending_clarification": None,
             "messages": [AIMessage(content=refusal)],
         }
 
@@ -372,17 +351,15 @@ Use ## headings, **bold** keywords, and bullet lists. Be professional and helpfu
             "question_clear": True,
             "is_meta_question": True,
             "meta_answer": answer,
-            "pending_clarification": None,
             "messages": [AIMessage(content=answer)],
         }
 
     def _check_clarity(self, state: AgentState) -> dict:
-        """Structured LLM call: clarity check + clarification handling."""
+        """Structured LLM call: clarity check. If unclear, interrupt() for user input."""
         messages = state.get("messages", [])
         human_messages = [m for m in messages if isinstance(m, HumanMessage)]
         current_query = human_messages[-1].content if human_messages else ""
         turn = state.get("current_turn") or {}
-        turn_history = state.get("turn_history", [])
         context_summary = turn.get("context_summary", "")
 
         prompt = f"""Determine if the query is clear enough to generate a SQL query.
@@ -391,7 +368,6 @@ User Query: {current_query}
 Context Summary: {context_summary}
 
 Be lenient — only mark as unclear if CRITICAL information is missing.
-Never mark a clarification_response as unclear.
 If unclear, provide 2-3 specific clarification options.
 """
         try:
@@ -403,7 +379,7 @@ If unclear, provide 2-3 specific clarification options.
         except Exception as e:
             print(f"[check_clarity] error: {e} — defaulting to clear")
             question_clear = True
-            clarification_reason = "Query needs more specificity"
+            clarification_reason = ""
             clarification_options = []
 
         if question_clear:
@@ -411,45 +387,45 @@ If unclear, provide 2-3 specific clarification options.
                 "current_turn": turn,
                 "turn_history": [turn] if turn else [],
                 "question_clear": True,
-                "pending_clarification": None,
             }
 
-        if check_clarification_rate_limit(turn_history, window_size=5):
-            print("[check_clarity] rate limited — proceeding")
-            return {
-                "current_turn": turn,
-                "turn_history": [turn] if turn else [],
-                "question_clear": True,
-                "pending_clarification": None,
-                "messages": [SystemMessage(content=f"Clarification rate limited. Proceeding with: {context_summary}")],
-            }
-
+        # Stream the clarification question to the client before pausing
         writer = get_stream_writer()
-        print("[check_clarity] requesting clarification")
-        writer({"type": "clarification_requested", "note": "Clarification markdown already streamed"})
-        turn = dict(turn)
-        turn["triggered_clarification"] = True
-
-        clarification_request = create_clarification_request(
-            reason=clarification_reason,
-            options=clarification_options,
-            turn_id=turn.get("turn_id", ""),
-            best_guess=context_summary,
-            best_guess_confidence=(state.get("intent_metadata") or {}).get("confidence"),
-        )
-
         markdown = f"### Clarification Needed\n\n{clarification_reason}\n\n"
         if clarification_options:
             markdown += "**Please choose from the following options:**\n\n"
             for i, opt in enumerate(clarification_options, 1):
                 markdown += f"{i}. {opt}\n\n"
+        writer({"type": "clarification_chunk", "content": markdown.strip()})
 
+        print("[check_clarity] pausing via interrupt()")
+        # Graph pauses here — state is checkpointed. Resumes when client sends
+        # Command(resume=user_response) with the same thread_id.
+        user_response = interrupt({
+            "type": "clarification_request",
+            "reason": clarification_reason,
+            "options": clarification_options,
+            "markdown": markdown.strip(),
+        })
+
+        # Resumed — user_response is the user's answer
+        print(f"[check_clarity] resumed with: {user_response!r}")
+        turn = dict(turn)
+        turn["triggered_clarification"] = True
+        # Update context_summary to incorporate the clarification so planning
+        # receives the full intent: original query + what was asked + user's answer
+        original_summary = turn.get("context_summary") or current_query
+        turn["context_summary"] = (
+            f"{original_summary} — "
+            f"Clarification asked: {clarification_reason} — "
+            f"User answered: {user_response}"
+        )
+        print(f"[check_clarity] updated context_summary for planning: {turn['context_summary'][:100]}...")
         return {
             "current_turn": turn,
             "turn_history": [turn] if turn else [],
-            "question_clear": False,
-            "pending_clarification": clarification_request,
-            "messages": [AIMessage(content=markdown.strip())],
+            "question_clear": True,
+            "messages": [HumanMessage(content=user_response)],
         }
 
     def _handle_clear(self, state: AgentState) -> dict:
@@ -461,7 +437,6 @@ If unclear, provide 2-3 specific clarification options.
             "current_turn": turn,
             "turn_history": [turn] if turn else [],
             "question_clear": True,
-            "pending_clarification": None,
             "messages": [SystemMessage(content=f"Intent: {intent_type}, proceeding to planning")],
         }
 

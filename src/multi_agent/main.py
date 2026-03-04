@@ -9,9 +9,11 @@ Usage:
 
 import argparse
 import sys
+import uuid
 from typing import Optional
 
 from langchain_core.messages import HumanMessage
+from langgraph.types import Command
 
 from .core.graph import create_agent_graph
 from .core.config import get_config
@@ -32,43 +34,45 @@ def run_query(query: str, thread_id: Optional[str] = None, verbose: bool = False
         if verbose:
             print("Loading configuration...")
         config = get_config()
-        
-        # Create agent graph
+
+        # Create agent graph (always compiled — MemorySaver used when no Databricks checkpointer)
         if verbose:
             print("Creating agent graph...")
         agent = create_agent_graph(config, with_checkpointer=bool(thread_id))
-        
+
+        # Ensure a thread_id exists so the checkpointer can track state across interrupt/resume
+        thread_id = thread_id or str(uuid.uuid4())
+        invoke_config = {"configurable": {"thread_id": thread_id}}
+
         # Prepare input
         initial_state = get_initial_state(thread_id=thread_id)
         initial_state["messages"] = [HumanMessage(content=query)]
-        
+
         if verbose:
             print(f"\nQuery: {query}")
-            if thread_id:
-                print(f"Thread ID: {thread_id}")
+            print(f"Thread ID: {thread_id}")
             print("\nProcessing...")
-        
-        # Invoke agent
-        response = agent.invoke(initial_state)
-        
+
+        # Invoke agent — loop to handle clarification interrupts
+        response = agent.invoke(initial_state, config=invoke_config)
+        while response.get("__interrupt__"):
+            interrupt_val = response["__interrupt__"][0].value
+            print(f"\n{interrupt_val['markdown']}\n")
+            user_input = input("Your response: ").strip()
+            response = agent.invoke(Command(resume=user_input), config=invoke_config)
+
         # Print response
         if verbose:
             print("\n" + "="*80)
             print("RESPONSE")
             print("="*80)
-        
+
         final_response = response.get("final_response") or response.get("meta_answer") or response.get("final_summary")
         if final_response:
             print(final_response)
-        elif response.get("pending_clarification"):
-            clarification = response["pending_clarification"]
-            print(f"\n{clarification['reason']}\n")
-            print("Please choose:")
-            for i, option in enumerate(clarification['options'], 1):
-                print(f"  {i}. {option}")
         else:
             print("No response generated")
-        
+
         return response
         
     except Exception as e:
@@ -130,20 +134,20 @@ def run_interactive():
             state = get_initial_state(thread_id=thread_id)
             state["messages"] = [HumanMessage(content=query)]
             
-            # Invoke agent
+            # Invoke agent — loop to handle clarification interrupts
             print("\n🤖 Agent: Processing...")
-            response = agent.invoke(state)
-            
+            invoke_config = {"configurable": {"thread_id": thread_id}}
+            response = agent.invoke(state, config=invoke_config)
+            while response.get("__interrupt__"):
+                interrupt_val = response["__interrupt__"][0].value
+                print(f"\n🤖 Agent: {interrupt_val['markdown']}\n")
+                user_input = input("Your response: ").strip()
+                response = agent.invoke(Command(resume=user_input), config=invoke_config)
+
             # Print response
             final_response = response.get("final_response") or response.get("meta_answer") or response.get("final_summary")
             if final_response:
                 print(f"\n🤖 Agent: {final_response}")
-            elif response.get("pending_clarification"):
-                clarification = response["pending_clarification"]
-                print(f"\n🤖 Agent: {clarification['reason']}\n")
-                print("Please choose:")
-                for i, option in enumerate(clarification['options'], 1):
-                    print(f"  {i}. {option}")
             
             turn_count += 1
             

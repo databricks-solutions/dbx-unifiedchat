@@ -25,16 +25,6 @@ class ConversationTurn(TypedDict):
     metadata: Optional[Dict[str, Any]]
 
 
-class ClarificationRequest(TypedDict):
-    """Unified clarification request object."""
-    reason: str
-    options: List[str]
-    turn_id: str
-    timestamp: str
-    best_guess: Optional[str]
-    best_guess_confidence: Optional[float]
-
-
 class IntentMetadata(TypedDict):
     """Intent metadata for business logic."""
     intent_type: Literal["new_question", "refinement", "continuation", "clarification_response"]
@@ -55,7 +45,6 @@ class AgentState(TypedDict):
     intent_metadata: Optional[IntentMetadata]
     
     # Clarification
-    pending_clarification: Optional[ClarificationRequest]
     question_clear: bool
     
     # Meta-question handling
@@ -153,33 +142,6 @@ def create_conversation_turn(
     )
 
 
-def create_clarification_request(
-    reason: str,
-    options: List[str],
-    turn_id: str,
-    best_guess: Optional[str] = None,
-    best_guess_confidence: Optional[float] = None
-) -> ClarificationRequest:
-    """Factory function to create a ClarificationRequest."""
-    return ClarificationRequest(
-        reason=reason,
-        options=options,
-        turn_id=turn_id,
-        timestamp=datetime.utcnow().isoformat(),
-        best_guess=best_guess,
-        best_guess_confidence=best_guess_confidence
-    )
-
-
-def format_clarification_message(clarification: ClarificationRequest) -> str:
-    """Format a clarification request into a user-friendly message."""
-    message = f"I need clarification: {clarification['reason']}\n\n"
-    message += "Please choose one of the following options or provide your own clarification:\n"
-    for i, option in enumerate(clarification['options'], 1):
-        message += f"{i}. {option}\n"
-    return message
-
-
 def get_reset_state_template() -> Dict[str, Any]:
     """
     Get template for resetting per-query execution fields.
@@ -192,7 +154,6 @@ def get_reset_state_template() -> Dict[str, Any]:
     """
     return {
         # Clarification fields (per-query)
-        "pending_clarification": None,
         "question_clear": False,
         "is_meta_question": False,
         "meta_answer": None,
