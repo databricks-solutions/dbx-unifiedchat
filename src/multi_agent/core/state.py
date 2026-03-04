@@ -15,7 +15,6 @@ class ConversationTurn(TypedDict):
     """Represents a single conversation turn with all its context."""
     turn_id: str
     query: str
-    is_followup: bool
     parent_turn_id: Optional[str]
     context_summary: Optional[str]
     timestamp: str  # ISO format datetime string
@@ -89,7 +88,6 @@ class AgentState(TypedDict):
 
 def create_conversation_turn(
     query: str,
-    is_followup: bool = False,
     parent_turn_id: Optional[str] = None,
     context_summary: Optional[str] = None,
     triggered_clarification: bool = False,
@@ -99,7 +97,6 @@ def create_conversation_turn(
     return ConversationTurn(
         turn_id=str(uuid_module.uuid4()),
         query=query,
-        is_followup=is_followup,
         parent_turn_id=parent_turn_id,
         context_summary=context_summary,
         timestamp=datetime.utcnow().isoformat(),

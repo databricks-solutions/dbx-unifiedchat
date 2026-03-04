@@ -250,9 +250,6 @@ If the query is a normal data or business intelligence question (even a vague on
         print(f"[check_clarity] query={current_query!r} (messages count={len(messages)}, types={[type(m).__name__ for m in messages]})")
         prior_turn = state.get("current_turn") or {}
         prior_summary = prior_turn.get("context_summary", "")
-        # Derive is_followup from state — no need to ask the LLM
-        is_followup = len(state.get("turn_history", [])) > 0
-
         prompt = f"""You are analyzing a user query for a data analytics assistant.
 
 Most recent user query: {current_query}
@@ -280,7 +277,7 @@ Answer the following:
             context_summary = result.get("context_summary") or current_query
             clarification_reason = result.get("clarification_reason") or "Query needs more specificity"
             clarification_options = result.get("clarification_options") or []
-            print(f"[check_clarity] clear={question_clear} is_followup={is_followup}")
+            print(f"[check_clarity] clear={question_clear}")
         except Exception as e:
             print(f"[check_clarity] error: {e} — defaulting to clear")
             question_clear = True
@@ -297,7 +294,6 @@ Answer the following:
 
         turn = create_conversation_turn(
             query=current_query,
-            is_followup=is_followup,
             context_summary=context_summary,
             triggered_clarification=False,
             metadata=metadata,

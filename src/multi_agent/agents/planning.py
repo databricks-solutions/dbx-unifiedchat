@@ -237,7 +237,7 @@ def planning_node(state: AgentState) -> dict:
         context_summary = None
     else:
         query = current_turn["query"]
-        is_followup = current_turn.get("is_followup", False)
+        is_followup = len(state.get("turn_history", [])) > 0
         context_summary = current_turn.get("context_summary")
 
     # Use context_summary if available (LLM-generated from check_clarity)
