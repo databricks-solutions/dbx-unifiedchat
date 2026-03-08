@@ -229,6 +229,7 @@ def enrich_column_metadata(columns_metadata: pd.DataFrame, table_identifier: str
 def enhance_comments_with_llm(columns: List[Dict], llm_endpoint: str) -> List[Dict]:
     """
     Use LLM to enhance column comments with better descriptions.
+    Processes columns in batches to avoid token limits and JSON parsing issues.
     
     Args:
         columns: List of column dictionaries
@@ -237,52 +238,97 @@ def enhance_comments_with_llm(columns: List[Dict], llm_endpoint: str) -> List[Di
     Returns:
         List of columns with enhanced comments
     """
+    BATCH_SIZE = 50  # Process 50 columns at a time
+
     # Helper to serialize dates and other objects
     def safe_json_default(obj):
         if hasattr(obj, 'isoformat'):
             return obj.isoformat()
         return str(obj)
-    
-    # Prepare simplified version for LLM
-    simplified_cols = []
-    for col in columns:
-        simplified_cols.append({
-            'col_name': col['column_name'],
-            'data_type': col['data_type'],
-            'comment': col.get('comment', ''),
-            'sample_values': col.get('sample_values', [])[:10] if 'sample_values' in col else []
-        })
-    
-    prompt = (
-        "You will receive a list of database columns in JSON format. "
-        "Your task is to improve the 'comment' field for each column by:\n"
-        "1. Making it more descriptive and informative\n"
-        "2. Using the data_type and sample_values as context\n"
-        "3. Explaining what the column represents in plain English\n\n"
-        f"{json.dumps(simplified_cols, indent=2, default=safe_json_default)}\n\n"
-        "Return a JSON array with the same structure, but add an 'enhanced_comment' field "
-        "with your improved description. Only return valid JSON, no explanations."
-    )
-    
-    try:
-        llm_result = spark.sql(
-            f"SELECT ai_query('{llm_endpoint}', ?) as result", 
-            [prompt]
-        ).collect()[0]['result']
-        
-        # Clean up response
-        llm_result_str = llm_result.replace('```json', '').replace('```', '').strip()
-        enhanced_cols = json.loads(llm_result_str)
-        
-        # Merge enhanced comments back
-        for i, col in enumerate(columns):
-            if i < len(enhanced_cols) and 'enhanced_comment' in enhanced_cols[i]:
-                col['enhanced_comment'] = enhanced_cols[i]['enhanced_comment']
-        
-        return columns
-    except Exception as e:
-        print(f"Error enhancing comments with LLM: {str(e)}")
-        return columns
+
+    print(f"  → Processing {len(columns)} columns in batches of {BATCH_SIZE}")
+
+    total_batches = (len(columns) + BATCH_SIZE - 1) // BATCH_SIZE
+    successful_batches = 0
+
+    for batch_idx in range(0, len(columns), BATCH_SIZE):
+        batch = columns[batch_idx:batch_idx+BATCH_SIZE]
+        batch_num = (batch_idx // BATCH_SIZE) + 1
+
+        print(f"    → Batch {batch_num}/{total_batches}: Processing columns {batch_idx+1}-{min(batch_idx+BATCH_SIZE, len(columns))}")
+
+        # Prepare simplified version for this batch
+        simplified_cols = []
+        for col in batch:
+            simplified_cols.append({
+                'col_name': col['column_name'],
+                'data_type': col['data_type'],
+                'comment': col.get('comment', ''),
+                'sample_values': col.get('sample_values', [])[:5] if 'sample_values' in col else []
+            })
+
+        prompt = (
+            f"You will receive {len(batch)} database columns in JSON format. "
+            "Your task is to improve the 'comment' field for each column by:\n"
+            "1. Making it more descriptive and informative\n"
+            "2. Using the data_type and sample_values as context\n"
+            "3. Explaining what the column represents in plain English\n"
+            "4. Classify the column into one of the following categories: categorical, measure, temporal, identifier, boolean, free_text, semi_structured, geospatial, foreign_key, or other\n\n"
+            f"{json.dumps(simplified_cols, indent=2, default=safe_json_default)}\n\n"
+            "Return a JSON array with the same structure, but add an 'enhanced_comment' field and a 'classification' field "
+            "with your improved description and classification. Only return valid JSON, no explanations."
+        )
+
+        try:
+            llm_result = spark.sql(
+                f"SELECT ai_query('{llm_endpoint}', ?) as result",
+                [prompt]
+            ).collect()[0]['result']
+
+            # Clean up response - remove markdown code blocks
+            llm_result_str = llm_result.replace('```json', '').replace('```', '').strip()
+
+            # Additional cleaning: find JSON array boundaries
+            start_idx = llm_result_str.find('[')
+            end_idx = llm_result_str.rfind(']')
+
+            if start_idx >= 0 and end_idx > start_idx:
+                llm_result_str = llm_result_str[start_idx:end_idx+1]
+
+            # Parse JSON
+            enhanced_cols = json.loads(llm_result_str)
+
+            # Merge enhanced comments back into original batch
+            for orig_col, enhanced_col in zip(batch, enhanced_cols):
+                if isinstance(enhanced_col, dict):
+                    if 'enhanced_comment' in enhanced_col:
+                        orig_col['enhanced_comment'] = enhanced_col['enhanced_comment']
+                    else:
+                        orig_col['enhanced_comment'] = orig_col.get('comment', '')
+
+                    if 'classification' in enhanced_col:
+                        orig_col['classification'] = enhanced_col['classification']
+                else:
+                    # Fallback to original comment
+                    orig_col['enhanced_comment'] = orig_col.get('comment', '')
+
+            successful_batches += 1
+            print(f"    ✓ Batch {batch_num}/{total_batches} completed")
+
+        except json.JSONDecodeError as je:
+            print(f"    ✗ Batch {batch_num}/{total_batches} JSON parse error at line {je.lineno}, column {je.colno}")
+            print(f"      Error context: {je.msg}")
+            # Keep original comments for this batch
+            for col in batch:
+                col['enhanced_comment'] = col.get('comment', '')
+        except Exception as e:
+            print(f"    ✗ Batch {batch_num}/{total_batches} failed: {str(e)}")
+            # Keep original comments for this batch
+            for col in batch:
+                col['enhanced_comment'] = col.get('comment', '')
+
+    print(f"  ✓ Column enhancement complete: {successful_batches}/{total_batches} batches successful")
+    return columns
 
 
 def synthesize_table_description(table_identifier: str, enriched_columns: List[Dict], llm_endpoint: str) -> str:
@@ -687,13 +733,14 @@ Metadata_json: {json.dumps(doc, default=json_serializer)}
                 col_name = col.get('column_name')
                 col_type = col.get('data_type')
                 enhanced_comment = col.get('enhanced_comment', col.get('comment', ''))
-                
+                classification = col.get('classification', '')
+
                 # Truncate long descriptions for overview
                 if len(enhanced_comment) > 300:
                     enhanced_comment = enhanced_comment[:300-3] + "..."
-                
-                column_lines.append(f"• {col_name} ({col_type}): {enhanced_comment}")
-                
+
+                column_lines.append(f"• {col_name} ({col_type}): {enhanced_comment} ({classification})")
+
                 # Track categorical fields with top values
                 if 'value_dictionary' in col and col['value_dictionary']:
                     top_values = list(col['value_dictionary'].keys())[:5]
@@ -723,9 +770,9 @@ Key Categorical Fields:
                 'table_name': table_name,
                 'column_name': None,
                 'searchable_content': table_overview_text,
-                'is_categorical': any('value_dictionary' in c for c in columns),
-                'is_temporal': any(any(t in c.get('data_type', '').lower() for t in ['date', 'time', 'timestamp']) for c in columns),
-                'is_identifier': any(any(k in c['column_name'].lower() for k in ['_id', 'id_']) for c in columns),
+                'is_categorical': any('categorical' in c.get('classification', '').lower() if c.get('classification') else 'value_dictionary' in c for c in columns),
+                'is_temporal': any('temporal' in c.get('classification', '').lower() if c.get('classification') else any(t in c.get('data_type', '').lower() for t in ['date', 'time', 'timestamp']) for c in columns),
+                'is_identifier': any('identifier' in c.get('classification', '').lower() if c.get('classification') else any(k in c['column_name'].lower() for k in ['_id', 'id_']) for c in columns),
                 'has_value_dictionary': any('value_dictionary' in c for c in columns),
                 'metadata_json': json.dumps({
                     'table_identifier': table_id,
@@ -745,9 +792,11 @@ Key Categorical Fields:
                 value_dict = col.get('value_dictionary', {})
                 
                 # Determine column characteristics
-                is_categorical = len(value_dict) > 0
-                is_temporal = any(t in col_type.lower() for t in ['date', 'time', 'timestamp'])
-                is_identifier = any(k in col_name.lower() for k in ['_id', 'id_'])
+                classification = col.get('classification', '').lower()
+
+                is_categorical = 'categorical' in classification if classification else len(value_dict) > 0
+                is_temporal = 'temporal' in classification if classification else any(t in col_type.lower() for t in ['date', 'time', 'timestamp'])
+                is_identifier = 'identifier' in classification if classification else any(k in col_name.lower() for k in ['_id', 'id_'])
                 has_value_dictionary = len(value_dict) > 0
                 
                 # Build column detail text
@@ -778,13 +827,16 @@ Top Values:
                 
                 # Add classification info
                 characteristics = []
-                if is_categorical:
-                    characteristics.append("categorical")
-                if is_temporal:
-                    characteristics.append("temporal")
-                if is_identifier:
-                    characteristics.append("identifier")
-                
+                if classification:
+                    characteristics.append(classification)
+                else:
+                    if is_categorical:
+                        characteristics.append("categorical")
+                    if is_temporal:
+                        characteristics.append("temporal")
+                    if is_identifier:
+                        characteristics.append("identifier")
+
                 if characteristics:
                     column_detail_text += f"""
 Classification: {', '.join(characteristics)}
