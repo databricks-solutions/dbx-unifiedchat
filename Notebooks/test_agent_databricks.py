@@ -56,16 +56,19 @@ import mlflow
 
 # DBTITLE 1,Load Configuration from YAML
 """
-Load configuration from dev_config.yaml for testing.
+Load configuration from YAML for testing.
 
-This uses the same YAML configuration that deployment uses,
-but loads it for testing purposes.
+config_file is injected by the DABs job via base_parameters (${var.config_file}).
+The default keeps the notebook runnable interactively without a job context.
 """
+
+# config_file widget: DABs passes dev_config.yaml (dev target) or prod_config.yaml (prod target)
+dbutils.widgets.text("config_file", "../dev_config.yaml")
+config_file = dbutils.widgets.get("config_file")
 
 from notebook_utils import load_deployment_config
 
-# Load dev_config.yaml via notebook_utils
-config_dict = load_deployment_config("../dev_config.yaml")
+config_dict = load_deployment_config(config_file)
 
 # Extract key configuration values
 CATALOG = config_dict['CATALOG']
@@ -92,7 +95,7 @@ SQL_WAREHOUSE_ID = config_dict['SQL_WAREHOUSE_ID']
 GENIE_SPACE_IDS = config_dict['GENIE_SPACE_IDS']
 
 print("="*80)
-print("CONFIGURATION LOADED FROM dev_config.yaml via notebook_utils")
+print(f"CONFIGURATION LOADED FROM {config_file} via notebook_utils")
 print("="*80)
 print(f"Catalog: {CATALOG}")
 print(f"Schema: {SCHEMA}")
@@ -188,7 +191,7 @@ print("✅ DATABRICKS TESTING COMPLETE")
 print("="*80)
 print("\nWhat was tested:")
 print("✓ Imports from src/multi_agent/")
-print("✓ Configuration loading from dev_config.yaml")
+print(f"✓ Configuration loading from {config_file}")
 print("✓ Agent graph construction")
 print("✓ ResponsesAgent wrapper initialization")
 print("✓ Single query execution via predict_stream")

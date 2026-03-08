@@ -1,0 +1,65 @@
+# Agent Deployment — Integration Test + Model Serving Deploy
+#
+# Run integration test only:
+#   databricks bundle run agent_integration_test         # dev
+#   databricks bundle run agent_integration_test -t prod # prod
+#
+# Run full deploy (validates then deploys):
+#   databricks bundle run agent_deploy         # dev
+#   databricks bundle run agent_deploy -t prod # prod
+#
+# config_file is resolved per target from databricks.yml:
+#   dev  → ../dev_config.yaml
+#   prod → ../prod_config.yaml
+#
+# Notebook paths use ../ because this file sits one level below the bundle root.
+
+resources:
+  jobs:
+    agent_integration_test:
+      name: multi_agent_integration_test
+      description: Standalone integration test — validates agent code before deployment
+      tags:
+        project: multi_agent_genie
+        pipeline: agent
+      tasks:
+        - task_key: test_agent
+          notebook_task:
+            notebook_path: ../Notebooks/test_agent_databricks.py
+            source: WORKSPACE
+            base_parameters:
+              config_file: ${var.config_file}
+          timeout_seconds: 1200
+
+    agent_deploy:
+      name: multi_agent_deploy
+      description: >-
+        Deploy agent to Model Serving: validates agent code, logs model to
+        MLflow, registers in Unity Catalog, and deploys to a serving endpoint.
+      tags:
+        project: multi_agent_genie
+        pipeline: agent
+      tasks:
+        # -------------------------------------------------------------------
+        # Task 1 — Validate agent code before deploying
+        # -------------------------------------------------------------------
+        - task_key: validate_agent
+          notebook_task:
+            notebook_path: ../Notebooks/test_agent_databricks.py
+            source: WORKSPACE
+            base_parameters:
+              config_file: ${var.config_file}
+          timeout_seconds: 1200
+
+        # -------------------------------------------------------------------
+        # Task 2 — Deploy to Model Serving (depends on Task 1)
+        # -------------------------------------------------------------------
+        - task_key: deploy_agent
+          depends_on:
+            - task_key: validate_agent
+          notebook_task:
+            notebook_path: ../Notebooks/deploy_agent.py
+            source: WORKSPACE
+            base_parameters:
+              config_file: ${var.config_file}
+          timeout_seconds: 1800
