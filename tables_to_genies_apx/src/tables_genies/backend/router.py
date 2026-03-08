@@ -429,7 +429,7 @@ async def list_enrichment_results():
             FROM serverless_dbx_unifiedchat_catalog.gold.enriched_table_metadata 
             WHERE enriched = true
             ORDER BY id DESC
-            LIMIT 100
+            LIMIT 1000
         """
         
         # Run blocking SDK call in thread pool
@@ -541,7 +541,7 @@ async def build_graph():
     _group_descriptions = None  # Invalidate cached descriptions so they regenerate for the new graph
     _add_graph_log("Starting LLM-powered GraphRAG graph build process...")
     
-    # Fetch full enriched documents with table descriptions
+        # Fetch full enriched documents with table descriptions
     _add_graph_log("Fetching full enrichment metadata from Unity Catalog...")
     
     try:
@@ -551,7 +551,7 @@ async def build_graph():
             FROM serverless_dbx_unifiedchat_catalog.gold.enriched_table_metadata 
             WHERE enriched = true
             ORDER BY id DESC
-            LIMIT 100
+            LIMIT 1000
         """
         
         def _fetch():

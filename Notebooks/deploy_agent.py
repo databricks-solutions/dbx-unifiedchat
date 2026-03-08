@@ -29,8 +29,13 @@ Original Super_Agent_hybrid.py (6,833 lines) archived in archive/ for reference.
 # COMMAND ----------
 
 # DBTITLE 1,Initialize ModelConfig and Load Environment Configurati ...
+# config_file is injected by the DABs job via base_parameters (${var.config_file}).
+# The default keeps the notebook runnable interactively without a job context.
+dbutils.widgets.text("config_file", "../prod_config.yaml")
+config_file = dbutils.widgets.get("config_file")
+
 from notebook_utils import load_deployment_config
-config_dict = load_deployment_config("../prod_config.yaml")
+config_dict = load_deployment_config(config_file)
 
 # Extract configuration values
 CATALOG = config_dict["CATALOG"]
