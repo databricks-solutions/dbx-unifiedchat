@@ -30,8 +30,10 @@ Original Super_Agent_hybrid.py (6,833 lines) archived in archive/ for reference.
 
 # DBTITLE 1,Initialize ModelConfig and Load Environment Configurati ...
 # config_file is injected by the DABs job via base_parameters (${var.config_file}).
-# The default keeps the notebook runnable interactively without a job context.
-dbutils.widgets.text("config_file", "../prod_config.yaml")
+# dev target  → ../dev_config.yaml
+# prod target → ../prod_config.yaml
+# Default is dev_config.yaml because the dev target is the default in databricks.yml.
+dbutils.widgets.text("config_file", "../dev_config.yaml")
 config_file = dbutils.widgets.get("config_file")
 
 from notebook_utils import load_deployment_config
@@ -66,7 +68,7 @@ SQL_WAREHOUSE_ID = config_dict["SQL_WAREHOUSE_ID"]
 UC_FUNCTION_NAMES = config_dict["UC_FUNCTION_NAMES"]
 
 print("="*80)
-print("CONFIGURATION LOADED FROM prod_config.yaml via notebook_utils")
+print(f"CONFIGURATION LOADED FROM {config_file} via notebook_utils")
 print("="*80)
 print(f"Catalog: {CATALOG}")
 print(f"Schema: {SCHEMA}")
@@ -273,7 +275,7 @@ client = DatabricksFunctionClient()
 set_uc_function_client(client)
 
 # Import the registration function from the centralized module
-from src.multi_agent.tools import register_uc_functions, check_uc_functions_exist
+from multi_agent.tools import register_uc_functions, check_uc_functions_exist
 
 # Register all UC functions using the centralized registration module
 result = register_uc_functions(
@@ -412,9 +414,11 @@ input_example = {
 }
 
 # Setup experiment path to be non-git folder with experiment ACLs and folder ACLs in place
+# Derive target name from config_file: "../dev_config.yaml" → "dev", "../prod_config.yaml" → "prod"
+_target = "dev" if "dev" in config_file else "prod"
 os.makedirs("/Workspace/Shared/dbx-unifiedchat/", exist_ok=True)
 mlflow.set_tracking_uri("databricks")  # usually already true in Databricks
-mlflow.set_experiment("/Shared/dbx-unifiedchat/prod-traces")
+mlflow.set_experiment(f"/Shared/dbx-unifiedchat/{_target}-traces")
 
 # Deploy with MLflow
 with mlflow.start_run():
@@ -439,7 +443,7 @@ with mlflow.start_run():
         code_paths=["../src/multi_agent"],  # 🎯 KEY: Package modular code
         input_example=input_example,
         resources=resources,
-        model_config="../prod_config.yaml",  # Production configuration
+        model_config=config_file,  # Injected by DABs: dev_config.yaml or prod_config.yaml
         pip_requirements=[
             f"databricks-sdk=={get_distribution('databricks-sdk').version}",
             f"databricks-sql-connector=={get_distribution('databricks-sql-connector').version}",
@@ -452,7 +456,7 @@ with mlflow.start_run():
         ]
     )
     print(f"✓ Model logged: {logged_agent_info.model_uri}")
-    print(f"✓ Configuration: prod_config.yaml")
+    print(f"✓ Configuration: {config_file}")
     print(f"✓ Modular code packaged from: ../src/multi_agent/")
 
 # Register to Unity Catalog
@@ -485,7 +489,7 @@ print("✅ DEPLOYMENT COMPLETE")
 print("="*80)
 print(f"Model: {UC_MODEL_NAME} v{uc_model_info.version}")
 print(f"Endpoint: {deployment_info.endpoint_name}")
-print(f"Configuration: prod_config.yaml (packaged with model)")
+print(f"Configuration: {config_file} (packaged with model)")
 print(f"Code: ../src/multi_agent/ (modular, {sum(1 for _ in os.walk('../src/multi_agent'))} modules)")
 print("\nMemory Features Enabled:")
 print("  ✓ Short-term: Multi-turn conversations via CheckpointSaver")

@@ -4,8 +4,8 @@
 #   export_genie_spaces
 #     → enrich_table_metadata
 #       → build_vector_search_index
-#           → validate_agent
-#               → deploy_agent
+#           → deploy_agent
+#               → validate_agent
 #
 # Use this when you want a single trigger for a complete ETL + deploy cycle.
 #
@@ -83,27 +83,27 @@ resources:
           timeout_seconds: 3600
 
         # -------------------------------------------------------------------
-        # Task 4 — Validate Agent Code (depends on Task 3)
+        # Task 4 — Deploy Agent to Model Serving (depends on Task 3)
+        # -------------------------------------------------------------------
+        - task_key: deploy_agent
+          depends_on:
+            - task_key: build_vector_search_index
+          notebook_task:
+            notebook_path: ../Notebooks/deploy_agent.py
+            source: WORKSPACE
+            base_parameters:
+              config_file: ${var.config_file}
+          timeout_seconds: 2400
+
+        # -------------------------------------------------------------------
+        # Task 5 — Validate Agent Code (depends on Task 4)
         # -------------------------------------------------------------------
         - task_key: validate_agent
           depends_on:
-            - task_key: build_vector_search_index
+            - task_key: deploy_agent
           notebook_task:
             notebook_path: ../Notebooks/test_agent_databricks.py
             source: WORKSPACE
             base_parameters:
               config_file: ${var.config_file}
           timeout_seconds: 1200
-
-        # -------------------------------------------------------------------
-        # Task 5 — Deploy Agent to Model Serving (depends on Task 4)
-        # -------------------------------------------------------------------
-        - task_key: deploy_agent
-          depends_on:
-            - task_key: validate_agent
-          notebook_task:
-            notebook_path: ../Notebooks/deploy_agent.py
-            source: WORKSPACE
-            base_parameters:
-              config_file: ${var.config_file}
-          timeout_seconds: 1800

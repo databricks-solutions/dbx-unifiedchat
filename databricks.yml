@@ -31,6 +31,11 @@ variables:
     description: Unity Catalog schema name
     default: multi_agent_genie
 
+  # SQL Warehouse ID (for Genie spaces and UC functions)
+  sql_warehouse_id:
+    description: SQL Warehouse ID used by Genie spaces and UC functions
+    default: a4ed2ccbda385db9
+
   # Genie Space IDs (comma-separated string for notebook widget)
   genie_space_ids:
     description: Comma-separated Genie space IDs
@@ -93,6 +98,7 @@ targets:
       catalog_name: serverless_dbx_unifiedchat_dev_catalog
       schema_name: multi_agent_genie
       genie_space_ids: "01f11b27d1121e2bb00d6ecd846b1988,01f11b27d23a1ab195fa7ba8efc06d13,01f11b27d3ea149694cf608c3d278673"
+      sql_warehouse_id: 78ad038820b88d95
       genie_exports_volume: serverless_dbx_unifiedchat_dev_catalog.multi_agent_genie.volume
       enriched_docs_table: serverless_dbx_unifiedchat_dev_catalog.multi_agent_genie.enriched_genie_docs
       llm_endpoint: databricks-claude-sonnet-4-5
@@ -113,6 +119,7 @@ targets:
       catalog_name: serverless_dbx_unifiedchat_catalog
       schema_name: multi_agent_genie
       genie_space_ids: "01f106e1239d14b28d6ab46f9c15e540,01f106e121e7173d8cf84bb80e842d6c,01f106e120b718e084598e92dcf14d4e"
+      sql_warehouse_id: a4ed2ccbda385db9
       genie_exports_volume: serverless_dbx_unifiedchat_catalog.multi_agent_genie.volume
       enriched_docs_table: serverless_dbx_unifiedchat_catalog.multi_agent_genie.enriched_genie_docs
       llm_endpoint: databricks-claude-sonnet-4-5
