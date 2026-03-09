@@ -17,7 +17,7 @@ from databricks.sdk import WorkspaceClient
 from databricks.sdk.core import Config
 from databricks.sdk.service.jobs import Task, NotebookTask, JobEnvironment, Source
 from databricks.sdk.service.compute import Environment
-from databricks.sdk.service.sql import StatementParameterListItem
+from databricks.sdk.service.sql import StatementParameterListItem, StatementState
 from databricks import sql
 import uuid
 import threading
@@ -222,17 +222,87 @@ async def get_selection():
 # ============================================================================
 
 # Configuration for enrichment job
+# Path is set via environment variable in app.yaml for deployed apps
+# Default points to merged folder location in Databricks Workspace
 ENRICHMENT_SCRIPT_PATH = os.getenv(
     "ENRICHMENT_SCRIPT_PATH", 
-    "/Workspace/Users/yang.yang@databricks.com/tables_to_genies/etl/enrich_tables_direct.py"
+    "/Workspace/Users/yang.yang@databricks.com/tables_to_genies_apx/src/tables_genies/etl/enrich_tables_direct.py"
 )
 
 @api.post("/enrichment/run", response_model=EnrichmentJobOut, operation_id="runEnrichment")
 async def run_enrichment(enrichment_in: EnrichmentRunIn):
     """Run table enrichment job on Databricks."""
     
-    # Prepare parameters for the job
-    table_fqns_str = ','.join(enrichment_in.table_fqns)
+    # Clean up old temporary tables (older than 24 hours)
+    def _cleanup_old_temp_tables():
+        try:
+            local_client = WorkspaceClient(config=config)
+            cleanup_stmt = """
+            DROP TABLE IF EXISTS serverless_dbx_unifiedchat_catalog.gold.temp_enrichment_tables_old;
+            -- Note: Individual temp tables are named with UUID suffixes
+            -- Manual cleanup may be needed for very old temp tables
+            """
+            local_client.statement_execution.execute_statement(
+                warehouse_id=warehouse_id,
+                statement=cleanup_stmt,
+                wait_timeout="10s"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to cleanup old temp tables: {e}")
+    
+    # Run cleanup in background (non-blocking)
+    try:
+        await asyncio.to_thread(_cleanup_old_temp_tables)
+    except:
+        pass  # Don't fail if cleanup fails
+    
+    # Generate unique run ID for this enrichment job
+    import uuid
+    run_uuid = str(uuid.uuid4())[:8]
+    
+    # Create temporary table with list of tables to enrich
+    # This avoids the 10KB parameter size limit when dealing with many tables
+    temp_table_name = f"serverless_dbx_unifiedchat_catalog.gold.temp_enrichment_tables_{run_uuid}"
+    
+    print(f"Creating temporary table with {len(enrichment_in.table_fqns)} tables: {temp_table_name}")
+    
+    # Write table list to temporary Delta table
+    def _write_temp_table():
+        local_client = WorkspaceClient(config=config)
+        
+        # Create SQL statement to create temp table with table list
+        tables_values = ', '.join([f"('{fqn}')" for fqn in enrichment_in.table_fqns])
+        
+        # Correct syntax: CREATE TABLE AS VALUES (without SELECT * FROM)
+        create_stmt = f"""
+        CREATE OR REPLACE TABLE {temp_table_name} AS
+        VALUES {tables_values} AS t(table_fqn)
+        """
+        
+        print(f"[Enrichment] Creating temp table with {len(enrichment_in.table_fqns)} tables")
+        print(f"[Enrichment] SQL preview: {create_stmt[:150]}...")
+        
+        response = local_client.statement_execution.execute_statement(
+            warehouse_id=warehouse_id,
+            statement=create_stmt,
+            wait_timeout="30s"
+        )
+        
+        # Check if statement succeeded
+        if response.status.state != StatementState.SUCCEEDED:
+            error_msg = response.status.error.message if response.status.error else "Unknown error"
+            print(f"[ERROR] Statement failed. State: {response.status.state}, Error: {error_msg}")
+            raise Exception(f"Failed to create temp table: {error_msg}")
+        
+        print(f"[Enrichment] ✓ Statement succeeded. State: {response.status.state}")
+        return response
+    
+    try:
+        response = await asyncio.to_thread(_write_temp_table)
+        print(f"✓ Created temporary table: {temp_table_name}")
+    except Exception as e:
+        print(f"[ERROR] Failed to create temp table: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create temp table: {str(e)}")
     
     # Job name for persistent job definition
     job_name = "Table Enrichment Job"
@@ -273,10 +343,11 @@ async def run_enrichment(enrichment_in: EnrichmentRunIn):
         print(f"Created job: {job_id}")
     
     # Run the job with notebook parameters
+    # Pass the temp table name instead of the full comma-separated list
     run_result = client.jobs.run_now(
         job_id=job_id,
         notebook_params={
-            "tables": table_fqns_str,
+            "table_list_table": temp_table_name,  # NEW: pass temp table name
             "sample_size": "20",
             "max_unique_values": "50",
             "llm_endpoint": "databricks-claude-sonnet-4-5",
@@ -358,7 +429,7 @@ async def list_enrichment_results():
             FROM serverless_dbx_unifiedchat_catalog.gold.enriched_table_metadata 
             WHERE enriched = true
             ORDER BY id DESC
-            LIMIT 100
+            LIMIT 1000
         """
         
         # Run blocking SDK call in thread pool
@@ -470,7 +541,7 @@ async def build_graph():
     _group_descriptions = None  # Invalidate cached descriptions so they regenerate for the new graph
     _add_graph_log("Starting LLM-powered GraphRAG graph build process...")
     
-    # Fetch full enriched documents with table descriptions
+        # Fetch full enriched documents with table descriptions
     _add_graph_log("Fetching full enrichment metadata from Unity Catalog...")
     
     try:
@@ -480,7 +551,7 @@ async def build_graph():
             FROM serverless_dbx_unifiedchat_catalog.gold.enriched_table_metadata 
             WHERE enriched = true
             ORDER BY id DESC
-            LIMIT 100
+            LIMIT 1000
         """
         
         def _fetch():
@@ -499,21 +570,13 @@ async def build_graph():
         
         _add_graph_log(f"Found {len(res.result.data_array)} enriched tables.")
         
-        # Import GraphRAG module
+        # Import GraphRAG module from new location
         import sys
         from pathlib import Path
         
         current_file = Path(__file__).resolve()
-        root_path = current_file.parents[5]
-        graphrag_path = root_path / "tables_to_genies" / "graphrag"
-        
-        if not graphrag_path.exists():
-            possible_roots = [Path.cwd(), Path.home() / "CursorProjects/KUMC_POC_hlsfieldtemp"]
-            for pr in possible_roots:
-                gp = pr / "tables_to_genies" / "graphrag"
-                if gp.exists():
-                    graphrag_path = gp
-                    break
+        # graphrag is now a sibling to backend/
+        graphrag_path = current_file.parent.parent / "graphrag"
         
         if not graphrag_path.exists():
             _add_graph_log(f"Error: GraphRAG path does not exist: {graphrag_path}", level="error")
