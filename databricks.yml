@@ -89,11 +89,10 @@ targets:
     workspace:
       host: https://fevm-serverless-dbx-unifiedchat-dev.cloud.databricks.com/
     variables:
-      variables:
-      # Production overrides for fevm-serverless-dbx-unifiedchat workspace
+      # dev overrides for dev workspace
       catalog_name: serverless_dbx_unifiedchat_dev_catalog
       schema_name: multi_agent_genie
-      genie_space_ids: "01f106e1239d14b28d6ab46f9c15e540,01f106e121e7173d8cf84bb80e842d6c,01f106e120b718e084598e92dcf14d4e"
+      genie_space_ids: "01f11b27d1121e2bb00d6ecd846b1988,01f11b27d23a1ab195fa7ba8efc06d13,01f11b27d3ea149694cf608c3d278673"
       genie_exports_volume: serverless_dbx_unifiedchat_dev_catalog.multi_agent_genie.volume
       enriched_docs_table: serverless_dbx_unifiedchat_dev_catalog.multi_agent_genie.enriched_genie_docs
       llm_endpoint: databricks-claude-sonnet-4-5
@@ -110,7 +109,7 @@ targets:
       # Auth: set DATABRICKS_TOKEN env var or use `databricks auth login`
       host: https://fevm-serverless-dbx-unifiedchat.cloud.databricks.com
     variables:
-      # Production overrides for fevm-serverless-dbx-unifiedchat workspace
+      # Production overrides for prod workspace
       catalog_name: serverless_dbx_unifiedchat_catalog
       schema_name: multi_agent_genie
       genie_space_ids: "01f106e1239d14b28d6ab46f9c15e540,01f106e121e7173d8cf84bb80e842d6c,01f106e120b718e084598e92dcf14d4e"
