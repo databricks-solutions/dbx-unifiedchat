@@ -31,23 +31,25 @@ dbutils.widgets.removeAll()
 
 dbutils.widgets.text("catalog_name", os.getenv("CATALOG_NAME", "yyang"))
 dbutils.widgets.text("schema_name", os.getenv("SCHEMA_NAME", "multi_agent_genie"))
-dbutils.widgets.text("genie_exports_volume", os.getenv("GENIE_EXPORTS_VOLUME", "yyang.multi_agent_genie.volume"))
-dbutils.widgets.text("enriched_docs_table", os.getenv("ENRICHED_DOCS_TABLE", "yyang.multi_agent_genie.enriched_genie_docs"))
+dbutils.widgets.text("volume_name", os.getenv("VOLUME_NAME", "volume"))
+dbutils.widgets.text("enriched_docs_table", os.getenv("ENRICHED_DOCS_TABLE", "enriched_genie_docs"))
 dbutils.widgets.text("llm_endpoint", os.getenv("LLM_ENDPOINT", "databricks-claude-sonnet-4-5"))
 dbutils.widgets.text("sample_size", os.getenv("SAMPLE_SIZE", "20"))
 dbutils.widgets.text("max_unique_values", os.getenv("MAX_UNIQUE_VALUES", "50"))
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
-genie_exports_volume = dbutils.widgets.get("genie_exports_volume")
-enriched_docs_table = dbutils.widgets.get("enriched_docs_table")
+volume_name = dbutils.widgets.get("volume_name")
+enriched_docs_table_short = dbutils.widgets.get("enriched_docs_table")
 llm_endpoint = dbutils.widgets.get("llm_endpoint")
 sample_size = int(dbutils.widgets.get("sample_size"))
 max_unique_values = int(dbutils.widgets.get("max_unique_values"))
 
+enriched_docs_table = f"{catalog_name}.{schema_name}.{enriched_docs_table_short}"
+
 print(f"Catalog: {catalog_name}")
 print(f"Schema: {schema_name}")
-print(f"Genie Exports Volume: {genie_exports_volume}")
+print(f"Volume: {volume_name}")
 print(f"Enriched Docs Table: {enriched_docs_table}")
 print(f"LLM Endpoint: {llm_endpoint}")
 print(f"Sample Size: {sample_size}")
@@ -547,7 +549,7 @@ def process_genie_space(space_json_path: str, enriched_docs_table: str) -> Dict[
 
 # DBTITLE 1,Process All Genie Spaces
 # Get all space.json files from the volume
-genie_exports_path = f"/Volumes/{genie_exports_volume.replace('.', '/')}/genie_exports"
+genie_exports_path = f"/Volumes/{catalog_name}/{schema_name}/{volume_name}/genie_exports"
 print(f"Looking for Genie exports in: {genie_exports_path}")
 
 import glob

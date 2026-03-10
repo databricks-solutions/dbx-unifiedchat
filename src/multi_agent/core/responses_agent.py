@@ -27,10 +27,10 @@ logger = logging.getLogger(__name__)
 
 #########################################################
 """
-Load configuration from dev_config.yaml for testing.
+Load configuration via ModelConfig.
 
-This uses the same YAML configuration that deployment uses,
-but loads it for testing purposes.
+At serving time, reads from the YAML baked into the model artifact.
+In notebooks, reads from the AGENT_CONFIG_FILE env var (set by notebook before import).
 """
 #########################################################
 # Lazy load config if not set

@@ -54,48 +54,57 @@ import mlflow
 
 # COMMAND ----------
 
-# DBTITLE 1,Load Configuration from YAML
-"""
-Load configuration from YAML for testing.
+# DBTITLE 1,Load Configuration from DABs Variables
+# All parameters are injected by DABs job via base_parameters.
+# databricks.yml is the single source of truth — no separate config YAMLs.
 
-config_file is injected by the DABs job via base_parameters (${var.config_file}).
-The default keeps the notebook runnable interactively without a job context.
-"""
+_defaults = {
+    "catalog_name": "yyang",
+    "schema_name": "multi_agent_genie",
+    "sql_warehouse_id": "a4ed2ccbda385db9",
+    "genie_space_ids": "01f106e1239d14b28d6ab46f9c15e540,01f106e121e7173d8cf84bb80e842d6c,01f106e120b718e084598e92dcf14d4e",
+    "volume_name": "volume",
+    "enriched_docs_table": "enriched_genie_docs",
+    "llm_endpoint": "databricks-claude-sonnet-4-5",
+    "llm_endpoint_clarification": "databricks-claude-haiku-4-5",
+    "llm_endpoint_planning": "databricks-claude-sonnet-4-5",
+    "llm_endpoint_sql_synthesis_table": "databricks-claude-sonnet-4-5",
+    "llm_endpoint_sql_synthesis_genie": "databricks-claude-sonnet-4-5",
+    "llm_endpoint_execution": "databricks-claude-haiku-4-5",
+    "llm_endpoint_summarize": "databricks-claude-haiku-4-5",
+    "sample_size": "20",
+    "max_unique_values": "20",
+    "vs_endpoint_name": "genie_multi_agent_vs",
+    "embedding_model": "databricks-gte-large-en",
+    "lakebase_instance_name": "multi-agent-genie-system-state-db",
+    "lakebase_embedding_endpoint": "databricks-gte-large-en",
+    "lakebase_embedding_dims": "1024",
+}
 
-# config_file widget: DABs passes dev_config.yaml (dev target) or prod_config.yaml (prod target)
-dbutils.widgets.text("config_file", "../dev_config.yaml")
-config_file = dbutils.widgets.get("config_file")
+for k, v in _defaults.items():
+    dbutils.widgets.text(k, v)
+
+widget_params = {k: dbutils.widgets.get(k) for k in _defaults}
 
 from notebook_utils import load_deployment_config
 
-config_dict = load_deployment_config(config_file)
+config_dict, config_yaml_path = load_deployment_config(widget_params)
 
-# Extract key configuration values
+# CRITICAL: set AGENT_CONFIG_FILE BEFORE importing agent code.
+# responses_agent.py calls get_config() at module load time.
+os.environ["AGENT_CONFIG_FILE"] = config_yaml_path
+
 CATALOG = config_dict['CATALOG']
 SCHEMA = config_dict['SCHEMA']
 TABLE_NAME = config_dict['TABLE_NAME']
 VECTOR_SEARCH_INDEX = config_dict['VECTOR_SEARCH_INDEX']
-
-# LLM Endpoints
 LLM_ENDPOINT_CLARIFICATION = config_dict['LLM_ENDPOINT_CLARIFICATION']
-LLM_ENDPOINT_PLANNING = config_dict['LLM_ENDPOINT_PLANNING']
-LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = config_dict['LLM_ENDPOINT_SQL_SYNTHESIS_TABLE']
-LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = config_dict['LLM_ENDPOINT_SQL_SYNTHESIS_GENIE']
-LLM_ENDPOINT_EXECUTION = config_dict['LLM_ENDPOINT_EXECUTION']
-LLM_ENDPOINT_SUMMARIZE = config_dict['LLM_ENDPOINT_SUMMARIZE']
-
-# Lakebase
 LAKEBASE_INSTANCE_NAME = config_dict['LAKEBASE_INSTANCE_NAME']
-EMBEDDING_ENDPOINT = config_dict['EMBEDDING_ENDPOINT']
-
-# SQL Warehouse
 SQL_WAREHOUSE_ID = config_dict['SQL_WAREHOUSE_ID']
-
-# Genie Spaces
 GENIE_SPACE_IDS = config_dict['GENIE_SPACE_IDS']
 
 print("="*80)
-print(f"CONFIGURATION LOADED FROM {config_file} via notebook_utils")
+print("CONFIGURATION LOADED FROM databricks.yml (via DABs base_parameters)")
 print("="*80)
 print(f"Catalog: {CATALOG}")
 print(f"Schema: {SCHEMA}")
@@ -191,7 +200,7 @@ print("✅ DATABRICKS TESTING COMPLETE")
 print("="*80)
 print("\nWhat was tested:")
 print("✓ Imports from src/multi_agent/")
-print(f"✓ Configuration loading from {config_file}")
+print(f"✓ Configuration loading from databricks.yml (via DABs)")
 print("✓ Agent graph construction")
 print("✓ ResponsesAgent wrapper initialization")
 print("✓ Single query execution via predict_stream")

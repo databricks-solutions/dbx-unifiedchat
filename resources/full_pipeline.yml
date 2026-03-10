@@ -57,7 +57,7 @@ resources:
             base_parameters:
               catalog_name: ${var.catalog_name}
               schema_name: ${var.schema_name}
-              genie_exports_volume: ${var.genie_exports_volume}
+              volume_name: ${var.volume_name}
               enriched_docs_table: ${var.enriched_docs_table}
               llm_endpoint: ${var.llm_endpoint}
               sample_size: ${var.sample_size}
@@ -92,7 +92,30 @@ resources:
             notebook_path: ../Notebooks/deploy_agent.py
             source: WORKSPACE
             base_parameters:
-              config_file: ${var.config_file}
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+              sql_warehouse_id: ${var.sql_warehouse_id}
+              genie_space_ids: ${var.genie_space_ids}
+              volume_name: ${var.volume_name}
+              enriched_docs_table: ${var.enriched_docs_table}
+              llm_endpoint: ${var.llm_endpoint}
+              llm_endpoint_clarification: ${var.llm_endpoint_clarification}
+              llm_endpoint_planning: ${var.llm_endpoint_planning}
+              llm_endpoint_sql_synthesis_table: ${var.llm_endpoint_sql_synthesis_table}
+              llm_endpoint_sql_synthesis_genie: ${var.llm_endpoint_sql_synthesis_genie}
+              llm_endpoint_execution: ${var.llm_endpoint_execution}
+              llm_endpoint_summarize: ${var.llm_endpoint_summarize}
+              sample_size: ${var.sample_size}
+              max_unique_values: ${var.max_unique_values}
+              vs_endpoint_name: ${var.vs_endpoint_name}
+              embedding_model: ${var.embedding_model}
+              lakebase_instance_name: ${var.lakebase_instance_name}
+              lakebase_embedding_endpoint: ${var.lakebase_embedding_endpoint}
+              lakebase_embedding_dims: ${var.lakebase_embedding_dims}
+              model_name: ${var.model_name}
+              endpoint_name: ${var.endpoint_name}
+              workload_size: ${var.workload_size}
+              scale_to_zero: ${var.scale_to_zero}
           timeout_seconds: 2400
 
         # -------------------------------------------------------------------
@@ -105,5 +128,24 @@ resources:
             notebook_path: ../Notebooks/test_agent_databricks.py
             source: WORKSPACE
             base_parameters:
-              config_file: ${var.config_file}
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+              sql_warehouse_id: ${var.sql_warehouse_id}
+              genie_space_ids: ${var.genie_space_ids}
+              volume_name: ${var.volume_name}
+              enriched_docs_table: ${var.enriched_docs_table}
+              llm_endpoint: ${var.llm_endpoint}
+              llm_endpoint_clarification: ${var.llm_endpoint_clarification}
+              llm_endpoint_planning: ${var.llm_endpoint_planning}
+              llm_endpoint_sql_synthesis_table: ${var.llm_endpoint_sql_synthesis_table}
+              llm_endpoint_sql_synthesis_genie: ${var.llm_endpoint_sql_synthesis_genie}
+              llm_endpoint_execution: ${var.llm_endpoint_execution}
+              llm_endpoint_summarize: ${var.llm_endpoint_summarize}
+              sample_size: ${var.sample_size}
+              max_unique_values: ${var.max_unique_values}
+              vs_endpoint_name: ${var.vs_endpoint_name}
+              embedding_model: ${var.embedding_model}
+              lakebase_instance_name: ${var.lakebase_instance_name}
+              lakebase_embedding_endpoint: ${var.lakebase_embedding_endpoint}
+              lakebase_embedding_dims: ${var.lakebase_embedding_dims}
           timeout_seconds: 1200

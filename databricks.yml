@@ -20,10 +20,10 @@ include:
   - resources/*.yml
 
 # ---------------------------------------------------------------------------
-# Variables — parameterise everything, override per target
+# Variables — single source of truth for ALL configuration
 # ---------------------------------------------------------------------------
 variables:
-  # Unity Catalog
+  # ---- Unity Catalog ----
   catalog_name:
     description: Unity Catalog catalog name
     default: yyang
@@ -31,36 +31,51 @@ variables:
     description: Unity Catalog schema name
     default: multi_agent_genie
 
-  # SQL Warehouse ID (for Genie spaces and UC functions)
+  # ---- SQL Warehouse ----
   sql_warehouse_id:
     description: SQL Warehouse ID used by Genie spaces and UC functions
     default: a4ed2ccbda385db9
 
-  # Genie Space IDs (comma-separated string for notebook widget)
+  # ---- Genie Space IDs (comma-separated string) ----
   genie_space_ids:
     description: Comma-separated Genie space IDs
     default: "01f106e1239d14b28d6ab46f9c15e540,01f106e121e7173d8cf84bb80e842d6c,01f106e120b718e084598e92dcf14d4e"
 
-  # Volume / table names
+  # ---- Volume / table names (short names — FQ derived at runtime) ----
   volume_name:
-    description: UC Volume name for Genie exports
+    description: UC Volume name for Genie exports (short name)
     default: volume
-  genie_exports_volume:
-    description: Fully-qualified UC volume for Genie exports
-    default: yyang.multi_agent_genie.volume
   enriched_docs_table:
-    description: Fully-qualified enriched docs delta table
-    default: yyang.multi_agent_genie.enriched_genie_docs
+    description: Enriched docs delta table (short name, FQ = catalog.schema.this)
+    default: enriched_genie_docs
   source_table:
-    description: Source chunks table name (relative to catalog.schema)
+    description: Source chunks table name (short name, FQ = catalog.schema.this)
     default: enriched_genie_docs_chunks
 
-  # LLM
+  # ---- LLM Endpoints ----
   llm_endpoint:
-    description: LLM model serving endpoint for metadata enrichment
+    description: Default/fallback LLM endpoint for metadata enrichment
     default: databricks-claude-sonnet-4-5
+  llm_endpoint_clarification:
+    description: LLM endpoint for clarification agent
+    default: databricks-claude-haiku-4-5
+  llm_endpoint_planning:
+    description: LLM endpoint for planning agent
+    default: databricks-claude-sonnet-4-5
+  llm_endpoint_sql_synthesis_table:
+    description: LLM endpoint for SQL synthesis (table route)
+    default: databricks-claude-sonnet-4-5
+  llm_endpoint_sql_synthesis_genie:
+    description: LLM endpoint for SQL synthesis (genie route)
+    default: databricks-claude-sonnet-4-5
+  llm_endpoint_execution:
+    description: LLM endpoint for execution agent
+    default: databricks-claude-haiku-4-5
+  llm_endpoint_summarize:
+    description: LLM endpoint for summarize agent
+    default: databricks-claude-haiku-4-5
 
-  # Enrichment tuning
+  # ---- Enrichment tuning ----
   sample_size:
     description: Number of sample rows per column
     default: "20"
@@ -68,7 +83,7 @@ variables:
     description: Max unique values for value dictionaries
     default: "20"
 
-  # Vector Search
+  # ---- Vector Search ----
   vs_endpoint_name:
     description: Vector Search endpoint name
     default: genie_multi_agent_vs
@@ -79,10 +94,30 @@ variables:
     description: VS index pipeline type (TRIGGERED or CONTINUOUS)
     default: TRIGGERED
 
-  # Agent config file — passed as notebook widget to deploy_agent.py
-  config_file:
-    description: Path to agent config YAML (relative to notebook workspace location)
-    default: "../dev_config.yaml"
+  # ---- Lakebase (state management) ----
+  lakebase_instance_name:
+    description: Lakebase instance for agent state (checkpoints + store)
+    default: multi-agent-genie-system-state-db
+  lakebase_embedding_endpoint:
+    description: Embedding endpoint for Lakebase store semantic search
+    default: databricks-gte-large-en
+  lakebase_embedding_dims:
+    description: Embedding dimensions for Lakebase store
+    default: "1024"
+
+  # ---- Model Serving ----
+  model_name:
+    description: UC model name suffix (FQ = catalog.schema.this)
+    default: super_agent_hybrid
+  endpoint_name:
+    description: Model Serving endpoint name
+    default: multi-agent-genie-endpoint
+  workload_size:
+    description: Model Serving workload size
+    default: Small
+  scale_to_zero:
+    description: Whether to enable scale-to-zero on the endpoint
+    default: "false"
 
 # ---------------------------------------------------------------------------
 # Targets — dev & prod
@@ -94,41 +129,23 @@ targets:
     workspace:
       host: https://fevm-serverless-dbx-unifiedchat-dev.cloud.databricks.com/
     variables:
-      # dev overrides for dev workspace
       catalog_name: serverless_dbx_unifiedchat_dev_catalog
       schema_name: multi_agent_genie
-      genie_space_ids: "01f11b27d1121e2bb00d6ecd846b1988,01f11b27d23a1ab195fa7ba8efc06d13,01f11b27d3ea149694cf608c3d278673"
       sql_warehouse_id: 78ad038820b88d95
-      genie_exports_volume: serverless_dbx_unifiedchat_dev_catalog.multi_agent_genie.volume
-      enriched_docs_table: serverless_dbx_unifiedchat_dev_catalog.multi_agent_genie.enriched_genie_docs
-      llm_endpoint: databricks-claude-sonnet-4-5
-      sample_size: "20"
-      max_unique_values: "20"
-      vs_endpoint_name: genie_multi_agent_vs
-      embedding_model: databricks-gte-large-en
-      pipeline_type: TRIGGERED
-      config_file: "../dev_config.yaml"
+      genie_space_ids: "01f11b27d1121e2bb00d6ecd846b1988,01f11b27d23a1ab195fa7ba8efc06d13,01f11b27d3ea149694cf608c3d278673"
+      model_name: super_agent_hybrid
+      endpoint_name: multi-agent-genie-endpoint-dev
 
   prod:
     workspace:
-      # Deployment target — matches .env TARGET_DATABRICKS_HOST
-      # Auth: set DATABRICKS_TOKEN env var or use `databricks auth login`
       host: https://fevm-serverless-dbx-unifiedchat.cloud.databricks.com
     variables:
-      # Production overrides for prod workspace
       catalog_name: serverless_dbx_unifiedchat_catalog
       schema_name: multi_agent_genie
-      genie_space_ids: "01f106e1239d14b28d6ab46f9c15e540,01f106e121e7173d8cf84bb80e842d6c,01f106e120b718e084598e92dcf14d4e"
       sql_warehouse_id: a4ed2ccbda385db9
-      genie_exports_volume: serverless_dbx_unifiedchat_catalog.multi_agent_genie.volume
-      enriched_docs_table: serverless_dbx_unifiedchat_catalog.multi_agent_genie.enriched_genie_docs
-      llm_endpoint: databricks-claude-sonnet-4-5
-      sample_size: "20"
-      max_unique_values: "20"
-      vs_endpoint_name: genie_multi_agent_vs
-      embedding_model: databricks-gte-large-en
-      pipeline_type: TRIGGERED
-      config_file: "../prod_config.yaml"
+      genie_space_ids: "01f106e1239d14b28d6ab46f9c15e540,01f106e121e7173d8cf84bb80e842d6c,01f106e120b718e084598e92dcf14d4e"
+      model_name: super_agent_hybrid
+      endpoint_name: multi-agent-genie-endpoint
 
 sync:
   exclude:

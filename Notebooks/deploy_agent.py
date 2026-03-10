@@ -1,12 +1,13 @@
 # Databricks notebook source
 # DBTITLE 1,Deploy Multi-Agent System to Model Serving
 """
-Simplified deployment notebook using modular code from src/multi_agent/.
+Deployment notebook using modular code from src/multi_agent/.
 
 This notebook:
-1. Loads configuration from prod_config.yaml
-2. Imports modular agent code from ../src/multi_agent/
-3. Deploys to Model Serving using MLflow with code_paths parameter
+1. Receives ALL configuration from DABs base_parameters (databricks.yml is single source of truth)
+2. Generates a temp config YAML for MLflow ModelConfig
+3. Imports modular agent code from ../src/multi_agent/
+4. Deploys to Model Serving using MLflow with code_paths parameter
 
 Original Super_Agent_hybrid.py (6,833 lines) archived in archive/ for reference.
 """
@@ -28,47 +29,75 @@ Original Super_Agent_hybrid.py (6,833 lines) archived in archive/ for reference.
 
 # COMMAND ----------
 
-# DBTITLE 1,Initialize ModelConfig and Load Environment Configurati ...
-# config_file is injected by the DABs job via base_parameters (${var.config_file}).
-# dev target  → ../dev_config.yaml
-# prod target → ../prod_config.yaml
-# Default is dev_config.yaml because the dev target is the default in databricks.yml.
-dbutils.widgets.text("config_file", "../dev_config.yaml")
-config_file = dbutils.widgets.get("config_file")
+# DBTITLE 1,Load Configuration from DABs Variables
+# All parameters are injected by DABs job via base_parameters.
+# databricks.yml is the single source of truth — no separate config YAMLs.
+import os
+
+_defaults = {
+    "catalog_name": "yyang",
+    "schema_name": "multi_agent_genie",
+    "sql_warehouse_id": "a4ed2ccbda385db9",
+    "genie_space_ids": "01f106e1239d14b28d6ab46f9c15e540,01f106e121e7173d8cf84bb80e842d6c,01f106e120b718e084598e92dcf14d4e",
+    "volume_name": "volume",
+    "enriched_docs_table": "enriched_genie_docs",
+    "llm_endpoint": "databricks-claude-sonnet-4-5",
+    "llm_endpoint_clarification": "databricks-claude-haiku-4-5",
+    "llm_endpoint_planning": "databricks-claude-sonnet-4-5",
+    "llm_endpoint_sql_synthesis_table": "databricks-claude-sonnet-4-5",
+    "llm_endpoint_sql_synthesis_genie": "databricks-claude-sonnet-4-5",
+    "llm_endpoint_execution": "databricks-claude-haiku-4-5",
+    "llm_endpoint_summarize": "databricks-claude-haiku-4-5",
+    "sample_size": "20",
+    "max_unique_values": "20",
+    "vs_endpoint_name": "genie_multi_agent_vs",
+    "embedding_model": "databricks-gte-large-en",
+    "lakebase_instance_name": "multi-agent-genie-system-state-db",
+    "lakebase_embedding_endpoint": "databricks-gte-large-en",
+    "lakebase_embedding_dims": "1024",
+    "model_name": "super_agent_hybrid",
+    "endpoint_name": "multi-agent-genie-endpoint",
+    "workload_size": "Small",
+    "scale_to_zero": "true",
+}
+
+for k, v in _defaults.items():
+    dbutils.widgets.text(k, v)
+
+widget_params = {k: dbutils.widgets.get(k) for k in _defaults}
 
 from notebook_utils import load_deployment_config
-config_dict = load_deployment_config(config_file)
+config_dict, config_yaml_path = load_deployment_config(widget_params)
+
+# Set AGENT_CONFIG_FILE so config.py can find the generated YAML when agent code is imported
+os.environ["AGENT_CONFIG_FILE"] = config_yaml_path
 
 # Extract configuration values
 CATALOG = config_dict["CATALOG"]
 SCHEMA = config_dict["SCHEMA"]
 TABLE_NAME = config_dict["TABLE_NAME"]
 VECTOR_SEARCH_INDEX = config_dict["VECTOR_SEARCH_INDEX"]
-
-# LLM Endpoints - Diversified by Agent Role
 LLM_ENDPOINT_CLARIFICATION = config_dict["LLM_ENDPOINT_CLARIFICATION"]
 LLM_ENDPOINT_PLANNING = config_dict["LLM_ENDPOINT_PLANNING"]
 LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = config_dict["LLM_ENDPOINT_SQL_SYNTHESIS_TABLE"]
 LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = config_dict["LLM_ENDPOINT_SQL_SYNTHESIS_GENIE"]
 LLM_ENDPOINT_EXECUTION = config_dict["LLM_ENDPOINT_EXECUTION"]
 LLM_ENDPOINT_SUMMARIZE = config_dict["LLM_ENDPOINT_SUMMARIZE"]
-
-# Lakebase configuration for state management
 LAKEBASE_INSTANCE_NAME = config_dict["LAKEBASE_INSTANCE_NAME"]
 EMBEDDING_ENDPOINT = config_dict["EMBEDDING_ENDPOINT"]
 EMBEDDING_DIMS = config_dict["EMBEDDING_DIMS"]
-
-# Genie space IDs
 GENIE_SPACE_IDS = config_dict["GENIE_SPACE_IDS"]
-
-# SQL Warehouse ID (required for SQLExecutionAgent)
 SQL_WAREHOUSE_ID = config_dict["SQL_WAREHOUSE_ID"]
-
-# UC Functions
 UC_FUNCTION_NAMES = config_dict["UC_FUNCTION_NAMES"]
 
+# Deploy-time settings (read directly from widgets, not baked into model)
+MODEL_NAME = widget_params["model_name"]
+ENDPOINT_NAME = widget_params["endpoint_name"]
+WORKLOAD_SIZE = widget_params["workload_size"]
+SCALE_TO_ZERO = widget_params["scale_to_zero"].lower() == "true"
+
 print("="*80)
-print(f"CONFIGURATION LOADED FROM {config_file} via notebook_utils")
+print("CONFIGURATION LOADED FROM databricks.yml (via DABs base_parameters)")
 print("="*80)
 print(f"Catalog: {CATALOG}")
 print(f"Schema: {SCHEMA}")
@@ -76,7 +105,12 @@ print(f"Vector Search Index: {VECTOR_SEARCH_INDEX}")
 print(f"SQL Warehouse ID: {SQL_WAREHOUSE_ID}")
 print(f"Genie Spaces: {len(GENIE_SPACE_IDS)} spaces")
 print(f"Lakebase Instance: {LAKEBASE_INSTANCE_NAME}")
-print("\nLLM Endpoints (Diversified by Agent):")
+print(f"\nDeploy Settings:")
+print(f"  Model Name: {CATALOG}.{SCHEMA}.{MODEL_NAME}")
+print(f"  Endpoint: {ENDPOINT_NAME}")
+print(f"  Workload Size: {WORKLOAD_SIZE}")
+print(f"  Scale to Zero: {SCALE_TO_ZERO}")
+print(f"\nLLM Endpoints (Diversified by Agent):")
 print(f"  Clarification: {LLM_ENDPOINT_CLARIFICATION}")
 print(f"  Planning: {LLM_ENDPOINT_PLANNING}")
 print(f"  SQL Synthesis Table: {LLM_ENDPOINT_SQL_SYNTHESIS_TABLE}")
@@ -84,7 +118,6 @@ print(f"  SQL Synthesis Genie: {LLM_ENDPOINT_SQL_SYNTHESIS_GENIE}")
 print(f"  Execution: {LLM_ENDPOINT_EXECUTION}")
 print(f"  Summarize: {LLM_ENDPOINT_SUMMARIZE}")
 print("="*80)
-print("✓ All dependencies imported successfully (including memory support)")
 
 
 # COMMAND ----------
@@ -413,11 +446,10 @@ input_example = {
     "context": {"conversation_id": "sess-001", "user_id": "user@example.com"}
 }
 
-# Setup experiment path to be non-git folder with experiment ACLs and folder ACLs in place
-# Derive target name from config_file: "../dev_config.yaml" → "dev", "../prod_config.yaml" → "prod"
-_target = "dev" if "dev" in config_file else "prod"
+# Setup experiment path — derive target from endpoint name suffix
+_target = "dev" if ENDPOINT_NAME.endswith("-dev") else "prod"
 os.makedirs("/Workspace/Shared/dbx-unifiedchat/", exist_ok=True)
-mlflow.set_tracking_uri("databricks")  # usually already true in Databricks
+mlflow.set_tracking_uri("databricks")
 mlflow.set_experiment(f"/Shared/dbx-unifiedchat/{_target}-traces")
 
 # Deploy with MLflow
@@ -443,7 +475,7 @@ with mlflow.start_run():
         code_paths=["../src/multi_agent"],  # 🎯 KEY: Package modular code
         input_example=input_example,
         resources=resources,
-        model_config=config_file,  # Injected by DABs: dev_config.yaml or prod_config.yaml
+        model_config=config_yaml_path,  # Auto-generated from DABs variables
         pip_requirements=[
             f"databricks-sdk=={get_distribution('databricks-sdk').version}",
             f"databricks-sql-connector=={get_distribution('databricks-sql-connector').version}",
@@ -456,12 +488,12 @@ with mlflow.start_run():
         ]
     )
     print(f"✓ Model logged: {logged_agent_info.model_uri}")
-    print(f"✓ Configuration: {config_file}")
+    print(f"✓ Configuration: {config_yaml_path} (auto-generated from DABs variables)")
     print(f"✓ Modular code packaged from: ../src/multi_agent/")
 
 # Register to Unity Catalog
 mlflow.set_registry_uri("databricks-uc")
-UC_MODEL_NAME = f"{CATALOG}.{SCHEMA}.super_agent_hybrid"
+UC_MODEL_NAME = f"{CATALOG}.{SCHEMA}.{MODEL_NAME}"
 
 uc_model_info = mlflow.register_model(
     model_uri=logged_agent_info.model_uri,
@@ -479,8 +511,9 @@ import os
 deployment_info = agents.deploy(
     UC_MODEL_NAME,
     uc_model_info.version,
-    scale_to_zero=True,      # Cost optimization
-    workload_size="Small",   # Start small, can scale up later
+    endpoint_name=ENDPOINT_NAME,
+    scale_to_zero=SCALE_TO_ZERO,
+    workload_size=WORKLOAD_SIZE,
 )
 
 print(f"✓ Deployed to Model Serving: {deployment_info.endpoint_name}")
@@ -489,7 +522,7 @@ print("✅ DEPLOYMENT COMPLETE")
 print("="*80)
 print(f"Model: {UC_MODEL_NAME} v{uc_model_info.version}")
 print(f"Endpoint: {deployment_info.endpoint_name}")
-print(f"Configuration: {config_file} (packaged with model)")
+print(f"Configuration: databricks.yml (auto-generated YAML packaged with model)")
 print(f"Code: ../src/multi_agent/ (modular, {sum(1 for _ in os.walk('../src/multi_agent'))} modules)")
 print("\nMemory Features Enabled:")
 print("  ✓ Short-term: Multi-turn conversations via CheckpointSaver")
@@ -585,10 +618,10 @@ print(f"  URI: {logged_agent_info.model_uri}")
 
 print(f"\n🚀 Endpoint:")
 print(f"  Name: {deployment_info.endpoint_name}")
-print(f"  Workload: Small (scale-to-zero enabled)")
+print(f"  Workload: {WORKLOAD_SIZE} (scale-to-zero={'enabled' if SCALE_TO_ZERO else 'disabled'})")
 
 print(f"\n⚙️ Configuration:")
-print(f"  Source: prod_config.yaml")
+print(f"  Source: databricks.yml (single source of truth)")
 print(f"  Catalog: {CATALOG}")
 print(f"  Schema: {SCHEMA}")
 print(f"  Genie Spaces: {len(GENIE_SPACE_IDS)}")
@@ -663,7 +696,7 @@ print("="*80)
 # MAGIC - `agent.py`: MLflow wrapper (imports from src/multi_agent/)
 # MAGIC - `test_agent_databricks.py`: Test before deploying
 # MAGIC - `src/multi_agent/`: All agent code (single source of truth)
-# MAGIC - `prod_config.yaml`: Production configuration
+# MAGIC - `databricks.yml`: Single source of truth for all configuration
 # MAGIC - `archive/Super_Agent_hybrid_original.py`: Original 6,833-line version (for reference)
 # MAGIC
 # MAGIC ### Documentation

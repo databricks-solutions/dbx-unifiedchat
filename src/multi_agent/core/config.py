@@ -107,42 +107,25 @@ class TableMetadataConfig:
     """Table metadata enrichment configuration."""
     sample_size: int
     max_unique_values: int
-    genie_exports_volume: str
+    volume_name: str
     enriched_docs_table: str
     genie_space_ids: list[str]
     sql_warehouse_id: str
     
     @classmethod
     def from_env(cls, uc_config: UnityCatalogConfig) -> 'TableMetadataConfig':
-        """
-        Load configuration from environment variables.
-        
-        ENVIRONMENT-SPECIFIC CONFIGURATION:
-        - Development: Set SQL_WAREHOUSE_ID in .env file
-        - Production: Set SQL_WAREHOUSE_ID via Model Serving endpoint environment variables
-          (or keep in .env if same warehouse used for both)
-        
-        Get SQL Warehouse ID from:
-        - SQL Warehouses UI → Click warehouse → Copy ID from URL or Details
-        - Format: alphanumeric string (e.g., '148ccb90800933a1')
-        """
-        default_volume = f"{uc_config.full_schema_name}.volume"
-        default_table = f"{uc_config.full_schema_name}.enriched_genie_docs"
-        
-        # Parse Genie Space IDs from environment
-        # Support both GENIE_SPACE_IDS and legacy genie_ids for backward compatibility
+        """Load configuration from environment variables."""
         default_space_ids = "01f072dbd668159d99934dfd3b17f544,01f08f4d1f5f172ea825ec8c9a3c6064,01f073c5476313fe8f51966e3ce85bd7,01f07795f6981dc4a99d62c9fc7c2caa,01f08a9fd9ca125a986d01c1a7a5b2fe"
         space_ids_str = os.getenv("GENIE_SPACE_IDS") or os.getenv("genie_ids", default_space_ids)
         space_ids = [sid.strip() for sid in space_ids_str.split(",") if sid.strip()]
         
-        # SQL Warehouse ID - required for SQLExecutionAgent
         sql_warehouse_id = os.getenv("SQL_WAREHOUSE_ID", "").strip()
         
         return cls(
             sample_size=int(os.getenv("SAMPLE_SIZE", "100")),
             max_unique_values=int(os.getenv("MAX_UNIQUE_VALUES", "50")),
-            genie_exports_volume=os.getenv("GENIE_EXPORTS_VOLUME", default_volume),
-            enriched_docs_table=os.getenv("ENRICHED_DOCS_TABLE", default_table),
+            volume_name=os.getenv("VOLUME_NAME", "volume"),
+            enriched_docs_table=os.getenv("ENRICHED_DOCS_TABLE", "enriched_genie_docs"),
             genie_space_ids=space_ids,
             sql_warehouse_id=sql_warehouse_id,
         )
@@ -296,7 +279,7 @@ class AgentConfig:
         print(f"\nTable Metadata:")
         print(f"  Sample Size: {self.table_metadata.sample_size}")
         print(f"  Max Unique Values: {self.table_metadata.max_unique_values}")
-        print(f"  Exports Volume: {self.table_metadata.genie_exports_volume}")
+        print(f"  Volume Name: {self.table_metadata.volume_name}")
         print(f"  Enriched Docs Table: {self.table_metadata.enriched_docs_table}")
         print(f"  SQL Warehouse ID: {self.table_metadata.sql_warehouse_id}")
         print(f"  Genie Space IDs: {len(self.table_metadata.genie_space_ids)} spaces")
@@ -346,10 +329,10 @@ def get_config(reload: bool = False) -> AgentConfig:
             print("Detected Databricks environment. Attempting to load configuration via ModelConfig...")
             try:
                 from mlflow.models import ModelConfig
-                # Note: ModelConfig uses dev_config.yaml for dev in databricks workspace or prod_config.yaml when deployed or explicitly passed
-                model_config = ModelConfig(development_config="../dev_config.yaml")
+                # Priority: AGENT_CONFIG_FILE env var (set by notebooks) → baked model config (serving)
+                dev_config_path = os.environ.get("AGENT_CONFIG_FILE", "/tmp/agent_config.yaml")
+                model_config = ModelConfig(development_config=dev_config_path)
                 
-                # Map model_config keys to environment variables so from_env() works
                 mapping = {
                     "catalog_name": "CATALOG_NAME",
                     "schema_name": "SCHEMA_NAME",
@@ -365,14 +348,13 @@ def get_config(reload: bool = False) -> AgentConfig:
                     "lakebase_embedding_dims": "LAKEBASE_EMBEDDING_DIMS",
                     "genie_space_ids": "GENIE_SPACE_IDS",
                     "sql_warehouse_id": "SQL_WAREHOUSE_ID",
-                    "vector_search_function": "VECTOR_SEARCH_FUNCTION",
                     "vs_endpoint_name": "VS_ENDPOINT_NAME",
                     "embedding_model": "EMBEDDING_MODEL",
                     "pipeline_type": "PIPELINE_TYPE",
                     "sample_size": "SAMPLE_SIZE",
                     "max_unique_values": "MAX_UNIQUE_VALUES",
-                    "genie_exports_volume": "GENIE_EXPORTS_VOLUME",
                     "enriched_docs_table": "ENRICHED_DOCS_TABLE",
+                    "volume_name": "VOLUME_NAME",
                     "model_name": "MODEL_NAME",
                     "endpoint_name": "ENDPOINT_NAME",
                     "workload_size": "WORKLOAD_SIZE",
@@ -391,7 +373,6 @@ def get_config(reload: bool = False) -> AgentConfig:
                 if reload:
                     load_dotenv(override=True)
         else:
-            # Reload .env file if reloading (override existing env vars)
             if reload:
                 load_dotenv(override=True)
                 
