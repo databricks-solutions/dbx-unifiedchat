@@ -16,11 +16,14 @@
 bundle:
   name: dbx-unifiedchat
 
+include:
+  - resources/*.yml
+
 # ---------------------------------------------------------------------------
-# Variables — parameterise everything, override per target
+# Variables — single source of truth for ALL configuration
 # ---------------------------------------------------------------------------
 variables:
-  # Unity Catalog
+  # ---- Unity Catalog ----
   catalog_name:
     description: Unity Catalog catalog name
     default: yyang
@@ -28,31 +31,51 @@ variables:
     description: Unity Catalog schema name
     default: multi_agent_genie
 
-  # Genie Space IDs (comma-separated string for notebook widget)
+  # ---- SQL Warehouse ----
+  sql_warehouse_id:
+    description: SQL Warehouse ID used by Genie spaces and UC functions
+    default: a4ed2ccbda385db9
+
+  # ---- Genie Space IDs (comma-separated string) ----
   genie_space_ids:
     description: Comma-separated Genie space IDs
     default: "01f106e1239d14b28d6ab46f9c15e540,01f106e121e7173d8cf84bb80e842d6c,01f106e120b718e084598e92dcf14d4e"
 
-  # Volume / table names
+  # ---- Volume / table names (short names — FQ derived at runtime) ----
   volume_name:
-    description: UC Volume name for Genie exports
+    description: UC Volume name for Genie exports (short name)
     default: volume
-  genie_exports_volume:
-    description: Fully-qualified UC volume for Genie exports
-    default: yyang.multi_agent_genie.volume
   enriched_docs_table:
-    description: Fully-qualified enriched docs delta table
-    default: yyang.multi_agent_genie.enriched_genie_docs
+    description: Enriched docs delta table (short name, FQ = catalog.schema.this)
+    default: enriched_genie_docs
   source_table:
-    description: Source chunks table name (relative to catalog.schema)
+    description: Source chunks table name (short name, FQ = catalog.schema.this)
     default: enriched_genie_docs_chunks
 
-  # LLM
+  # ---- LLM Endpoints ----
   llm_endpoint:
-    description: LLM model serving endpoint for metadata enrichment
+    description: Default/fallback LLM endpoint for metadata enrichment
     default: databricks-claude-sonnet-4-5
+  llm_endpoint_clarification:
+    description: LLM endpoint for clarification agent
+    default: databricks-claude-haiku-4-5
+  llm_endpoint_planning:
+    description: LLM endpoint for planning agent
+    default: databricks-claude-sonnet-4-5
+  llm_endpoint_sql_synthesis_table:
+    description: LLM endpoint for SQL synthesis (table route)
+    default: databricks-claude-sonnet-4-5
+  llm_endpoint_sql_synthesis_genie:
+    description: LLM endpoint for SQL synthesis (genie route)
+    default: databricks-claude-sonnet-4-5
+  llm_endpoint_execution:
+    description: LLM endpoint for execution agent
+    default: databricks-claude-haiku-4-5
+  llm_endpoint_summarize:
+    description: LLM endpoint for summarize agent
+    default: databricks-claude-haiku-4-5
 
-  # Enrichment tuning
+  # ---- Enrichment tuning ----
   sample_size:
     description: Number of sample rows per column
     default: "20"
@@ -60,7 +83,12 @@ variables:
     description: Max unique values for value dictionaries
     default: "20"
 
-  # Vector Search
+  # ---- UC Function short names (comma-separated, FQ = catalog.schema.name) ----
+  uc_function_names:
+    description: Comma-separated list of UC function short names used by agents
+    default: "get_space_summary,get_table_overview,get_column_detail,get_space_instructions,get_space_details"
+
+  # ---- Vector Search ----
   vs_endpoint_name:
     description: Vector Search endpoint name
     default: genie_multi_agent_vs
@@ -71,101 +99,30 @@ variables:
     description: VS index pipeline type (TRIGGERED or CONTINUOUS)
     default: TRIGGERED
 
-# ---------------------------------------------------------------------------
-# Resources — ETL pipeline job (serverless compute)
-# ---------------------------------------------------------------------------
-resources:
-  jobs:
-    etl_pipeline:
-      name: multi_agent_genie_etl_pipeline
-      description: >-
-        End-to-end ETL pipeline: export Genie spaces, enrich table metadata
-        with LLM, and build the vector search index.
-        Runs on serverless compute (no cluster definition needed).
-      max_concurrent_runs: 1
-      tags:
-        project: multi_agent_genie
-        pipeline: etl
+  # ---- Lakebase (state management) ----
+  lakebase_instance_name:
+    description: Lakebase instance for agent state (checkpoints + store)
+    default: multi-agent-genie-system-state-db
+  lakebase_embedding_endpoint:
+    description: Embedding endpoint for Lakebase store semantic search
+    default: databricks-gte-large-en
+  lakebase_embedding_dims:
+    description: Embedding dimensions for Lakebase store
+    default: "1024"
 
-      # ---------------------------------------------------------------
-      # Task 1 — Export Genie Spaces to UC Volume
-      # ---------------------------------------------------------------
-      tasks:
-        - task_key: export_genie_spaces
-          notebook_task:
-            notebook_path: ./etl/01_export_genie_spaces.py
-            source: WORKSPACE
-            base_parameters:
-              catalog_name: ${var.catalog_name}
-              schema_name: ${var.schema_name}
-              volume_name: ${var.volume_name}
-              genie_space_ids: ${var.genie_space_ids}
-              databricks_host: ""
-              databricks_token: ""
-          timeout_seconds: 3600
-
-        # ---------------------------------------------------------------
-        # Task 2 — Enrich Table Metadata (depends on Task 1)
-        # ---------------------------------------------------------------
-        - task_key: enrich_table_metadata
-          depends_on:
-            - task_key: export_genie_spaces
-          notebook_task:
-            notebook_path: ./etl/02_enrich_table_metadata.py
-            source: WORKSPACE
-            base_parameters:
-              catalog_name: ${var.catalog_name}
-              schema_name: ${var.schema_name}
-              genie_exports_volume: ${var.genie_exports_volume}
-              enriched_docs_table: ${var.enriched_docs_table}
-              llm_endpoint: ${var.llm_endpoint}
-              sample_size: ${var.sample_size}
-              max_unique_values: ${var.max_unique_values}
-          timeout_seconds: 7200
-
-        # ---------------------------------------------------------------
-        # Task 3 — Build Vector Search Index (depends on Task 2)
-        # ---------------------------------------------------------------
-        - task_key: build_vector_search_index
-          depends_on:
-            - task_key: enrich_table_metadata
-          notebook_task:
-            notebook_path: ./etl/03_build_vector_search_index.py
-            source: WORKSPACE
-            base_parameters:
-              catalog_name: ${var.catalog_name}
-              schema_name: ${var.schema_name}
-              source_table: ${var.source_table}
-              vs_endpoint_name: ${var.vs_endpoint_name}
-              embedding_model: ${var.embedding_model}
-              pipeline_type: ${var.pipeline_type}
-          timeout_seconds: 3600
-
-    agent_integration_test:
-      name: multi_agent_integration_test
-      description: Test agent code before deployment
-      tasks:
-        - task_key: test_agent
-          notebook_task:
-            notebook_path: ./Notebooks/test_agent_databricks.py
-            source: WORKSPACE
-          timeout_seconds: 1200
-
-    agent_deploy:
-      name: multi_agent_deploy
-      description: Deploy agent to Model Serving
-      tasks:
-        - task_key: validate_agent
-          notebook_task:
-            notebook_path: ./Notebooks/test_agent_databricks.py
-            source: WORKSPACE
-        - task_key: deploy_agent
-          depends_on:
-            - task_key: validate_agent
-          notebook_task:
-            notebook_path: ./Notebooks/deploy_agent.py
-            source: WORKSPACE
-          timeout_seconds: 1800
+  # ---- Model Serving ----
+  model_name:
+    description: UC model name suffix (FQ = catalog.schema.this)
+    default: super_agent_hybrid
+  endpoint_name:
+    description: Model Serving endpoint name
+    default: multi-agent-genie-endpoint
+  workload_size:
+    description: Model Serving workload size
+    default: Small
+  scale_to_zero:
+    description: Whether to enable scale-to-zero on the endpoint
+    default: "false"
 
 # ---------------------------------------------------------------------------
 # Targets — dev & prod
@@ -175,26 +132,25 @@ targets:
     mode: development
     default: true
     workspace:
-      host: https://adb-984752964297111.11.azuredatabricks.net
+      host: https://fevm-serverless-dbx-unifiedchat-dev.cloud.databricks.com/
+    variables:
+      catalog_name: serverless_dbx_unifiedchat_dev_catalog
+      schema_name: multi_agent_genie
+      sql_warehouse_id: 78ad038820b88d95
+      genie_space_ids: "01f11b27d1121e2bb00d6ecd846b1988,01f11b27d23a1ab195fa7ba8efc06d13,01f11b27d3ea149694cf608c3d278673"
+      model_name: super_agent_hybrid
+      endpoint_name: multi-agent-genie-endpoint-dev
 
   prod:
     workspace:
-      # Deployment target — matches .env TARGET_DATABRICKS_HOST
-      # Auth: set DATABRICKS_TOKEN env var or use `databricks auth login`
       host: https://fevm-serverless-dbx-unifiedchat.cloud.databricks.com
     variables:
-      # Production overrides for fevm-serverless-dbx-unifiedchat workspace
       catalog_name: serverless_dbx_unifiedchat_catalog
       schema_name: multi_agent_genie
+      sql_warehouse_id: a4ed2ccbda385db9
       genie_space_ids: "01f106e1239d14b28d6ab46f9c15e540,01f106e121e7173d8cf84bb80e842d6c,01f106e120b718e084598e92dcf14d4e"
-      genie_exports_volume: serverless_dbx_unifiedchat_catalog.multi_agent_genie.volume
-      enriched_docs_table: serverless_dbx_unifiedchat_catalog.multi_agent_genie.enriched_genie_docs
-      llm_endpoint: databricks-claude-sonnet-4-5
-      sample_size: "20"
-      max_unique_values: "20"
-      vs_endpoint_name: genie_multi_agent_vs
-      embedding_model: databricks-gte-large-en
-      pipeline_type: TRIGGERED
+      model_name: super_agent_hybrid
+      endpoint_name: multi-agent-genie-endpoint
 
 sync:
   exclude:

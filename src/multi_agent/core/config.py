@@ -3,16 +3,28 @@ Configuration file for Multi-Agent Genie System
 
 This module provides centralized configuration management for the entire
 multi-agent system, including environment variables, defaults, and validation.
-TODO: retire `print(f"  Function: {self.vector_search.function_name}")` related since vector_search function is not used anymore.
+
+Two loading paths:
+  - Databricks (notebooks + serving): YAML → ModelConfig → from_model_config()
+  - Local dev: .env → load_dotenv() → from_env()
 """
 
 import os
-from typing import Optional
+from typing import Optional, Any
 from dataclasses import dataclass
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables from .env file (local dev)
 load_dotenv()
+
+
+def _mc_get(mc: Any, key: str, default: Any = None) -> Any:
+    """Safe get from ModelConfig — returns default if key missing or None."""
+    try:
+        val = mc.get(key)
+        return val if val is not None else default
+    except Exception:
+        return default
 
 
 @dataclass
@@ -23,16 +35,28 @@ class DatabricksConfig:
     
     @classmethod
     def from_env(cls) -> 'DatabricksConfig':
-        """Load configuration from environment variables."""
-        host = os.getenv("DATABRICKS_HOST", "")
-        token = os.getenv("DATABRICKS_TOKEN", "")
-        
-        # if not host or not token:
-        #     raise ValueError(
-        #         "DATABRICKS_HOST and DATABRICKS_TOKEN must be set in environment"
-        #     )
-        
-        return cls(host=host.rstrip("/"), token=token)
+        return cls(
+            host=os.getenv("DATABRICKS_HOST", "").rstrip("/"),
+            token=os.getenv("DATABRICKS_TOKEN", ""),
+        )
+
+    @classmethod
+    def from_model_config(cls, mc: Any) -> 'DatabricksConfig':
+        return cls(
+            host=os.getenv("DATABRICKS_HOST", "").rstrip("/"),
+            token=os.getenv("DATABRICKS_TOKEN", ""),
+        )
+
+
+_DEFAULT_UC_FUNCTIONS = "get_space_summary,get_table_overview,get_column_detail,get_space_instructions,get_space_details"
+
+
+def _parse_csv(val: Any, default: str = "") -> list[str]:
+    """Parse a comma-separated string or list into a list of stripped strings."""
+    if isinstance(val, list):
+        return [s.strip() for s in val if str(s).strip()]
+    s = str(val) if val else default
+    return [x.strip() for x in s.split(",") if x.strip()]
 
 
 @dataclass
@@ -40,13 +64,22 @@ class UnityCatalogConfig:
     """Unity Catalog configuration."""
     catalog_name: str
     schema_name: str
+    uc_function_names: list[str]
     
     @classmethod
     def from_env(cls) -> 'UnityCatalogConfig':
-        """Load configuration from environment variables."""
         return cls(
             catalog_name=os.getenv("CATALOG_NAME", "yyang"),
             schema_name=os.getenv("SCHEMA_NAME", "multi_agent_genie"),
+            uc_function_names=_parse_csv(os.getenv("UC_FUNCTION_NAMES"), _DEFAULT_UC_FUNCTIONS),
+        )
+
+    @classmethod
+    def from_model_config(cls, mc: Any) -> 'UnityCatalogConfig':
+        return cls(
+            catalog_name=_mc_get(mc, "catalog_name", "yyang"),
+            schema_name=_mc_get(mc, "schema_name", "multi_agent_genie"),
+            uc_function_names=_parse_csv(_mc_get(mc, "uc_function_names"), _DEFAULT_UC_FUNCTIONS),
         )
     
     @property
@@ -54,11 +87,19 @@ class UnityCatalogConfig:
         """Get fully qualified schema name."""
         return f"{self.catalog_name}.{self.schema_name}"
 
+    @property
+    def uc_function_names_fq(self) -> list[str]:
+        """Fully qualified UC function names."""
+        return [f"{self.full_schema_name}.{fn}" for fn in self.uc_function_names]
+
+
+_DEFAULT_LLM = "databricks-claude-sonnet-4-5"
+
 
 @dataclass
 class LLMConfig:
     """LLM endpoint configuration with agent-specific endpoints."""
-    endpoint_name: str  # Default/fallback endpoint
+    endpoint_name: str
     clarification_endpoint: str
     planning_endpoint: str
     sql_synthesis_table_endpoint: str
@@ -68,16 +109,28 @@ class LLMConfig:
     
     @classmethod
     def from_env(cls) -> 'LLMConfig':
-        """Load configuration from environment variables."""
-        default_endpoint = os.getenv("LLM_ENDPOINT", "databricks-claude-sonnet-4-5")
+        d = os.getenv("LLM_ENDPOINT", _DEFAULT_LLM)
         return cls(
-            endpoint_name=default_endpoint,
-            clarification_endpoint=os.getenv("LLM_ENDPOINT_CLARIFICATION", default_endpoint),
-            planning_endpoint=os.getenv("LLM_ENDPOINT_PLANNING", default_endpoint),
-            sql_synthesis_table_endpoint=os.getenv("LLM_ENDPOINT_SQL_SYNTHESIS_TABLE", default_endpoint),
-            sql_synthesis_genie_endpoint=os.getenv("LLM_ENDPOINT_SQL_SYNTHESIS_GENIE", default_endpoint),
-            execution_endpoint=os.getenv("LLM_ENDPOINT_EXECUTION", default_endpoint),
-            summarize_endpoint=os.getenv("LLM_ENDPOINT_SUMMARIZE", default_endpoint),
+            endpoint_name=d,
+            clarification_endpoint=os.getenv("LLM_ENDPOINT_CLARIFICATION", d),
+            planning_endpoint=os.getenv("LLM_ENDPOINT_PLANNING", d),
+            sql_synthesis_table_endpoint=os.getenv("LLM_ENDPOINT_SQL_SYNTHESIS_TABLE", d),
+            sql_synthesis_genie_endpoint=os.getenv("LLM_ENDPOINT_SQL_SYNTHESIS_GENIE", d),
+            execution_endpoint=os.getenv("LLM_ENDPOINT_EXECUTION", d),
+            summarize_endpoint=os.getenv("LLM_ENDPOINT_SUMMARIZE", d),
+        )
+
+    @classmethod
+    def from_model_config(cls, mc: Any) -> 'LLMConfig':
+        d = _mc_get(mc, "llm_endpoint", _DEFAULT_LLM)
+        return cls(
+            endpoint_name=d,
+            clarification_endpoint=_mc_get(mc, "llm_endpoint_clarification", d),
+            planning_endpoint=_mc_get(mc, "llm_endpoint_planning", d),
+            sql_synthesis_table_endpoint=_mc_get(mc, "llm_endpoint_sql_synthesis_table", d),
+            sql_synthesis_genie_endpoint=_mc_get(mc, "llm_endpoint_sql_synthesis_genie", d),
+            execution_endpoint=_mc_get(mc, "llm_endpoint_execution", d),
+            summarize_endpoint=_mc_get(mc, "llm_endpoint_summarize", d),
         )
 
 
@@ -91,14 +144,22 @@ class VectorSearchConfig:
     
     @classmethod
     def from_env(cls, uc_config: UnityCatalogConfig) -> 'VectorSearchConfig':
-        """Load configuration from environment variables."""
         default_function = f"{uc_config.full_schema_name}.search_genie_spaces"
-        
         return cls(
             function_name=os.getenv("VECTOR_SEARCH_FUNCTION", default_function),
             endpoint_name=os.getenv("VS_ENDPOINT_NAME", "genie_multi_agent_vs"),
             embedding_model=os.getenv("EMBEDDING_MODEL", "databricks-gte-large-en"),
             pipeline_type=os.getenv("PIPELINE_TYPE", "TRIGGERED"),
+        )
+
+    @classmethod
+    def from_model_config(cls, mc: Any, uc_config: UnityCatalogConfig) -> 'VectorSearchConfig':
+        default_function = f"{uc_config.full_schema_name}.search_genie_spaces"
+        return cls(
+            function_name=default_function,
+            endpoint_name=_mc_get(mc, "vs_endpoint_name", "genie_multi_agent_vs"),
+            embedding_model=_mc_get(mc, "embedding_model", "databricks-gte-large-en"),
+            pipeline_type=_mc_get(mc, "pipeline_type", "TRIGGERED"),
         )
 
 
@@ -107,45 +168,38 @@ class TableMetadataConfig:
     """Table metadata enrichment configuration."""
     sample_size: int
     max_unique_values: int
-    genie_exports_volume: str
+    volume_name: str
     enriched_docs_table: str
+    source_table: str
     genie_space_ids: list[str]
     sql_warehouse_id: str
     
     @classmethod
     def from_env(cls, uc_config: UnityCatalogConfig) -> 'TableMetadataConfig':
-        """
-        Load configuration from environment variables.
-        
-        ENVIRONMENT-SPECIFIC CONFIGURATION:
-        - Development: Set SQL_WAREHOUSE_ID in .env file
-        - Production: Set SQL_WAREHOUSE_ID via Model Serving endpoint environment variables
-          (or keep in .env if same warehouse used for both)
-        
-        Get SQL Warehouse ID from:
-        - SQL Warehouses UI → Click warehouse → Copy ID from URL or Details
-        - Format: alphanumeric string (e.g., '148ccb90800933a1')
-        """
-        default_volume = f"{uc_config.full_schema_name}.volume"
-        default_table = f"{uc_config.full_schema_name}.enriched_genie_docs"
-        
-        # Parse Genie Space IDs from environment
-        # Support both GENIE_SPACE_IDS and legacy genie_ids for backward compatibility
         default_space_ids = "01f072dbd668159d99934dfd3b17f544,01f08f4d1f5f172ea825ec8c9a3c6064,01f073c5476313fe8f51966e3ce85bd7,01f07795f6981dc4a99d62c9fc7c2caa,01f08a9fd9ca125a986d01c1a7a5b2fe"
         space_ids_str = os.getenv("GENIE_SPACE_IDS") or os.getenv("genie_ids", default_space_ids)
-        space_ids = [sid.strip() for sid in space_ids_str.split(",") if sid.strip()]
-        
-        # SQL Warehouse ID - required for SQLExecutionAgent
-        sql_warehouse_id = os.getenv("SQL_WAREHOUSE_ID", "").strip()
-        
         return cls(
             sample_size=int(os.getenv("SAMPLE_SIZE", "100")),
             max_unique_values=int(os.getenv("MAX_UNIQUE_VALUES", "50")),
-            genie_exports_volume=os.getenv("GENIE_EXPORTS_VOLUME", default_volume),
-            enriched_docs_table=os.getenv("ENRICHED_DOCS_TABLE", default_table),
-            genie_space_ids=space_ids,
-            sql_warehouse_id=sql_warehouse_id,
+            volume_name=os.getenv("VOLUME_NAME", "volume"),
+            enriched_docs_table=os.getenv("ENRICHED_DOCS_TABLE", "enriched_genie_docs"),
+            source_table=os.getenv("SOURCE_TABLE", "enriched_genie_docs_chunks"),
+            genie_space_ids=_parse_csv(space_ids_str),
+            sql_warehouse_id=os.getenv("SQL_WAREHOUSE_ID", "").strip(),
         )
+
+    @classmethod
+    def from_model_config(cls, mc: Any) -> 'TableMetadataConfig':
+        return cls(
+            sample_size=int(_mc_get(mc, "sample_size", 100)),
+            max_unique_values=int(_mc_get(mc, "max_unique_values", 50)),
+            volume_name=_mc_get(mc, "volume_name", "volume"),
+            enriched_docs_table=_mc_get(mc, "enriched_docs_table", "enriched_genie_docs"),
+            source_table=_mc_get(mc, "source_table", "enriched_genie_docs_chunks"),
+            genie_space_ids=_parse_csv(_mc_get(mc, "genie_space_ids", "")),
+            sql_warehouse_id=str(_mc_get(mc, "sql_warehouse_id", "")).strip(),
+        )
+
 
 
 @dataclass
@@ -158,12 +212,20 @@ class ModelServingConfig:
     
     @classmethod
     def from_env(cls) -> 'ModelServingConfig':
-        """Load configuration from environment variables."""
         return cls(
-            model_name=os.getenv("MODEL_NAME", "multi_agent_genie_system"),
+            model_name=os.getenv("MODEL_NAME", "super_agent_hybrid"),
             endpoint_name=os.getenv("ENDPOINT_NAME", "multi-agent-genie-endpoint"),
             workload_size=os.getenv("WORKLOAD_SIZE", "Small"),
             scale_to_zero_enabled=os.getenv("SCALE_TO_ZERO", "true").lower() == "true",
+        )
+
+    @classmethod
+    def from_model_config(cls, mc: Any) -> 'ModelServingConfig':
+        return cls(
+            model_name=_mc_get(mc, "model_name", "super_agent_hybrid"),
+            endpoint_name=_mc_get(mc, "endpoint_name", "multi-agent-genie-endpoint"),
+            workload_size=_mc_get(mc, "workload_size", "Small"),
+            scale_to_zero_enabled=str(_mc_get(mc, "scale_to_zero", "true")).lower() == "true",
         )
 
 
@@ -171,11 +233,9 @@ class ModelServingConfig:
 class LakebaseConfig:
     """Lakebase database configuration for state management.
     
-    Lakebase is a fully-managed PostgreSQL OLTP database used for:
+    Used for:
     - Short-term memory: Conversation checkpoints (CheckpointSaver)
     - Long-term memory: User preferences with semantic search (DatabricksStore)
-    
-    Required for distributed Model Serving to share state across instances.
     """
     instance_name: str
     embedding_endpoint: str
@@ -183,11 +243,18 @@ class LakebaseConfig:
     
     @classmethod
     def from_env(cls) -> 'LakebaseConfig':
-        """Load configuration from environment variables."""
         return cls(
             instance_name=os.getenv("LAKEBASE_INSTANCE_NAME", "agent-state-db"),
             embedding_endpoint=os.getenv("LAKEBASE_EMBEDDING_ENDPOINT", "databricks-gte-large-en"),
             embedding_dims=int(os.getenv("LAKEBASE_EMBEDDING_DIMS", "1024")),
+        )
+
+    @classmethod
+    def from_model_config(cls, mc: Any) -> 'LakebaseConfig':
+        return cls(
+            instance_name=_mc_get(mc, "lakebase_instance_name", "agent-state-db"),
+            embedding_endpoint=_mc_get(mc, "lakebase_embedding_endpoint", "databricks-gte-large-en"),
+            embedding_dims=int(_mc_get(mc, "lakebase_embedding_dims", 1024)),
         )
 
 
@@ -202,25 +269,47 @@ class AgentConfig:
     model_serving: ModelServingConfig
     lakebase: LakebaseConfig
     
+    @property
+    def enriched_docs_table_fq(self) -> str:
+        """Fully qualified enriched docs (pre-chunks) table name."""
+        return f"{self.unity_catalog.full_schema_name}.{self.table_metadata.enriched_docs_table}"
+
+    @property
+    def source_table_fq(self) -> str:
+        """Fully qualified source (chunks) table name."""
+        return f"{self.unity_catalog.full_schema_name}.{self.table_metadata.source_table}"
+
+    @property
+    def vs_index_fq(self) -> str:
+        """Fully qualified vector search index name."""
+        return f"{self.unity_catalog.full_schema_name}.{self.table_metadata.source_table}_vs_index"
+
     @classmethod
     def from_env(cls) -> 'AgentConfig':
-        """Load all configuration from environment variables."""
-        databricks = DatabricksConfig.from_env()
-        unity_catalog = UnityCatalogConfig.from_env()
-        llm = LLMConfig.from_env()
-        vector_search = VectorSearchConfig.from_env(unity_catalog)
-        table_metadata = TableMetadataConfig.from_env(unity_catalog)
-        model_serving = ModelServingConfig.from_env()
-        lakebase = LakebaseConfig.from_env()
-        
+        """Load all configuration from environment variables (.env / local dev)."""
+        uc = UnityCatalogConfig.from_env()
         return cls(
-            databricks=databricks,
-            unity_catalog=unity_catalog,
-            llm=llm,
-            vector_search=vector_search,
-            table_metadata=table_metadata,
-            model_serving=model_serving,
-            lakebase=lakebase,
+            databricks=DatabricksConfig.from_env(),
+            unity_catalog=uc,
+            llm=LLMConfig.from_env(),
+            vector_search=VectorSearchConfig.from_env(uc),
+            table_metadata=TableMetadataConfig.from_env(uc),
+            model_serving=ModelServingConfig.from_env(),
+            lakebase=LakebaseConfig.from_env(),
+        )
+
+    @classmethod
+    def from_model_config(cls, mc: Any) -> 'AgentConfig':
+        """Load all configuration directly from ModelConfig (Databricks path)."""
+        uc = UnityCatalogConfig.from_model_config(mc)
+        return cls(
+            databricks=DatabricksConfig.from_model_config(mc),
+            unity_catalog=uc,
+            llm=LLMConfig.from_model_config(mc),
+            vector_search=VectorSearchConfig.from_model_config(mc, uc),
+            table_metadata=TableMetadataConfig.from_model_config(mc),
+            model_serving=ModelServingConfig.from_model_config(mc),
+            lakebase=LakebaseConfig.from_model_config(mc),
         )
     
     def validate(self) -> None:
@@ -280,6 +369,7 @@ class AgentConfig:
         print(f"  Catalog: {self.unity_catalog.catalog_name}")
         print(f"  Schema: {self.unity_catalog.schema_name}")
         print(f"  Full Schema: {self.unity_catalog.full_schema_name}")
+        print(f"  UC Functions: {', '.join(self.unity_catalog.uc_function_names)}")
         print(f"\nLLM Endpoints (Diversified by Agent):")
         print(f"  Default/Fallback: {self.llm.endpoint_name}")
         print(f"  Clarification Agent: {self.llm.clarification_endpoint}")
@@ -296,8 +386,12 @@ class AgentConfig:
         print(f"\nTable Metadata:")
         print(f"  Sample Size: {self.table_metadata.sample_size}")
         print(f"  Max Unique Values: {self.table_metadata.max_unique_values}")
-        print(f"  Exports Volume: {self.table_metadata.genie_exports_volume}")
+        print(f"  Volume Name: {self.table_metadata.volume_name}")
         print(f"  Enriched Docs Table: {self.table_metadata.enriched_docs_table}")
+        print(f"  Source Table: {self.table_metadata.source_table}")
+        print(f"  Enriched Docs Table (FQ): {self.enriched_docs_table_fq}")
+        print(f"  Source Table (FQ): {self.source_table_fq}")
+        print(f"  VS Index (FQ): {self.vs_index_fq}")
         print(f"  SQL Warehouse ID: {self.table_metadata.sql_warehouse_id}")
         print(f"  Genie Space IDs: {len(self.table_metadata.genie_space_ids)} spaces")
         for i, sid in enumerate(self.table_metadata.genie_space_ids, 1):
@@ -332,70 +426,31 @@ def is_databricks() -> bool:
 def get_config(reload: bool = False) -> AgentConfig:
     """
     Get or create the global configuration instance.
-    
-    Args:
-        reload: If True, reload configuration from environment (including .env file)
-        
-    Returns:
-        AgentConfig instance
+
+    Databricks path: YAML → ModelConfig → AgentConfig.from_model_config() (direct)
+    Local dev path:  .env → load_dotenv() → AgentConfig.from_env()
     """
     global _config
     
     if _config is None or reload:
         if is_databricks():
-            print("Detected Databricks environment. Attempting to load configuration via ModelConfig...")
+            print("Detected Databricks environment. Loading configuration via ModelConfig...")
             try:
                 from mlflow.models import ModelConfig
-                # Note: ModelConfig uses dev_config.yaml for dev in databricks workspace or prod_config.yaml when deployed or explicitly passed
-                model_config = ModelConfig(development_config="../dev_config.yaml")
-                
-                # Map model_config keys to environment variables so from_env() works
-                mapping = {
-                    "catalog_name": "CATALOG_NAME",
-                    "schema_name": "SCHEMA_NAME",
-                    "llm_endpoint": "LLM_ENDPOINT",
-                    "llm_endpoint_clarification": "LLM_ENDPOINT_CLARIFICATION",
-                    "llm_endpoint_planning": "LLM_ENDPOINT_PLANNING",
-                    "llm_endpoint_sql_synthesis_table": "LLM_ENDPOINT_SQL_SYNTHESIS_TABLE",
-                    "llm_endpoint_sql_synthesis_genie": "LLM_ENDPOINT_SQL_SYNTHESIS_GENIE",
-                    "llm_endpoint_execution": "LLM_ENDPOINT_EXECUTION",
-                    "llm_endpoint_summarize": "LLM_ENDPOINT_SUMMARIZE",
-                    "lakebase_instance_name": "LAKEBASE_INSTANCE_NAME",
-                    "lakebase_embedding_endpoint": "LAKEBASE_EMBEDDING_ENDPOINT",
-                    "lakebase_embedding_dims": "LAKEBASE_EMBEDDING_DIMS",
-                    "genie_space_ids": "GENIE_SPACE_IDS",
-                    "sql_warehouse_id": "SQL_WAREHOUSE_ID",
-                    "vector_search_function": "VECTOR_SEARCH_FUNCTION",
-                    "vs_endpoint_name": "VS_ENDPOINT_NAME",
-                    "embedding_model": "EMBEDDING_MODEL",
-                    "pipeline_type": "PIPELINE_TYPE",
-                    "sample_size": "SAMPLE_SIZE",
-                    "max_unique_values": "MAX_UNIQUE_VALUES",
-                    "genie_exports_volume": "GENIE_EXPORTS_VOLUME",
-                    "enriched_docs_table": "ENRICHED_DOCS_TABLE",
-                    "model_name": "MODEL_NAME",
-                    "endpoint_name": "ENDPOINT_NAME",
-                    "workload_size": "WORKLOAD_SIZE",
-                    "scale_to_zero": "SCALE_TO_ZERO",
-                }
-                
-                for yaml_key, env_key in mapping.items():
-                    val = model_config.get(yaml_key)
-                    if val is not None:
-                        if isinstance(val, list):
-                            val = ",".join(str(x) for x in val)
-                        os.environ[env_key] = str(val)
-                print("✓ Configuration loaded via ModelConfig")
+                dev_config_path = os.environ.get("AGENT_CONFIG_FILE", "/tmp/agent_config.yaml")
+                mc = ModelConfig(development_config=dev_config_path)
+                _config = AgentConfig.from_model_config(mc)
+                print("✓ Configuration loaded via ModelConfig (direct)")
             except Exception as e:
                 print(f"Warning: Failed to load ModelConfig: {e}. Falling back to env vars.")
                 if reload:
                     load_dotenv(override=True)
+                _config = AgentConfig.from_env()
         else:
-            # Reload .env file if reloading (override existing env vars)
             if reload:
                 load_dotenv(override=True)
-                
-        _config = AgentConfig.from_env()
+            _config = AgentConfig.from_env()
+
         _config.validate()
     
     return _config

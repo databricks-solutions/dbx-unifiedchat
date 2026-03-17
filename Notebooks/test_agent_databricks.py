@@ -54,53 +54,49 @@ import mlflow
 
 # COMMAND ----------
 
-# DBTITLE 1,Load Configuration from YAML
-"""
-Load configuration from dev_config.yaml for testing.
+# DBTITLE 1,Load Configuration from DABs Variables
+# All parameters are injected by DABs job via base_parameters.
+# databricks.yml is the single source of truth — no separate config YAMLs.
+#
+# Flow: widgets → build_config_yaml() → temp YAML → get_config() → AgentConfig
+#
+# Defaults are empty sentinels. If run manually without DABs, the notebook
+# will fail at validation with a clear error rather than using stale values.
 
-This uses the same YAML configuration that deployment uses,
-but loads it for testing purposes.
-"""
+_WIDGET_KEYS = [
+    "catalog_name", "schema_name", "sql_warehouse_id", "genie_space_ids",
+    "volume_name", "enriched_docs_table", "source_table", "uc_function_names",
+    "llm_endpoint", "llm_endpoint_clarification", "llm_endpoint_planning",
+    "llm_endpoint_sql_synthesis_table", "llm_endpoint_sql_synthesis_genie",
+    "llm_endpoint_execution", "llm_endpoint_summarize",
+    "sample_size", "max_unique_values",
+    "vs_endpoint_name", "embedding_model",
+    "lakebase_instance_name", "lakebase_embedding_endpoint", "lakebase_embedding_dims",
+]
 
-from notebook_utils import load_deployment_config
+for k in _WIDGET_KEYS:
+    dbutils.widgets.text(k, "")
 
-# Load dev_config.yaml via notebook_utils
-config_dict = load_deployment_config("../dev_config.yaml")
+widget_params = {k: dbutils.widgets.get(k) for k in _WIDGET_KEYS}
 
-# Extract key configuration values
-CATALOG = config_dict['CATALOG']
-SCHEMA = config_dict['SCHEMA']
-TABLE_NAME = config_dict['TABLE_NAME']
-VECTOR_SEARCH_INDEX = config_dict['VECTOR_SEARCH_INDEX']
+_empty = [k for k, v in widget_params.items() if not v.strip()]
+if _empty:
+    print(f"⚠️  {len(_empty)} widget(s) have no value (expected when run via DABs): {', '.join(_empty[:5])}{'...' if len(_empty) > 5 else ''}")
+    print("   If running manually, set values via notebook widgets or use DABs: databricks bundle run")
 
-# LLM Endpoints
-LLM_ENDPOINT_CLARIFICATION = config_dict['LLM_ENDPOINT_CLARIFICATION']
-LLM_ENDPOINT_PLANNING = config_dict['LLM_ENDPOINT_PLANNING']
-LLM_ENDPOINT_SQL_SYNTHESIS_TABLE = config_dict['LLM_ENDPOINT_SQL_SYNTHESIS_TABLE']
-LLM_ENDPOINT_SQL_SYNTHESIS_GENIE = config_dict['LLM_ENDPOINT_SQL_SYNTHESIS_GENIE']
-LLM_ENDPOINT_EXECUTION = config_dict['LLM_ENDPOINT_EXECUTION']
-LLM_ENDPOINT_SUMMARIZE = config_dict['LLM_ENDPOINT_SUMMARIZE']
+# Step 1: Generate temp YAML
+from notebook_utils import build_config_yaml
+config_yaml_path = build_config_yaml(widget_params, path="./agent_config.yaml")
 
-# Lakebase
-LAKEBASE_INSTANCE_NAME = config_dict['LAKEBASE_INSTANCE_NAME']
-EMBEDDING_ENDPOINT = config_dict['EMBEDDING_ENDPOINT']
 
-# SQL Warehouse
-SQL_WAREHOUSE_ID = config_dict['SQL_WAREHOUSE_ID']
+# Step 2: CRITICAL — set env var BEFORE importing agent code.
+# responses_agent.py calls get_config() at module load time.
+os.environ["AGENT_CONFIG_FILE"] = config_yaml_path
 
-# Genie Spaces
-GENIE_SPACE_IDS = config_dict['GENIE_SPACE_IDS']
-
-print("="*80)
-print("CONFIGURATION LOADED FROM dev_config.yaml via notebook_utils")
-print("="*80)
-print(f"Catalog: {CATALOG}")
-print(f"Schema: {SCHEMA}")
-print(f"Vector Search Index: {VECTOR_SEARCH_INDEX}")
-print(f"SQL Warehouse ID: {SQL_WAREHOUSE_ID}")
-print(f"Genie Spaces: {len(GENIE_SPACE_IDS)} spaces")
-print(f"Lakebase Instance: {LAKEBASE_INSTANCE_NAME}")
-print("="*80)
+# Step 3: Single config system
+from multi_agent.core.config import get_config
+cfg = get_config()
+cfg.print_summary()
 
 # COMMAND ----------
 
@@ -188,7 +184,7 @@ print("✅ DATABRICKS TESTING COMPLETE")
 print("="*80)
 print("\nWhat was tested:")
 print("✓ Imports from src/multi_agent/")
-print("✓ Configuration loading from dev_config.yaml")
+print(f"✓ Configuration loading from databricks.yml (via DABs)")
 print("✓ Agent graph construction")
 print("✓ ResponsesAgent wrapper initialization")
 print("✓ Single query execution via predict_stream")

@@ -37,6 +37,7 @@ function EnrichmentView({ initialJobId }: { initialJobId?: number }) {
   const [metadataTable, setMetadataTable] = useState('serverless_dbx_unifiedchat_catalog.gold.enriched_table_metadata');
   const [chunksTable, setChunksTable] = useState('serverless_dbx_unifiedchat_catalog.gold.enriched_table_chunks');
   const [writeMode, setWriteMode] = useState<'overwrite' | 'append' | 'error'>('overwrite');
+  const [enrichmentDone, setEnrichmentDone] = useState(() => isStepCompleted('enrichment-done'));
   const isLoadedRef = useRef(false);
   const runEnrichmentMutation = useRunEnrichment();
   const navigate = useNavigate();
@@ -178,6 +179,7 @@ function EnrichmentView({ initialJobId }: { initialJobId?: number }) {
             jobUrl={jobUrl}
             metadataTable={metadataTable}
             chunksTable={chunksTable}
+            onComplete={() => setEnrichmentDone(true)}
           />
         </Suspense>
       )}
@@ -186,7 +188,7 @@ function EnrichmentView({ initialJobId }: { initialJobId?: number }) {
         <Button variant="outline" onClick={() => navigate({ to: '/catalog-browser' })}>
           <ArrowLeft size={16} /> Back
         </Button>
-        {jobId && isStepCompleted('enrichment-done') && (
+        {enrichmentDone && (
           <Button onClick={() => navigate({ to: '/graph-explorer' })}>
             Next: Explore Graph →
           </Button>
@@ -200,12 +202,14 @@ function EnrichmentProgress({
   jobId, 
   jobUrl, 
   metadataTable, 
-  chunksTable 
+  chunksTable,
+  onComplete,
 }: { 
   jobId: number; 
   jobUrl: string;
   metadataTable: string;
   chunksTable: string;
+  onComplete: () => void;
 }) {
   const { data: status } = useGetEnrichmentStatusSuspense(jobId, {
     query: {
@@ -223,6 +227,7 @@ function EnrichmentProgress({
   useEffect(() => {
     if (status.status === 'completed') {
       markStepCompleted('enrichment-done');
+      onComplete();
     }
   }, [status.status]);
 

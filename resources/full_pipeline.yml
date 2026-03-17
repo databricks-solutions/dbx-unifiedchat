@@ -1,0 +1,155 @@
+# Full End-to-End Pipeline — ETL → Validate Agent → Deploy Agent
+#
+# Runs all 5 tasks in strict sequence:
+#   export_genie_spaces
+#     → enrich_table_metadata
+#       → build_vector_search_index
+#           → deploy_agent
+#               → validate_agent
+#
+# Use this when you want a single trigger for a complete ETL + deploy cycle.
+#
+# Run:
+#   databricks bundle run full_pipeline         # dev (default)
+#   databricks bundle run full_pipeline -t prod # prod
+#
+# For ETL-only or agent-only runs, use etl_pipeline or agent_deploy instead.
+
+resources:
+  jobs:
+    full_pipeline:
+      name: multi_agent_genie_full_pipeline
+      description: >-
+        Complete end-to-end pipeline: export Genie spaces, enrich table metadata,
+        build vector search index, validate agent code, then deploy to Model Serving.
+        Each stage must succeed before the next begins.
+      max_concurrent_runs: 1
+      tags:
+        project: multi_agent_genie
+        pipeline: full
+
+      tasks:
+        # -------------------------------------------------------------------
+        # Task 1 — Export Genie Spaces to UC Volume
+        # -------------------------------------------------------------------
+        - task_key: export_genie_spaces
+          notebook_task:
+            notebook_path: ../etl/01_export_genie_spaces.py
+            source: WORKSPACE
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+              volume_name: ${var.volume_name}
+              genie_space_ids: ${var.genie_space_ids}
+              databricks_host: ""
+              databricks_token: ""
+          timeout_seconds: 3600
+
+        # -------------------------------------------------------------------
+        # Task 2 — Enrich Table Metadata (depends on Task 1)
+        # -------------------------------------------------------------------
+        - task_key: enrich_table_metadata
+          depends_on:
+            - task_key: export_genie_spaces
+          notebook_task:
+            notebook_path: ../etl/02_enrich_table_metadata.py
+            source: WORKSPACE
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+              volume_name: ${var.volume_name}
+              enriched_docs_table: ${var.enriched_docs_table}
+              llm_endpoint: ${var.llm_endpoint}
+              sample_size: ${var.sample_size}
+              max_unique_values: ${var.max_unique_values}
+          timeout_seconds: 7200
+
+        # -------------------------------------------------------------------
+        # Task 3 — Build Vector Search Index (depends on Task 2)
+        # -------------------------------------------------------------------
+        - task_key: build_vector_search_index
+          depends_on:
+            - task_key: enrich_table_metadata
+          notebook_task:
+            notebook_path: ../etl/03_build_vector_search_index.py
+            source: WORKSPACE
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+              source_table: ${var.source_table}
+              vs_endpoint_name: ${var.vs_endpoint_name}
+              embedding_model: ${var.embedding_model}
+              pipeline_type: ${var.pipeline_type}
+          timeout_seconds: 3600
+
+        # -------------------------------------------------------------------
+        # Task 4 — Deploy Agent to Model Serving (depends on Task 3)
+        # -------------------------------------------------------------------
+        - task_key: deploy_agent
+          depends_on:
+            - task_key: build_vector_search_index
+          notebook_task:
+            notebook_path: ../Notebooks/deploy_agent.py
+            source: WORKSPACE
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+              sql_warehouse_id: ${var.sql_warehouse_id}
+              genie_space_ids: ${var.genie_space_ids}
+              volume_name: ${var.volume_name}
+              enriched_docs_table: ${var.enriched_docs_table}
+              source_table: ${var.source_table}
+              uc_function_names: ${var.uc_function_names}
+              llm_endpoint: ${var.llm_endpoint}
+              llm_endpoint_clarification: ${var.llm_endpoint_clarification}
+              llm_endpoint_planning: ${var.llm_endpoint_planning}
+              llm_endpoint_sql_synthesis_table: ${var.llm_endpoint_sql_synthesis_table}
+              llm_endpoint_sql_synthesis_genie: ${var.llm_endpoint_sql_synthesis_genie}
+              llm_endpoint_execution: ${var.llm_endpoint_execution}
+              llm_endpoint_summarize: ${var.llm_endpoint_summarize}
+              sample_size: ${var.sample_size}
+              max_unique_values: ${var.max_unique_values}
+              vs_endpoint_name: ${var.vs_endpoint_name}
+              embedding_model: ${var.embedding_model}
+              lakebase_instance_name: ${var.lakebase_instance_name}
+              lakebase_embedding_endpoint: ${var.lakebase_embedding_endpoint}
+              lakebase_embedding_dims: ${var.lakebase_embedding_dims}
+              model_name: ${var.model_name}
+              endpoint_name: ${var.endpoint_name}
+              workload_size: ${var.workload_size}
+              scale_to_zero: ${var.scale_to_zero}
+          timeout_seconds: 2400
+
+        # -------------------------------------------------------------------
+        # Task 5 — Validate Agent Code (depends on Task 4)
+        # -------------------------------------------------------------------
+        - task_key: validate_agent
+          depends_on:
+            - task_key: deploy_agent
+          notebook_task:
+            notebook_path: ../Notebooks/test_agent_databricks.py
+            source: WORKSPACE
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+              sql_warehouse_id: ${var.sql_warehouse_id}
+              genie_space_ids: ${var.genie_space_ids}
+              volume_name: ${var.volume_name}
+              enriched_docs_table: ${var.enriched_docs_table}
+              source_table: ${var.source_table}
+              uc_function_names: ${var.uc_function_names}
+              llm_endpoint: ${var.llm_endpoint}
+              llm_endpoint_clarification: ${var.llm_endpoint_clarification}
+              llm_endpoint_planning: ${var.llm_endpoint_planning}
+              llm_endpoint_sql_synthesis_table: ${var.llm_endpoint_sql_synthesis_table}
+              llm_endpoint_sql_synthesis_genie: ${var.llm_endpoint_sql_synthesis_genie}
+              llm_endpoint_execution: ${var.llm_endpoint_execution}
+              llm_endpoint_summarize: ${var.llm_endpoint_summarize}
+              sample_size: ${var.sample_size}
+              max_unique_values: ${var.max_unique_values}
+              vs_endpoint_name: ${var.vs_endpoint_name}
+              embedding_model: ${var.embedding_model}
+              lakebase_instance_name: ${var.lakebase_instance_name}
+              lakebase_embedding_endpoint: ${var.lakebase_embedding_endpoint}
+              lakebase_embedding_dims: ${var.lakebase_embedding_dims}
+          timeout_seconds: 1200
