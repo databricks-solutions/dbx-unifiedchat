@@ -370,28 +370,8 @@ Data preview:
 4. For each successful result set, include a markdown table for that result set only. If the result has <=30 rows, include all rows. Otherwise include the top 20 most relevant rows and keep it clearly labeled as a preview.
 5. Keep result sets separate. Do not merge multiple result sets into one markdown table.
 6. **IMPORTANT — Safe inference:** Only make claims directly supported by the provided rows/columns. If a result may contain repeated entities (for example multiple coverage rows per member, multiple benefit types per patient, or repeated diagnosis rows), do NOT infer distinct member counts, payer counts, or cohort composition unless the result explicitly includes distinct counts.
-7. **IMPORTANT — Code annotation:** If ANY column contains coded identifiers rather than plain text (e.g., NDC drug codes, ICD/CPT/HCPCS medical codes, NPI numbers, taxonomy codes, NAICS/SIC industry codes, MCC merchant codes, CUSIP/ISIN/ticker symbols, FIPS/ZIP codes, currency codes, tax form codes, GL account codes, or ANY other standardized code system), you MUST add a "Description" column with the human-readable name/meaning for each code. Use your domain knowledge to decode every code. Never present a table with coded columns that lack descriptions. If you cannot confidently decode a specific value, simply write "Unknown" or leave it blank. Do not write long disclaimers. Do not annotate member ids.
-8. **IMPORTANT — Result interpretation:** For each result set, add a short result interpretation paragraph after the markdown table that explains the insights from the table (note preview limitation if applicable). Use bullet points for clarity. See examples below:
-    - Example 1: "**Utilization comparison**
-- **Total volume** is highest in **Diabetes**, with **111,676 total claims**, reflecting its larger cohort size.
-- **Per-patient utilization** is highest in **CHF**:
-  - **338.67** average medical claims per patient
-  - **149.59** average pharmacy claims per patient
-  - **488.25** average total claims per patient
-- **COPD** is intermediate on per-patient utilization, and **Diabetes** is lowest of the three on a per-patient basis despite having the highest total claim volume."
-    - Example 2: "
-**What this result supports**
-- The preview suggests **older birth years are common**, especially in **CHF** and **COPD**, with many visible rows in the **1930s–1950s**.
-- The visible rows also suggest **geographic spread across multiple states**, with repeated appearances of **MI, PA, OH, CA, and NC** in the preview.
-- Because the table is at the **gender + birth year + state combination level**, it does **not directly provide overall gender mix, age distribution, or state distribution** by cohort.
-"
-    - Example 3: "**Enrollment/utilization context**
-- Across all three cohorts, the largest enrollment categories shown are **MEDICARE medical** and **MEDICARE pharmacy**.
-- **CHF** has the highest visible share in **MEDICARE medical/pharmacy** at **39.47%** each, compared with **35.91%** for COPD and **27.62%** for Diabetes.
-- **Diabetes** shows a relatively larger **commercial** presence in the displayed enrollment distribution, especially **PHARMACY + COMMERCIAL (16.14%)** and **MEDICAL + COMMERCIAL (8.65%)**.
-"
-9. Add a ### Key Insights section with 2-6 bullet points grounded in the result sets.
-10. End with a short summary paragraph that synthesizes the key insights from all result sets and draws a conclusion about the user's question.
+7. **IMPORTANT — Code annotation:** If ANY column contains coded identifiers rather than plain text (e.g., NDC drug codes, ICD/CPT/HCPCS medical codes, NPI numbers, taxonomy codes, NAICS/SIC industry codes, MCC merchant codes, CUSIP/ISIN/ticker symbols, FIPS/ZIP codes, currency codes, tax form codes, GL account codes, or ANY other standardized code system), you MUST add a "Description" column with the human-readable name/meaning for each code. Use your domain knowledge to decode every code. Never present a table with coded columns that lack descriptions. If you cannot confidently decode a specific value, simply write "Unknown" or leave it blank. Do not write long disclaimers.
+8. Add a ### Key Insights section with 2-4 bullet points grounded in the result sets
 
 **DO NOT include:**
 - SQL queries or code blocks (those are shown separately)
