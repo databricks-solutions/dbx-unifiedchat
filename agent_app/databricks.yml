@@ -140,6 +140,7 @@ targets:
       schema_name: "<dev-schema-name>"
       data_catalog_name: "<dev-data-catalog-name>"
       data_schema_name: "<dev-data-schema-name>"
+      uc_function_names: "<dev-comma-separated-uc-function-names>"
       experiment_id: "<dev-mlflow-experiment-id>"
       agent_keep_warm_interval_seconds: "600"
       sql_warehouse_id: "<dev-sql-warehouse-id>"
