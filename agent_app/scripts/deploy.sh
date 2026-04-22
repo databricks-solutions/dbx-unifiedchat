@@ -37,6 +37,9 @@
 #                        post-deploy job.
 #   --bootstrap-local    Ensure local Python tooling is ready via `uv sync --dev`.
 #   --skip-bootstrap     Skip local bootstrap checks and dependency sync.
+#   --skip-preflight     Skip the workspace resource preflight check. Also
+#                        honored via SKIP_PREFLIGHT=1 in the environment.
+#   --strict-preflight   Treat preflight warnings as fatal.
 #   --ci                 Non-interactive CI mode; implies no opportunistic bootstrap.
 #   --help, -h           Show this help text and exit.
 
@@ -55,6 +58,8 @@ POST_DEPLOY_JOB=""
 CI_MODE=false
 SKIP_BOOTSTRAP=false
 FORCE_BOOTSTRAP=false
+SKIP_PREFLIGHT="${SKIP_PREFLIGHT:-false}"
+STRICT_PREFLIGHT=false
 DEPRECATION_WARNINGS=()
 
 print_help() {
@@ -144,6 +149,8 @@ while [[ $# -gt 0 ]]; do
       ;;
     --bootstrap-local)   FORCE_BOOTSTRAP=true; shift ;;
     --skip-bootstrap)    SKIP_BOOTSTRAP=true; shift ;;
+    --skip-preflight)    SKIP_PREFLIGHT=true; shift ;;
+    --strict-preflight)  STRICT_PREFLIGHT=true; shift ;;
     --ci)                CI_MODE=true; shift ;;
     --help|-h)           print_help; exit 0 ;;
     *)                   error "Unknown argument: $1" ;;
@@ -157,7 +164,12 @@ if [[ "$LIST_JOBS_ONLY" == true ]]; then
 fi
 
 resolve_bundle_context() {
-  python3 - "$APP_DIR" "${TARGET:-}" "${PROFILE:-}" <<'PY'
+  # Use `uv run --with pyyaml` so we don't depend on the system Python having
+  # pyyaml pre-installed. uv is already a hard dependency of this script
+  # (see `bootstrap_local_env`). `--no-project` skips pyproject.toml discovery
+  # so this works before the project venv exists.
+  command -v uv >/dev/null 2>&1 || { echo "❌ uv not found (required for bundle context resolution)" >&2; exit 1; }
+  uv run --with pyyaml --no-project --quiet python3 - "$APP_DIR" "${TARGET:-}" "${PROFILE:-}" <<'PY'
 import pathlib
 import shlex
 import sys
@@ -457,6 +469,22 @@ for job in job_summaries:
 PY
 }
 
+run_preflight() {
+  if [[ "$SKIP_PREFLIGHT" == "true" || "$SKIP_PREFLIGHT" == "1" ]]; then
+    section "Skipping workspace preflight (--skip-preflight)"
+    return 0
+  fi
+  section "Running workspace preflight"
+  local preflight_args=(--target "$TARGET")
+  [[ -n "$PROFILE" ]] && preflight_args+=(--profile "$PROFILE")
+  [[ "$STRICT_PREFLIGHT" == true ]] && preflight_args+=(--strict)
+  if ! uv run --quiet python scripts/preflight.py "${preflight_args[@]}"; then
+    echo
+    error "Workspace preflight failed. Fix the issues above, or rerun with --skip-preflight to bypass (not recommended)."
+  fi
+  success "Preflight passed"
+}
+
 smoke_verify_app() {
   section "Smoke verifying deployed app"
   local app_json
@@ -527,6 +555,8 @@ info "Sync       : $SYNC_WORKSPACE"
 info "Shared infra permissions grant to app SP after deploy : $([[ "$SKIP_SHARED_INFRA" == true ]] && echo "disabled" || echo "enabled")"
 info "Requested job to run after deploy : ${POST_DEPLOY_JOB:-<none>}"
 info "Start app  : $START_APP"
+
+run_preflight
 
 section "Deploying bundle"
 databricks bundle deploy -t "$TARGET" "${PROFILE_ARGS[@]}"

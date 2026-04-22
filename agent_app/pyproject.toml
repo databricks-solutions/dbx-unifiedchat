@@ -25,6 +25,11 @@ dependencies = [
 [tool.uv]
 prerelease = "allow"
 
+[[tool.uv.index]]
+name = "databricks-pypi-proxy"
+url = "https://pypi-proxy.dev.databricks.com/simple/"
+default = true
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
