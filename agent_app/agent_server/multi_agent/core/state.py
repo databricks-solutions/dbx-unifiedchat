@@ -75,7 +75,7 @@ class GraphInput(TypedDict, total=False):
     is_meta_question: Optional[bool]
     meta_answer: Optional[str]
     is_irrelevant: Optional[bool]
-    space_context: Annotated[Optional[Dict[str, str]], _prefer_latest]
+    space_context: Optional[Dict[str, str]]
     plan: Optional[Dict[str, Any]]
     sub_questions: Optional[List[str]]
     requires_multiple_spaces: Optional[bool]
@@ -127,7 +127,7 @@ class AgentState(TypedDict):
     is_irrelevant: Optional[bool]
 
     # Preloaded clarification context
-    space_context: Annotated[Optional[Dict[str, str]], _prefer_latest]
+    space_context: Optional[Dict[str, str]]
 
     # Deprecated (kept for backward compatibility)
     original_query: Optional[str]
