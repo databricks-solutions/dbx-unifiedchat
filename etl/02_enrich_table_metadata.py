@@ -36,6 +36,7 @@ dbutils.widgets.text("enriched_docs_table", os.getenv("ENRICHED_DOCS_TABLE", "en
 dbutils.widgets.text("llm_endpoint", os.getenv("LLM_ENDPOINT", "databricks-claude-sonnet-4-5"))
 dbutils.widgets.text("sample_size", os.getenv("SAMPLE_SIZE", "20"))
 dbutils.widgets.text("max_unique_values", os.getenv("MAX_UNIQUE_VALUES", "50"))
+dbutils.widgets.text("max_parallel_genies", os.getenv("MAX_PARALLEL_GENIES", "4"))
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -44,6 +45,8 @@ enriched_docs_table_short = dbutils.widgets.get("enriched_docs_table")
 llm_endpoint = dbutils.widgets.get("llm_endpoint")
 sample_size = int(dbutils.widgets.get("sample_size"))
 max_unique_values = int(dbutils.widgets.get("max_unique_values"))
+# Bound driver-side concurrency for Genie space enrichment. Set to 1 for sequential behavior.
+max_parallel_genies = max(1, int(dbutils.widgets.get("max_parallel_genies")))
 
 enriched_docs_table = f"{catalog_name}.{schema_name}.{enriched_docs_table_short}"
 
@@ -54,6 +57,7 @@ print(f"Enriched Docs Table: {enriched_docs_table}")
 print(f"LLM Endpoint: {llm_endpoint}")
 print(f"Sample Size: {sample_size}")
 print(f"Max Unique Values: {max_unique_values}")
+print(f"Max Parallel Genies: {max_parallel_genies}")
 
 # COMMAND ----------
 
@@ -620,20 +624,46 @@ genie_exports_path = f"/Volumes/{catalog_name}/{schema_name}/{volume_name}/genie
 print(f"Looking for Genie exports in: {genie_exports_path}")
 
 import glob
+import concurrent.futures
+import traceback
+
 space_files = glob.glob(f"{genie_exports_path}/*.space.json")
 print(f"Found {len(space_files)} Genie space files")
 
-# Process each space
-all_enriched_docs = []
+# Process each space with bounded driver-side concurrency. Each Genie space is
+# independent, and the slow work is Spark SQL sampling + ai_query calls which
+# release the GIL, so threads are sufficient. Results are reassembled in the
+# original `space_files` order so downstream chunk_ids stay deterministic.
+results_by_index: Dict[int, Dict[str, Any]] = {}
 
-for space_file in space_files:
-    try:
-        enriched_doc = process_genie_space(space_file, enriched_docs_table)
-        all_enriched_docs.append(enriched_doc)
-    except Exception as e:
-        print(f"Error processing {space_file}: {str(e)}")
-        import traceback
-        traceback.print_exc()
+effective_workers = min(max_parallel_genies, len(space_files)) if space_files else 0
+print(f"Processing {len(space_files)} Genie spaces with {effective_workers} parallel worker(s)")
+
+if effective_workers <= 1:
+    for idx, space_file in enumerate(space_files):
+        try:
+            results_by_index[idx] = process_genie_space(space_file, enriched_docs_table)
+        except Exception as e:
+            print(f"Error processing {space_file}: {str(e)}")
+            traceback.print_exc()
+else:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=effective_workers) as executor:
+        future_to_idx = {
+            executor.submit(process_genie_space, space_file, enriched_docs_table): idx
+            for idx, space_file in enumerate(space_files)
+        }
+
+        for future in concurrent.futures.as_completed(future_to_idx):
+            idx = future_to_idx[future]
+            space_file = space_files[idx]
+            try:
+                results_by_index[idx] = future.result()
+            except Exception as e:
+                print(f"Error processing {space_file}: {str(e)}")
+                traceback.print_exc()
+
+# Preserve original file order for deterministic downstream chunk_ids
+all_enriched_docs = [results_by_index[i] for i in range(len(space_files)) if i in results_by_index]
 
 print(f"\n{'='*80}")
 print(f"Successfully enriched {len(all_enriched_docs)} Genie spaces")
