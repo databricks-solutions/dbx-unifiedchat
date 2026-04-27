@@ -49,7 +49,7 @@ export const chat = createTable('Chat', {
   })
     .notNull()
     .default('medium'),
-  countOnly: boolean('countOnly').notNull().default(false),
+  countOnly: boolean('countOnly').notNull().default(true),
   lastContext: jsonb('lastContext').$type<LanguageModelV3Usage | null>(),
 });
 

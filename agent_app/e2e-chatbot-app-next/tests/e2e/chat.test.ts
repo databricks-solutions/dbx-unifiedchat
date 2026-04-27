@@ -721,7 +721,7 @@ test.describe('Ephemeral Mode', () => {
 });
 
 test.describe('Agent Settings', () => {
-  test('should send selected route for both parallel and sequential execution', async ({
+  test('should send selected route with locked execution and count-only settings', async ({
     adaContext,
   }) => {
     const { page } = adaContext;
@@ -763,37 +763,19 @@ test.describe('Agent Settings', () => {
         executionMode: 'parallel',
         synthesisRoute: 'auto',
         clarificationSensitivity: 'medium',
-        countOnly: false,
+        countOnly: true,
       },
       {
         executionMode: 'parallel',
         synthesisRoute: 'table_route',
         clarificationSensitivity: 'medium',
-        countOnly: false,
+        countOnly: true,
       },
       {
         executionMode: 'parallel',
         synthesisRoute: 'genie_route',
         clarificationSensitivity: 'medium',
-        countOnly: false,
-      },
-      {
-        executionMode: 'sequential',
-        synthesisRoute: 'auto',
-        clarificationSensitivity: 'medium',
-        countOnly: false,
-      },
-      {
-        executionMode: 'sequential',
-        synthesisRoute: 'table_route',
-        clarificationSensitivity: 'medium',
-        countOnly: false,
-      },
-      {
-        executionMode: 'sequential',
-        synthesisRoute: 'genie_route',
-        clarificationSensitivity: 'medium',
-        countOnly: false,
+        countOnly: true,
       },
     ] as const;
 
@@ -866,7 +848,7 @@ test.describe('Agent Settings', () => {
       executionMode: 'parallel',
       synthesisRoute: 'table_route',
       clarificationSensitivity: 'medium',
-      countOnly: false,
+      countOnly: true,
     });
 
     requestCountBefore = requests.length;
@@ -878,7 +860,7 @@ test.describe('Agent Settings', () => {
       executionMode: 'parallel',
       synthesisRoute: 'genie_route',
       clarificationSensitivity: 'high',
-      countOnly: false,
+      countOnly: true,
     });
 
     await clearAppLocalStorage(page);
@@ -892,7 +874,7 @@ test.describe('Agent Settings', () => {
       executionMode: 'parallel',
       synthesisRoute: 'genie_route',
       clarificationSensitivity: 'off',
-      countOnly: false,
+      countOnly: true,
     });
 
     requestCountBefore = requests.length;
@@ -904,7 +886,7 @@ test.describe('Agent Settings', () => {
       executionMode: 'parallel',
       synthesisRoute: 'table_route',
       clarificationSensitivity: 'on',
-      countOnly: false,
+      countOnly: true,
     });
   });
 
@@ -1006,7 +988,7 @@ test.describe('Agent Settings', () => {
         executionMode: 'parallel',
         synthesisRoute: 'table_route',
         clarificationSensitivity: 'on',
-        countOnly: false,
+        countOnly: true,
       },
     });
 
@@ -1031,7 +1013,7 @@ test.describe('Agent Settings', () => {
             executionMode: 'parallel',
             synthesisRoute: 'table_route',
             clarificationSensitivity: 'on',
-            countOnly: false,
+            countOnly: true,
           },
         }),
       });
@@ -1046,7 +1028,7 @@ test.describe('Agent Settings', () => {
         executionMode: 'parallel',
         synthesisRoute: 'table_route',
         clarificationSensitivity: 'on',
-        countOnly: false,
+        countOnly: true,
       },
     });
   });
@@ -1183,12 +1165,12 @@ test.describe('Agent Settings', () => {
     await firstChatPage.createNewChat();
     await secondChatPage.createNewChat();
 
-    await firstChatPage.configureAgentSettings('sequential', 'genie_route', 'high');
+    await firstChatPage.configureAgentSettings('parallel', 'genie_route', 'high');
     await secondChatPage.configureAgentSettings('parallel', 'table_route', 'low');
 
     await page.bringToFront();
     await firstChatPage.openAgentSettings();
-    await expect(page.getByTestId('execution-mode-value')).toHaveText('Sequential');
+    await expect(page.getByTestId('execution-mode-value')).toHaveText('Parallel');
     await expect(page.getByTestId('synthesis-route-genie_route')).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -1219,7 +1201,6 @@ test.describe('Agent Settings', () => {
 
     await chatPage.createNewChat();
     await chatPage.openAgentSettings();
-    await chatPage.setExecutionMode('sequential');
     await chatPage.setSynthesisRoute('genie_route');
     await chatPage.setClarificationSensitivity('on');
     await chatPage.cancelAgentSettings();
@@ -1306,7 +1287,7 @@ test.describe('Agent Settings', () => {
     await page.goto(`/chat/${chatId}`);
     await page.waitForLoadState('networkidle');
 
-    await chatPage.configureAgentSettings('sequential', 'genie_route', 'high');
+    await chatPage.configureAgentSettings('parallel', 'genie_route', 'high');
 
     await page.goto('/');
     await page.waitForLoadState('networkidle');
@@ -1315,7 +1296,7 @@ test.describe('Agent Settings', () => {
 
     await chatPage.openAgentSettings();
     await expect(page.getByTestId('execution-mode-value')).toHaveText(
-      'Sequential',
+      'Parallel',
     );
     await expect(
       page.getByTestId('synthesis-route-genie_route'),

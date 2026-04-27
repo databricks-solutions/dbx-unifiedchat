@@ -319,7 +319,7 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
           synthesisRoute: agentSettings?.synthesisRoute ?? 'auto',
           clarificationSensitivity:
             agentSettings?.clarificationSensitivity ?? 'medium',
-          countOnly: agentSettings?.countOnly ?? false,
+          countOnly: agentSettings?.countOnly ?? true,
         });
 
         generateTitleFromUserMessage({ message })
@@ -570,7 +570,7 @@ chatRouter.post('/', requireAuth, async (req: Request, res: Response) => {
       'x-agent-synthesis-route': chatAgentSettings?.synthesisRoute ?? 'auto',
       'x-agent-clarification-sensitivity':
         chatAgentSettings?.clarificationSensitivity ?? 'medium',
-      'x-agent-count-only': String(chatAgentSettings?.countOnly ?? false),
+      'x-agent-count-only': String(chatAgentSettings?.countOnly ?? true),
       'x-chat-request-kind': traceKind,
       'x-chat-trace-source': 'chat-route',
       'x-chat-retry-attempt': '0',

@@ -18,10 +18,13 @@ export interface AgentSettings {
   countOnly: boolean;
 }
 
+const LOCKED_EXECUTION_MODE: ExecutionMode = 'parallel';
+const LOCKED_COUNT_ONLY = true;
+
 function normalizeExecutionMode(
   value: AgentSettings['executionMode'] | undefined,
 ): AgentSettings['executionMode'] {
-  return value === 'sequential' ? 'sequential' : 'parallel';
+  return LOCKED_EXECUTION_MODE;
 }
 
 function normalizeSynthesisRoute(
@@ -47,7 +50,7 @@ function normalizeSettings(
     clarificationSensitivity: normalizeClarificationSensitivity(
       settings?.clarificationSensitivity,
     ),
-    countOnly: settings?.countOnly ?? false,
+    countOnly: LOCKED_COUNT_ONLY,
   };
 }
 
@@ -232,40 +235,21 @@ export function AgentSettingsPanel({
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() =>
-                  setDraftSettings((prev) => {
-                    const next = normalizeSettings({
-                      ...prev,
-                      executionMode:
-                        prev.executionMode === 'parallel'
-                          ? 'sequential'
-                          : 'parallel',
-                    });
-                    onLiveUpdate(next);
-                    return next;
-                  })
-                }
+                disabled
                 role="switch"
                 aria-label="Execution mode"
                 aria-checked={draftSettings.executionMode === 'sequential'}
+                aria-disabled="true"
                 data-testid="execution-mode-toggle"
-                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-                  draftSettings.executionMode === 'sequential'
-                    ? 'bg-blue-600'
-                    : 'bg-zinc-200 dark:bg-zinc-700'
-                }`}
+                className="relative inline-flex h-5 w-9 shrink-0 cursor-not-allowed rounded-full border-2 border-transparent bg-zinc-300 opacity-60 transition-colors dark:bg-zinc-700"
               >
                 <span
-                  className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
-                    draftSettings.executionMode === 'sequential'
-                      ? 'translate-x-4'
-                      : 'translate-x-0'
-                  }`}
+                  className="pointer-events-none inline-block h-4 w-4 translate-x-0 rounded-full bg-white shadow transition-transform"
                 />
               </button>
               <span
                 data-testid="execution-mode-value"
-                className="text-xs text-zinc-600 dark:text-zinc-300"
+                className="text-xs text-zinc-400 dark:text-zinc-500"
               >
                 {draftSettings.executionMode === 'sequential'
                   ? 'Sequential'
@@ -375,37 +359,21 @@ export function AgentSettingsPanel({
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() =>
-                  setDraftSettings((prev) => {
-                    const next = normalizeSettings({
-                      ...prev,
-                      countOnly: !prev.countOnly,
-                    });
-                    onLiveUpdate(next);
-                    return next;
-                  })
-                }
+                disabled
                 role="switch"
                 aria-label="Count only"
                 aria-checked={draftSettings.countOnly}
+                aria-disabled="true"
                 data-testid="count-only-toggle"
-                className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-                  draftSettings.countOnly
-                    ? 'bg-blue-600'
-                    : 'bg-zinc-200 dark:bg-zinc-700'
-                }`}
+                className="relative inline-flex h-5 w-9 shrink-0 cursor-not-allowed rounded-full border-2 border-transparent bg-zinc-300 opacity-60 transition-colors dark:bg-zinc-700"
               >
                 <span
-                  className={`pointer-events-none inline-block h-4 w-4 rounded-full bg-white shadow transition-transform ${
-                    draftSettings.countOnly
-                      ? 'translate-x-4'
-                      : 'translate-x-0'
-                  }`}
+                  className="pointer-events-none inline-block h-4 w-4 translate-x-4 rounded-full bg-white shadow transition-transform"
                 />
               </button>
               <span
                 data-testid="count-only-value"
-                className="text-xs text-zinc-600 dark:text-zinc-300"
+                className="text-xs text-zinc-400 dark:text-zinc-500"
               >
                 {draftSettings.countOnly ? 'On' : 'Off'}
               </span>

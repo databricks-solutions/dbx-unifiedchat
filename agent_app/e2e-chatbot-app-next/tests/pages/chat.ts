@@ -87,13 +87,9 @@ export class ChatPage {
     await this.openAgentSettings();
 
     const value = this.executionModeValue();
-    const currentMode = (await value.textContent())?.trim().toLowerCase();
-
-    if (currentMode !== mode) {
-      await this.executionModeToggle().click();
-    }
-
-    await expect(value).toHaveText(mode === 'parallel' ? 'Parallel' : 'Sequential');
+    await expect(this.executionModeToggle()).toBeDisabled();
+    await expect(value).toHaveText('Parallel');
+    expect(mode).toBe('parallel');
   }
 
   async setSynthesisRoute(route: SynthesisRoute) {

@@ -31,7 +31,7 @@ const agentSettingsSchema = z
     clarificationSensitivity: z
       .enum(['off', 'low', 'medium', 'high', 'on'])
       .default('medium'),
-    countOnly: z.boolean().default(false),
+    countOnly: z.boolean().default(true),
   })
   .optional();
 

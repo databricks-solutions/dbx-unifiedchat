@@ -19,12 +19,12 @@ export const Greeting = () => {
         animate={{ opacity: 1, scale: 1 }}
         exit={{ opacity: 0, scale: 0.7 }}
         transition={{ delay: 0.2, type: 'spring', stiffness: 200, damping: 15 }}
-        className="mb-6"
+        className="mb-8"
       >
         <img
           src={logoUrl}
           alt="dbx-unifiedchat logo"
-          className="h-24 w-auto drop-shadow-lg"
+          className="h-36 w-auto drop-shadow-lg md:h-44"
         />
       </motion.div>
 

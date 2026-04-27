@@ -99,7 +99,7 @@ export async function saveChat({
   executionMode = 'parallel',
   synthesisRoute = 'auto',
   clarificationSensitivity = 'medium',
-  countOnly = false,
+  countOnly = true,
 }: {
   id: string;
   userId: string;
