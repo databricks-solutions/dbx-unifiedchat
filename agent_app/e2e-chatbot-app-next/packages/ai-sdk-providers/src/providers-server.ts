@@ -84,7 +84,7 @@ const endpointDetailsCache = new Map<
   string,
   { task: string | undefined; timestamp: number }
 >();
-const ENDPOINT_DETAILS_CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+const ENDPOINT_DETAILS_CACHE_DURATION = 60 * 60 * 1000; // 60 minutes
 
 /**
  * Checks if context should be injected based on cached endpoint details.
@@ -399,7 +399,7 @@ const providerCache = new Map<
   ProviderMode,
   { provider: CachedProvider; timestamp: number }
 >();
-const PROVIDER_CACHE_DURATION = 5 * 60 * 1000; // Cache provider for 5 minutes
+const PROVIDER_CACHE_DURATION = 60 * 60 * 1000; // Cache provider for 60 minutes
 
 function getAuxiliaryModelEndpoint(id: string): string {
   const endpoint = process.env.LLM_ENDPOINT_SUMMARIZE ?? process.env.LLM_ENDPOINT;
@@ -496,7 +496,7 @@ export class OAuthAwareProvider implements SmartProvider {
     string,
     { model: LanguageModelV3; timestamp: number }
   >();
-  private readonly CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+  private readonly CACHE_DURATION = 60 * 60 * 1000; // 60 minutes
 
   async languageModel(id: string): Promise<LanguageModelV3> {
     // Check cache first
