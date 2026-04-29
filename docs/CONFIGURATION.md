@@ -160,6 +160,19 @@ The deployment simplification work is opinionated in a few ways:
 - check `.github/workflows/ci-cd.yml` and confirm it runs from `agent_app/`
 - compare the flags passed to `agent_app/scripts/deploy.sh`
 
+## SQL synthesis and Databricks SQL dialect
+
+The **SQL Synthesis** agents (table and Genie routes) append a **static Databricks
+SQL skill** at runtime from `agent_server/multi_agent/prompts/databricks_sql_synthesis_skill.md`
+so generated SQL targets **Databricks SQL (Spark SQL)**. No extra config keys are
+required for that behavior.
+
+To attach **optional** workspace tooling (for example **external MCP** servers
+registered in Unity Catalog for documentation or other aids), see
+`agent_app/scripts/discover_tools.py` and Databricks documentation on **MCP**
+and **Model Context Protocol** integration. That is separate from the static
+prompt skill, which must remain the baseline for the shipped agent.
+
 ## See Also
 
 - [Deployment Guide](DEPLOYMENT.md)
