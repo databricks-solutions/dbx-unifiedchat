@@ -28,8 +28,9 @@ _FALLBACK_DATABRICKS_SQL_SYNTHESIS_SKILL = """
 All final SQL must be valid **Databricks / Spark SQL** (Databricks SQL warehouse).
 - `catalog.schema.table` where appropriate; **single-quoted** string literals.
 - `UNION` / `UNION ALL`: same column count and compatible types per branch; prefer `UNION ALL` when deduplication is not required.
-- Use Spark SQL / Databricks built-ins; avoid other vendors' function names. `QUALIFY` and `IDENTIFIER()` exist — see language manual.
-- Dialect reference: https://docs.databricks.com/sql/language-manual/index.html
+- **No T-SQL** patterns: e.g. no `CROSS APPLY` — use subqueries/CTEs/joins instead. After `GROUP BY`, do not `ORDER BY` ungrouped base columns; use grouped keys, aggregates, or output aliases.
+- Use Spark SQL / Databricks built-ins; `QUALIFY` and `IDENTIFIER()` per language manual.
+- https://docs.databricks.com/sql/language-manual/index.html
 """.strip()
 
 

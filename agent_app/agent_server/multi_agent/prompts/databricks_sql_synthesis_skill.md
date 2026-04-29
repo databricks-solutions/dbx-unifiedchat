@@ -44,6 +44,24 @@ All **final** SQL you emit MUST be valid for **Databricks SQL** (Spark SQL as im
 - Conflating **double-quoted identifiers** with **single-quoted string literals**.
 - Mixing ambiguous **comma** joins — prefer explicit **`JOIN ... ON`**.
 
+## T-SQL → Databricks SQL (frequent real failures)
+
+Models often emit **Microsoft SQL Server (T-SQL)** or other dialects. **Do not** paste those patterns into Databricks SQL.
+
+| Wrong elsewhere | On Databricks SQL (Spark SQL) |
+|-----------------|------------------------------|
+| **`CROSS APPLY` / `OUTER APPLY`** (T-SQL) | **Not** supported the same way. Use a **subquery** or **CTE** in the `FROM` clause, an **`INNER JOIN` to a derived table**, or **`LATERAL`**-style inline views only as documented for your runtime. Prefer the same pattern you use for a known-good query in the same answer (e.g. “Query 4 worked — mirror that structure”). |
+| **`TOP n`** without `ORDER BY` (T-SQL idiom) | Prefer **`LIMIT`** / **`ORDER BY` … `LIMIT`**, or window functions, per language manual. |
+
+## `GROUP BY` and `ORDER BY` with aggregations (Spark scoping)
+
+Errors like `[UNRESOLVED_COLUMN]` on **`ORDER BY` / `HAVING` after `GROUP BY`** are common when the model still references a **raw fact table column** (e.g. `e.patient_year_of_birth`) in a place where only **grouping keys** or **aggregates** are allowed.
+
+- **`GROUP BY`:** Do not rely on a **`SELECT` list alias** in **`GROUP BY`** in Spark SQL — repeat the **full expression** (e.g. the same `CASE` / `YEAR(CURRENT_DATE()) - …` as in the select list) in **`GROUP BY`**, or list only keys that are exactly those expressions.
+- **`ORDER BY` (after `GROUP BY`):** Order by **(a)** an expression that appears in **`GROUP BY`**, **(b)** an **aggregate** from the `SELECT` list, or **(c)** the **output column name** of a selected expression (e.g. `age_group`) when that is valid in your engine — **not** a base-table column you did not group by. If you need a sort key parallel to a bucket label, repeat the **same** `CASE` as in the select list or order by the **alias** if resolution works; avoid bare `e.column` that is not part of the grouping.
+
+Use **one subquery / CTE** that computes per-row values (e.g. age, buckets), then **`GROUP BY`** on those computed columns in an **outer** query if the inner pattern keeps scoping clear.
+
 ## When uncertain
 
 - Prefer **CTEs** (`WITH`) for readability and to type-check each branch of a `UNION`.
