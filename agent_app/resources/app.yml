@@ -73,6 +73,8 @@ resources:
             value: ${var.agent_prewarm_on_startup}
           - name: AGENT_PREWARM_SPACE_CONTEXT
             value: ${var.agent_prewarm_space_context}
+          - name: AGENT_CHECKPOINTER_MAX_IDLE_SECONDS
+            value: ${var.agent_checkpointer_max_idle_seconds}
           - name: AGENT_KEEP_WARM_INTERVAL_SECONDS
             value: ${var.agent_keep_warm_interval_seconds}
 

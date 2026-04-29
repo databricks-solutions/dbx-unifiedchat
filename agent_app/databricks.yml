@@ -115,8 +115,10 @@ variables:
     default: "true"
   agent_prewarm_space_context:
     default: "true"
+  agent_checkpointer_max_idle_seconds:
+    default: "1800"
   agent_keep_warm_interval_seconds:
-    default: "600"
+    default: "1800"
 
   # Genie spaces
   # Common override: set this to the comma-separated Genie spaces for the target.
@@ -129,7 +131,7 @@ targets:
     mode: development
     workspace:
       # profile is the databricks workspace profile name. It is used to identify the workspace where the bundle will be deployed.
-      # it is the [profile_name] in the databricks.cfg file.
+      # it is the [profile_name] in the ~/.databrickscfg file..
       profile: "<dev-profile>"
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
     variables:
@@ -152,7 +154,7 @@ targets:
     mode: production
     workspace:
       # profile is the databricks workspace profile name. It is used to identify the workspace where the bundle will be deployed.
-      # it is the [profile_name] in the databricks.cfg file.
+      # it is the [profile_name] in the ~/.databrickscfg file.
       profile: "<prod-profile>"
       root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
     variables:
