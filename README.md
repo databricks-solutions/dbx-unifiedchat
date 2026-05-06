@@ -221,6 +221,7 @@ supported workflow.
 ### Getting Started
 
 * [**Development Guide**](docs/DEVELOPMENT_GUIDE.md) - Project setup and workflow overview
+* [**Make Instructions**](docs/MAKE_INSTRUCTIONS.md) - `make`-based developer workflow (deploy, local dev, tests)
 * [**ETL Guide**](docs/ETL_GUIDE.md) - Metadata indexing workflow used by the app bundle
 * [**Local Development Guide**](docs/LOCAL_DEVELOPMENT.md) - Local environment notes
 * [**Configuration Reference**](docs/CONFIGURATION.md) - Configuration details across environments

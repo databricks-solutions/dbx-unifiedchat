@@ -8,9 +8,16 @@
 #   Databricks CLI flags, or our internal script conventions up front.
 #
 # First time here? Run:
-#     make doctor     # check your machine has everything required
-#     make setup      # install Python + frontend deps
-#     make deploy     # validate + deploy to dev + start the app
+#     make doctor          # check your machine has everything required
+#     make setup           # install Python + frontend deps, seed databricks.local.yml
+#     make dev-local       # local bootstrap (creates agent_app/.env from databricks.yml)
+#     make deploy          # validate + preflight + deploy to dev + start the app
+#
+# README.md canonical deploy path: agent_app/scripts/deploy.sh
+#   Routine code-only:   make app-deploy-dev-run   (no ETL prep)
+#   Canonical full:      make app-deploy-dev-full  (--run-job full --start-app)
+#   Production:          make app-deploy-prod-full
+#   CI:                  TARGET=prod make app-deploy-ci
 #
 # Platforms
 #   macOS, Linux: works with the default shell.
@@ -71,12 +78,15 @@ PIP_AVAILABLE := $(shell $(PYTHON) -m pip --version 2>/dev/null)
 ifdef UV_AVAILABLE
   INSTALLER      ?= uv pip
   INSTALLER_NAME := uv
+  PYTEST         ?= uv run pytest
 else ifdef PIP_AVAILABLE
   INSTALLER      ?= $(PYTHON) -m pip
   INSTALLER_NAME := pip
+  PYTEST         ?= pytest
 else
   INSTALLER      ?= __missing__
   INSTALLER_NAME := none
+  PYTEST         ?= pytest
 endif
 
 # Formatting / linting thresholds (unused unless you install the tools)
@@ -116,10 +126,12 @@ define check_tool
 endef
 
 define check_env_file
-	@if [ ! -f .env ]; then \
-		printf '%b\n' "$(RED)Error: .env not found at repo root.$(RESET)"; \
-		printf '  This file holds your Databricks workspace URL, token, and UC names.\n'; \
-		printf '  Ask a teammate for a sample, or see README.md for required variables.\n'; \
+	@if [ ! -f "$(APP_DIR)/.env" ] && [ ! -f .env ]; then \
+		printf '%b\n' "$(RED)Error: no .env found.$(RESET)"; \
+		printf '  Looked for $(APP_DIR)/.env (canonical local runtime overlay) and ./.env (legacy).\n'; \
+		printf '  $(APP_DIR)/.env is created automatically by:\n'; \
+		printf '    %bmake dev-local%b   — one-time bootstrap\n' "$(CYAN)" "$(RESET)"; \
+		printf '  Or set Databricks auth via %bdatabricks auth login%b and rerun.\n' "$(CYAN)" "$(RESET)"; \
 		exit 1; \
 	fi
 endef
@@ -189,10 +201,17 @@ doctor: ## Check every prerequisite and print OS-specific install hints
 	fi
 	@printf '\n'
 	@printf '%b\n' "$(CYAN)$(BOLD)Project files$(RESET)"
-	@if [ -f .env ]; then \
-		printf '  %b.env:%b          present\n' "$(GREEN)" "$(RESET)"; \
+	@if [ -f "$(APP_DIR)/.env" ]; then \
+		printf '  %b$(APP_DIR)/.env:%b present (canonical local runtime overlay)\n' "$(GREEN)" "$(RESET)"; \
+	elif [ -f .env ]; then \
+		printf '  %b$(APP_DIR)/.env:%b MISSING (legacy ./.env present — local dev creates $(APP_DIR)/.env on first run)\n' "$(YELLOW)" "$(RESET)"; \
 	else \
-		printf '  %b.env:%b          MISSING — required for local dev (see README)\n' "$(YELLOW)" "$(RESET)"; \
+		printf '  %b$(APP_DIR)/.env:%b MISSING — created by %bmake dev-local%b on first run\n' "$(YELLOW)" "$(RESET)" "$(CYAN)" "$(RESET)"; \
+	fi
+	@if [ -f "$(APP_DIR)/databricks.local.yml" ]; then \
+		printf '  %b$(APP_DIR)/databricks.local.yml:%b present (private overlay)\n' "$(GREEN)" "$(RESET)"; \
+	elif [ -f "$(APP_DIR)/databricks.local.yml.example" ]; then \
+		printf '  %b$(APP_DIR)/databricks.local.yml:%b not yet copied — run %bmake setup%b\n' "$(YELLOW)" "$(RESET)" "$(CYAN)" "$(RESET)"; \
 	fi
 	@if [ -f "$(APP_DIR)/databricks.yml" ]; then \
 		printf '  %bDAB bundle:%b    %s\n' "$(GREEN)" "$(RESET)" "$(APP_DIR)/databricks.yml"; \
@@ -255,10 +274,13 @@ ensure-installer: ## Verify uv/pip exists; guide user to install uv if not
 .PHONY: setup
 setup: ## First-time onboarding: Python deps, frontend deps, pre-commit hooks
 	$(call say,$(CYAN)Setting up development environment...$(RESET))
-	@if [ ! -f .env ]; then \
-		printf '%b\n' "$(YELLOW).env not found at repo root.$(RESET)"; \
-		printf '  Copy values from a teammate or see README for required keys.\n'; \
-		printf '  Continuing — some targets (make dev, integration tests) will fail without it.\n'; \
+	@if [ ! -f "$(APP_DIR)/databricks.local.yml" ] && [ -f "$(APP_DIR)/databricks.local.yml.example" ]; then \
+		cp "$(APP_DIR)/databricks.local.yml.example" "$(APP_DIR)/databricks.local.yml"; \
+		printf '%b\n' "$(GREEN)Created $(APP_DIR)/databricks.local.yml from example. Fill in your private values, then mirror them into $(APP_DIR)/databricks.yml.$(RESET)"; \
+	fi
+	@if [ ! -f "$(APP_DIR)/.env" ]; then \
+		printf '%b\n' "$(YELLOW)$(APP_DIR)/.env not present yet — local dev scripts create it on first run.$(RESET)"; \
+		printf '  Run %bmake dev-local%b after setup to bootstrap $(APP_DIR)/.env from databricks.yml.\n' "$(CYAN)" "$(RESET)"; \
 	fi
 	@$(MAKE) python-install
 ifeq ($(INSTALL_FE_DEPS),true)
@@ -275,8 +297,9 @@ endif
 	@printf '\n%b\n' "$(GREEN)Setup complete.$(RESET)"
 	@printf 'Next:\n'
 	@printf '  1. Run: %bmake doctor%b — verify your environment\n' "$(CYAN)" "$(RESET)"
-	@printf '  2. Ensure .env exists with Databricks credentials\n'
-	@printf '  3. Run: %bmake deploy%b — validate + deploy + start app on dev\n' "$(CYAN)" "$(RESET)"
+	@printf '  2. Authenticate: %bdatabricks auth login --profile <profile>%b (matches profile in $(APP_DIR)/databricks.yml)\n' "$(CYAN)" "$(RESET)"
+	@printf '  3. Bootstrap local runtime: %bmake dev-local%b (creates $(APP_DIR)/.env)\n' "$(CYAN)" "$(RESET)"
+	@printf '  4. Iterate: %bmake dev-hot-reload%b — or deploy: %bmake deploy%b\n' "$(CYAN)" "$(RESET)" "$(CYAN)" "$(RESET)"
 
 .PHONY: python-install
 python-install: ensure-installer ## Install agent_app Python package (editable, with dev deps)
@@ -372,14 +395,20 @@ python-lint: ## Check Python formatting and lint (black/isort/flake8)
 
 .PHONY: python-test-unit
 python-test-unit: ## Run unit tests (agent_app/tests/unit)
-	$(call say,$(CYAN)Running unit tests...$(RESET))
-	cd $(APP_DIR) && pytest tests/unit -v
+	$(call say,$(CYAN)Running unit tests via $(PYTEST)...$(RESET))
+	cd $(APP_DIR) && $(PYTEST) tests/unit -v
+
+.PHONY: python-test-integration
+python-test-integration: ## Run integration tests (-m integration; needs Databricks auth)
+	$(call check_env_file)
+	$(call say,$(CYAN)Running integration tests via $(PYTEST)...$(RESET))
+	cd $(APP_DIR) && $(PYTEST) -m integration tests/ -v
 
 .PHONY: python-test
-python-test: ## Run all Python tests
+python-test: ## Run all Python tests (unit + integration)
 	$(call check_env_file)
-	$(call say,$(CYAN)Running all Python tests...$(RESET))
-	cd $(APP_DIR) && pytest tests/ -v
+	$(call say,$(CYAN)Running all Python tests via $(PYTEST)...$(RESET))
+	cd $(APP_DIR) && $(PYTEST) tests/ -v
 
 # ==============================================================================
 # FRONTEND
@@ -442,7 +471,7 @@ db-reset: ## Reset database (destructive!)
 # ==============================================================================
 
 .PHONY: preflight
-preflight: ## Check workspace resources exist before deploying (target: dev)
+preflight: ## Check workspace resources exist before deploying (TARGET=dev|prod, default dev)
 	$(call check_bundle_yaml)
 	$(call check_tool,databricks,Databricks CLI,brew tap databricks/tap && brew install databricks,winget install Databricks.DatabricksCLI,curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh)
 	cd $(APP_DIR) && uv run --quiet python scripts/preflight.py --target $${TARGET:-dev}
@@ -459,77 +488,134 @@ dab-validate: ## Validate the DAB bundle in agent_app/
 	$(call say,$(CYAN)Validating DAB bundle in $(APP_DIR)/...$(RESET))
 	cd $(APP_DIR) && databricks bundle validate
 
-.PHONY: dab-deploy-dev
-dab-deploy-dev: dab-validate ## Deploy DAB to dev target (validates first)
-	$(call say,$(CYAN)Deploying bundle to dev...$(RESET))
-	cd $(APP_DIR) && databricks bundle deploy -t dev
-	$(call say,$(GREEN)Bundle deployed to dev.$(RESET))
-
-.PHONY: dab-deploy-prod
-dab-deploy-prod: dab-validate ## Deploy DAB to prod target (confirms first)
-	$(call say,$(YELLOW)You are about to deploy to PRODUCTION.$(RESET))
-	@read -p "Confirm production deploy? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
-	cd $(APP_DIR) && databricks bundle deploy -t prod
-	$(call say,$(GREEN)Bundle deployed to prod.$(RESET))
-
 .PHONY: dab-destroy-dev
-dab-destroy-dev: ## Tear down dev bundle resources
+dab-destroy-dev: ## Tear down dev bundle resources (referenced by DEPLOY_CHECKLIST §I)
 	$(call check_bundle_yaml)
 	$(call say,$(RED)About to destroy DEV bundle resources.$(RESET))
 	@read -p "Are you sure? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
 	cd $(APP_DIR) && databricks bundle destroy -t dev
 
+# --- Advanced / raw bundle deploy --------------------------------------------
+# These bypass `agent_app/scripts/deploy.sh`, so they SKIP preflight, local
+# bootstrap, and shared-infra reconciliation. Prefer the app-deploy-* targets
+# below for routine deploys. Kept for advanced users debugging terraform.
+
+.PHONY: dab-deploy-dev-raw
+dab-deploy-dev-raw: dab-validate ## [advanced] Raw `bundle deploy -t dev` (skips preflight/shared-infra)
+	$(call say,$(YELLOW)Raw bundle deploy — preflight and shared-infra are NOT run.$(RESET))
+	cd $(APP_DIR) && databricks bundle deploy -t dev
+	$(call say,$(GREEN)Bundle deployed to dev.$(RESET))
+
+.PHONY: dab-deploy-prod-raw
+dab-deploy-prod-raw: dab-validate ## [advanced] Raw `bundle deploy -t prod` (skips preflight/shared-infra)
+	$(call say,$(YELLOW)Raw bundle deploy to PRODUCTION — preflight and shared-infra are NOT run.$(RESET))
+	@read -p "Confirm production deploy? [Y/N] " confirm && [ "$$confirm" = "Y" ] || exit 1
+	cd $(APP_DIR) && databricks bundle deploy -t prod
+	$(call say,$(GREEN)Bundle deployed to prod.$(RESET))
+
 # ==============================================================================
 # APP — Full guided deployment via agent_app/scripts/deploy.sh
+#
+# All targets here delegate to `agent_app/scripts/deploy.sh`, which runs
+# preflight + bundle deploy + shared-infra reconciliation. The README's
+# canonical recipe is `--run-job full --start-app` (see *-full targets).
 # ==============================================================================
 
 .PHONY: app-deploy-dev
-app-deploy-dev: ## Deploy Databricks App to dev (validate + deploy + shared-infra job)
+app-deploy-dev: ## Deploy app to dev (validate → preflight → deploy → shared-infra; no app start)
 	$(call check_bundle_yaml)
 	$(call check_tool,databricks,Databricks CLI,brew tap databricks/tap && brew install databricks,winget install Databricks.DatabricksCLI,curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh)
 	$(call say,$(CYAN)Deploying app to dev...$(RESET))
 	cd $(APP_DIR) && bash scripts/deploy.sh --target dev
 
 .PHONY: app-deploy-dev-run
-app-deploy-dev-run: ## Deploy Databricks App to dev AND start it
+app-deploy-dev-run: ## Deploy app to dev and start it (validate → preflight → deploy → shared-infra → start)
 	$(call check_bundle_yaml)
 	$(call check_tool,databricks,Databricks CLI,brew tap databricks/tap && brew install databricks,winget install Databricks.DatabricksCLI,curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh)
 	$(call say,$(CYAN)Deploying app to dev (and starting)...$(RESET))
 	cd $(APP_DIR) && bash scripts/deploy.sh --target dev --start-app
 
 .PHONY: app-deploy-dev-full
-app-deploy-dev-full: ## Deploy + run full post-deploy job graph + start app (dev)
+app-deploy-dev-full: ## Dev: README canonical (deploy + full job graph: ETL prep + validation + start)
 	$(call check_bundle_yaml)
-	$(call say,$(CYAN)Full dev deploy: bundle + full job + start...$(RESET))
+	$(call say,$(CYAN)Full dev deploy: bundle + full job graph + start...$(RESET))
 	cd $(APP_DIR) && bash scripts/deploy.sh --target dev --run-job full --start-app
 
 .PHONY: app-deploy-prod
-app-deploy-prod: ## Deploy Databricks App to prod
+app-deploy-prod: ## Deploy app to prod (no app start)
 	$(call check_bundle_yaml)
 	$(call say,$(YELLOW)About to deploy app to PRODUCTION.$(RESET))
 	@read -p "Confirm production deploy? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
 	cd $(APP_DIR) && bash scripts/deploy.sh --target prod
 
 .PHONY: app-deploy-prod-run
-app-deploy-prod-run: ## Deploy Databricks App to prod AND start it
+app-deploy-prod-run: ## Deploy app to prod and start it
 	$(call check_bundle_yaml)
 	$(call say,$(YELLOW)About to deploy app to PRODUCTION and start it.$(RESET))
 	@read -p "Confirm production deploy? [y/N] " confirm && [ "$$confirm" = "y" ] || exit 1
 	cd $(APP_DIR) && bash scripts/deploy.sh --target prod --start-app
 
-.PHONY: app-list-jobs
-app-list-jobs: ## List available bundle jobs (aliases + keys)
+.PHONY: app-deploy-prod-full
+app-deploy-prod-full: ## Prod: README canonical (deploy + full job graph: ETL prep + validation + start)
 	$(call check_bundle_yaml)
-	cd $(APP_DIR) && bash scripts/deploy.sh --target dev --list-jobs
+	$(call say,$(YELLOW)Full PRODUCTION deploy: bundle + full job graph + start...$(RESET))
+	@read -p "Confirm production deploy? [Y/N] " confirm && [ "$$confirm" = "Y" ] || exit 1
+	cd $(APP_DIR) && bash scripts/deploy.sh --target prod --run-job full --start-app
+
+.PHONY: app-deploy-ci
+app-deploy-ci: ## CI deploy (TARGET=dev|prod, default dev): --sync-workspace --run-job full --ci --skip-bootstrap
+	$(call check_bundle_yaml)
+	$(call say,$(CYAN)CI deploy to $${TARGET:-dev}...$(RESET))
+	cd $(APP_DIR) && bash scripts/deploy.sh --target $${TARGET:-dev} --sync-workspace --run-job full --ci --skip-bootstrap --start-app
+
+.PHONY: etl-prep
+etl-prep: ## Run ETL prep job graph only (TARGET=dev|prod, default dev): --run-job prep
+	$(call check_bundle_yaml)
+	$(call say,$(CYAN)Running ETL prep job graph for target $${TARGET:-dev}...$(RESET))
+	cd $(APP_DIR) && bash scripts/deploy.sh --target $${TARGET:-dev} --run-job prep
+
+.PHONY: app-list-jobs
+app-list-jobs: ## List bundle jobs (TARGET=dev|prod, default dev)
+	$(call check_bundle_yaml)
+	cd $(APP_DIR) && bash scripts/deploy.sh --target $${TARGET:-dev} --list-jobs
+
+# ==============================================================================
+# LOCAL DEV — wraps agent_app/scripts/dev-local*.sh (LOCAL_DEVELOPMENT.md)
+# ==============================================================================
+
+.PHONY: dev-local
+dev-local: ## Local one-time bootstrap/build (creates agent_app/.env from databricks.yml, starts backend + UI)
+	$(call check_bundle_yaml)
+	$(call say,$(CYAN)Running local bootstrap via $(APP_DIR)/scripts/dev-local.sh...$(RESET))
+	cd $(APP_DIR) && bash scripts/dev-local.sh
+
+.PHONY: dev-hot-reload
+dev-hot-reload: ## Local hot-reload dev loop (use after dev-local)
+	$(call check_bundle_yaml)
+	$(call say,$(CYAN)Starting hot-reload dev loop...$(RESET))
+	cd $(APP_DIR) && bash scripts/dev-local-hot-reload.sh
+
+.PHONY: deploy-notebook
+deploy-notebook: ## Print path + instructions for the workspace-native operator notebook
+	@printf '%b\n' "$(CYAN)$(BOLD)Workspace-native deploy notebook$(RESET)"
+	@printf '  Path: %b$(APP_DIR)/scripts/deploy_notebook.py%b\n' "$(CYAN)" "$(RESET)"
+	@printf '\n  How to use:\n'
+	@printf '    1. Open the notebook in your Databricks workspace.\n'
+	@printf '    2. Set widgets: project_dir, target, deploy_mode, sync_first, run_after.\n'
+	@printf '    3. Run the preflight cell.\n'
+	@printf '    4. Copy the printed %b./scripts/deploy.sh ...%b command into the Databricks web terminal.\n' "$(CYAN)" "$(RESET)"
+	@printf '    5. Re-run the verification cell after the terminal command finishes.\n'
+	@printf '\n  Reference: docs/DEPLOYMENT.md (Workspace-Native Operator Path)\n'
 
 # ==============================================================================
 # COMPOSITE TARGETS  (the stuff a newbie should actually run)
 # ==============================================================================
 
 .PHONY: deploy
-deploy: doctor app-deploy-dev-run ## The one-command path: doctor → deploy → start app on dev
+deploy: doctor app-deploy-dev-run ## One-command dev path: doctor → validate → preflight → deploy → shared-infra → start
 	$(call say,$(GREEN)$(BOLD)Dev app is deployed and starting.$(RESET))
 	$(call say,Watch the URL printed above to confirm the app is live.)
+	$(call say,For metadata refresh add the ETL prep step: $(CYAN)make etl-prep$(RESET) or use $(CYAN)make app-deploy-dev-full$(RESET).)
 
 .PHONY: fmt
 fmt: python-fmt fe-fmt ## Format all code (Python + frontend)
@@ -580,7 +666,9 @@ info: ## Show environment snapshot
 	@printf '  npm:          %s\n' "$$($(NPM) --version 2>&1 || echo 'not installed')"
 	@printf '  Databricks:   %s\n' "$$(databricks --version 2>&1 || echo 'not installed')"
 	@printf '  Git branch:   %s\n' "$$(git branch --show-current 2>&1)"
-	@printf '  .env:         %s\n' "$$([ -f .env ] && echo present || echo MISSING)"
+	@printf '  agent_app/.env: %s\n' "$$([ -f $(APP_DIR)/.env ] && echo present || echo 'MISSING (run make dev-local)')"
+	@printf '  ./.env:        %s\n' "$$([ -f .env ] && echo present || echo absent)"
+	@printf '  databricks.local.yml: %s\n' "$$([ -f $(APP_DIR)/databricks.local.yml ] && echo present || echo absent)"
 	@printf '  DAB bundle:   %s\n' "$$([ -f $(APP_DIR)/databricks.yml ] && echo $(APP_DIR)/databricks.yml || echo MISSING)"
 	@printf '  venv:         %s\n' "$$([ -d $(VENV_DIR) ] && echo present || echo not found)"
 	@printf '  node_modules: %s\n' "$$([ -d $(FE_DIR)/node_modules ] && echo present || echo not installed)"
@@ -593,13 +681,23 @@ info: ## Show environment snapshot
 help: ## Show this help message
 	@printf '\n%b\n' "$(CYAN)$(BOLD)DBX-UnifiedChat$(RESET) — Developer Makefile"
 	@printf '\n'
-	@printf '%bQuick start (newbies, read this):%b\n' "$(YELLOW)" "$(RESET)"
-	@printf '  1. %bmake doctor%b    — check prerequisites (tells you what to install)\n' "$(CYAN)" "$(RESET)"
-	@printf '  2. %bmake setup%b     — install Python + frontend deps\n' "$(CYAN)" "$(RESET)"
-	@printf '  3. %bmake deploy%b    — deploy app to dev and start it\n' "$(CYAN)" "$(RESET)"
+	@printf '%bQuick start (read this first):%b\n' "$(YELLOW)" "$(RESET)"
+	@printf '  1. %bmake doctor%b           — check prerequisites\n' "$(CYAN)" "$(RESET)"
+	@printf '  2. %bmake setup%b            — install Python + frontend deps, seed databricks.local.yml\n' "$(CYAN)" "$(RESET)"
+	@printf '  3. %bdatabricks auth login --profile <profile>%b — auth against the workspace in $(APP_DIR)/databricks.yml\n' "$(CYAN)" "$(RESET)"
+	@printf '  4. %bmake dev-local%b        — local bootstrap (creates $(APP_DIR)/.env)\n' "$(CYAN)" "$(RESET)"
+	@printf '  5. %bmake dev-hot-reload%b   — iterate locally, OR\n' "$(CYAN)" "$(RESET)"
+	@printf '     %bmake deploy%b           — deploy to dev (DEPLOY_CHECKLIST §F path)\n' "$(CYAN)" "$(RESET)"
+	@printf '\n'
+	@printf '%bDeployment paths (mirrors README.md / docs/DEPLOYMENT.md):%b\n' "$(YELLOW)" "$(RESET)"
+	@printf '  Routine code-only:        %bmake app-deploy-dev-run%b   (no ETL prep)\n' "$(CYAN)" "$(RESET)"
+	@printf '  Canonical full deploy:    %bmake app-deploy-dev-full%b  (README recipe: --run-job full)\n' "$(CYAN)" "$(RESET)"
+	@printf '  ETL prep only:            %bmake etl-prep%b             (TARGET=dev|prod)\n' "$(CYAN)" "$(RESET)"
+	@printf '  Prod canonical:           %bmake app-deploy-prod-full%b\n' "$(CYAN)" "$(RESET)"
+	@printf '  CI runner:                %bTARGET=prod make app-deploy-ci%b\n' "$(CYAN)" "$(RESET)"
+	@printf '  Workspace operator path:  %bmake deploy-notebook%b\n' "$(CYAN)" "$(RESET)"
 	@printf '\n'
 	@printf '%bAll targets:%b\n' "$(YELLOW)" "$(RESET)"
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-26s\033[0m %s\n", $$1, $$2}'
 	@printf '\n'
-
