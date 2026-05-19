@@ -40,7 +40,10 @@
 #   --skip-preflight     Skip the workspace resource preflight check. Also
 #                        honored via SKIP_PREFLIGHT=1 in the environment.
 #   --strict-preflight   Treat preflight warnings as fatal.
-#   --ci                 Non-interactive CI mode; implies no opportunistic bootstrap.
+#   --non-interactive    Deploy DAB without prompts; passes --force and
+#                        --auto-approve to `databricks bundle deploy`.
+#   --ci                 Non-interactive CI/notebook mode; implies
+#                        --non-interactive and no opportunistic bootstrap.
 #   --help, -h           Show this help text and exit.
 
 set -euo pipefail
@@ -56,6 +59,7 @@ SKIP_SHARED_INFRA=false
 LIST_JOBS_ONLY=false
 POST_DEPLOY_JOB=""
 CI_MODE=false
+DAB_DEPLOY_NON_INTERACTIVE=false
 SKIP_BOOTSTRAP=false
 FORCE_BOOTSTRAP=false
 SKIP_PREFLIGHT="${SKIP_PREFLIGHT:-false}"
@@ -151,7 +155,8 @@ while [[ $# -gt 0 ]]; do
     --skip-bootstrap)    SKIP_BOOTSTRAP=true; shift ;;
     --skip-preflight)    SKIP_PREFLIGHT=true; shift ;;
     --strict-preflight)  STRICT_PREFLIGHT=true; shift ;;
-    --ci)                CI_MODE=true; shift ;;
+    --non-interactive)   DAB_DEPLOY_NON_INTERACTIVE=true; shift ;;
+    --ci)                CI_MODE=true; DAB_DEPLOY_NON_INTERACTIVE=true; shift ;;
     --help|-h)           print_help; exit 0 ;;
     *)                   error "Unknown argument: $1" ;;
   esac
@@ -219,6 +224,11 @@ fi
 PROFILE_ARGS=()
 if [[ -n "$PROFILE" ]]; then
   PROFILE_ARGS=("--profile" "$PROFILE")
+fi
+
+BUNDLE_DEPLOY_ARGS=(-t "$TARGET" "${PROFILE_ARGS[@]}")
+if [[ "$DAB_DEPLOY_NON_INTERACTIVE" == true ]]; then
+  BUNDLE_DEPLOY_ARGS+=(--force --auto-approve)
 fi
 
 cd "$APP_DIR"
@@ -555,11 +565,12 @@ info "Sync       : $SYNC_WORKSPACE"
 info "Shared infra permissions grant to app SP after deploy : $([[ "$SKIP_SHARED_INFRA" == true ]] && echo "disabled" || echo "enabled")"
 info "Requested job to run after deploy : ${POST_DEPLOY_JOB:-<none>}"
 info "Start app  : $START_APP"
+info "DAB deploy : $([[ "$DAB_DEPLOY_NON_INTERACTIVE" == true ]] && echo "non-interactive (--force --auto-approve)" || echo "interactive")"
 
 run_preflight
 
 section "Deploying bundle"
-databricks bundle deploy -t "$TARGET" "${PROFILE_ARGS[@]}"
+databricks bundle deploy "${BUNDLE_DEPLOY_ARGS[@]}"
 success "Bundle deploy complete"
 
 # it is important to run the shared infra job after every deploy bundle so the app can use the shared 
