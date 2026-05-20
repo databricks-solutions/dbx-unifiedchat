@@ -60,9 +60,9 @@ Specialized agents handle distinct responsibilities:
 - **SQL execution** — Warehouse execution and result extraction
 - **Summarize** — Streaming natural-language answers plus structured table/chart outputs
 
-![Figure 2: Platform building blocks](figures/figure-2-platform-building-blocks.png)
+![Figure 2: DBX-UnifiedChat on the Databricks Data Intelligence Platform](figures/dbx-unifiedchat-platform-architecture.svg)
 
-*Figure 2. Platform building blocks: the app UI and LangGraph runtime sit on Genie, Vector Search, Unity Catalog, SQL Warehouse, Lakebase, Model Serving, and MLflow.*
+*Figure 2. DBX-UnifiedChat on the Databricks Data Intelligence Platform. **Build-time** (top): a single DAB entry point — `./scripts/deploy.sh` from local terminal or CI, or `deploy_notebook.py` from the workspace web terminal — runs the metadata flywheel and deploys the App + MLflow AgentServer. **Run-time** (middle): every user question flows through the LangGraph multi-agent pipeline. **Shared platform services** (bottom): runtime agents call into a shared service pool (some 1:1, some called by multiple agents), all governed by Unity Catalog and grounded in Delta Lake on cloud storage.*
 
 Lakebase stores short- and long-term conversation state. MLflow captures traces for every turn, linking UI feedback back to experiments for continuous improvement.
 
@@ -168,6 +168,7 @@ If you are evaluating NL-to-SQL for cross-domain analytics, start with a bounded
 
 ## References
 
+- [Instructed Retriever: Unlocking System-Level Reasoning in Search Agents](https://www.databricks.com/blog/instructed-retriever-unlocking-system-level-reasoning-search-agents) — a multi-step instructed retrieval pattern for table route
 - [MemEx: A Programmable Scratchpad for LLM Agents](https://www.databricks.com/blog/memex-programmable-scratchpad-llm-agents) — programmable memory and tool orchestration patterns for production agents
 - [AiChemy: Next-generation agent with MCP, skills and custom data for drug discovery](https://www.databricks.com/blog/aichemy-next-generation-agent-mcp-skills-and-custom-data-drug-discovery) — composing platform primitives into domain-specific agent systems
 - [A multi-agent approach to audience intelligence](https://www.databricks.com/blog/multi-agent-approach-audience-intelligence) — parallel specialist agents coordinated for complex analytic questions
