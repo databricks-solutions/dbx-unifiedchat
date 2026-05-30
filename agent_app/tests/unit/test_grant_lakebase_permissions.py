@@ -1,19 +1,54 @@
 from pathlib import Path
 from types import SimpleNamespace
 import sys
+import types
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+import scripts.grant_lakebase_permissions as grant_module
 from databricks.sdk.service import apps as apps_service
 
 from scripts.grant_lakebase_permissions import (
+    CatalogSchemaTarget,
     PermissionGrantConfig,
+    apply_permission_grants,
     hydrate_config_from_bundle,
-    sync_app_resource_permissions,
+    parse_catalog_schema_targets,
+    resolve_data_uc_targets,
     sync_app_resource_permissions,
 )
+
+
+def test_parse_catalog_schema_targets_supports_multiple_catalog_groups():
+    assert parse_catalog_schema_targets(
+        "catalog_1:schema1, schema2; catalog_2:schema_a, schema_b"
+    ) == [
+        CatalogSchemaTarget("catalog_1", "schema1"),
+        CatalogSchemaTarget("catalog_1", "schema2"),
+        CatalogSchemaTarget("catalog_2", "schema_a"),
+        CatalogSchemaTarget("catalog_2", "schema_b"),
+    ]
+
+
+def test_parse_catalog_schema_targets_rejects_missing_colon():
+    with pytest.raises(ValueError, match="Expected format"):
+        parse_catalog_schema_targets("catalog_1.schema1")
+
+
+def test_resolve_data_uc_targets_prefers_multi_catalog_mapping():
+    assert resolve_data_uc_targets(
+        PermissionGrantConfig(
+            memory_type="langgraph-short-term",
+            data_catalog_name="catalog_1",
+            data_schema_name="legacy_schema",
+            data_catalog_schemas="catalog_1:schema1, schema2",
+        )
+    ) == [
+        CatalogSchemaTarget("catalog_1", "schema1"),
+        CatalogSchemaTarget("catalog_1", "schema2"),
+    ]
 
 
 def test_hydrate_config_from_bundle_resolves_volume_name(tmp_path):
@@ -73,6 +108,116 @@ targets:
     assert resolved.project == "dev-project"
     assert resolved.branch == "dev-branch"
     assert resolved.instance_name is None
+
+
+def test_hydrate_config_from_bundle_resolves_data_catalog_schemas(tmp_path):
+    bundle_config = tmp_path / "databricks.yml"
+    bundle_config.write_text(
+        """
+variables:
+  data_catalog_schemas:
+    default: "default_catalog:default_schema"
+targets:
+  dev:
+    default: true
+    variables:
+      data_catalog_schemas: "catalog_1:schema1, schema2; catalog_2:schema_a"
+""".strip()
+    )
+
+    resolved = hydrate_config_from_bundle(
+        PermissionGrantConfig(
+            memory_type="langgraph-short-term",
+            app_name="test-app",
+            target="dev",
+            bundle_config_path=str(bundle_config),
+        )
+    )
+
+    assert resolved.data_catalog_schemas == "catalog_1:schema1, schema2; catalog_2:schema_a"
+
+
+def test_apply_permission_grants_grants_each_data_catalog_schema(monkeypatch):
+    class FakePrivilege:
+        def __init__(self, value):
+            self.value = value
+
+    class FakeSchemaPrivilege:
+        USAGE = FakePrivilege("USAGE")
+        CREATE = FakePrivilege("CREATE")
+
+    class FakeSequencePrivilege:
+        USAGE = FakePrivilege("USAGE")
+        SELECT = FakePrivilege("SELECT")
+        UPDATE = FakePrivilege("UPDATE")
+
+    class FakeTablePrivilege:
+        SELECT = FakePrivilege("SELECT")
+        INSERT = FakePrivilege("INSERT")
+        UPDATE = FakePrivilege("UPDATE")
+        DELETE = FakePrivilege("DELETE")
+
+    class FakeLakebaseClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def create_role(self, *_args):
+            pass
+
+        def grant_schema(self, **_kwargs):
+            pass
+
+        def grant_table(self, **_kwargs):
+            pass
+
+        def grant_all_sequences_in_schema(self, **_kwargs):
+            pass
+
+    fake_lakebase = types.ModuleType("databricks_ai_bridge.lakebase")
+    fake_lakebase.LakebaseClient = FakeLakebaseClient
+    fake_lakebase.SchemaPrivilege = FakeSchemaPrivilege
+    fake_lakebase.SequencePrivilege = FakeSequencePrivilege
+    fake_lakebase.TablePrivilege = FakeTablePrivilege
+    fake_bridge = types.ModuleType("databricks_ai_bridge")
+    fake_bridge.lakebase = fake_lakebase
+    monkeypatch.setitem(sys.modules, "databricks_ai_bridge", fake_bridge)
+    monkeypatch.setitem(sys.modules, "databricks_ai_bridge.lakebase", fake_lakebase)
+
+    grant_calls = []
+    monkeypatch.setattr(
+        grant_module,
+        "grant_uc_permissions",
+        lambda **kwargs: grant_calls.append(
+            (kwargs["catalog_name"], kwargs["schema_name"])
+        ),
+    )
+    monkeypatch.setattr(
+        grant_module,
+        "sync_app_resource_permissions",
+        lambda *_args, **_kwargs: None,
+    )
+
+    resolved_sp_id = apply_permission_grants(
+        PermissionGrantConfig(
+            memory_type="langgraph-short-term",
+            sp_client_id="sp-client-id",
+            project="lakebase-project",
+            branch="production",
+            catalog_name="app_catalog",
+            schema_name="app_schema",
+            data_catalog_schemas="catalog_1:schema1, schema2; catalog_2:schema_a, schema_b",
+        ),
+        workspace_client=SimpleNamespace(),
+    )
+
+    assert resolved_sp_id == "sp-client-id"
+    assert grant_calls == [
+        ("app_catalog", "app_schema"),
+        ("catalog_1", "schema1"),
+        ("catalog_1", "schema2"),
+        ("catalog_2", "schema_a"),
+        ("catalog_2", "schema_b"),
+    ]
 
 
 def test_sync_app_resource_permissions_adds_write_only_volume_resource():

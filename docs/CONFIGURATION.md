@@ -48,6 +48,8 @@ shared app + ETL flow:
 - `schema_name`
 - `data_catalog_name`
 - `data_schema_name`
+- `data_catalog_schemas` for multi-catalog source grants, using
+  `catalog_1:schema1, schema2; catalog_2:schema_a, schema_b`
 - `sql_warehouse_id`
 - `genie_space_ids`
 - `lakebase_project`

@@ -21,6 +21,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 import yaml
 
@@ -62,6 +63,11 @@ DEFAULT_DATABASE_NAME = "databricks_postgres"
 DEFAULT_BUNDLE_CONFIG_PATH = Path(__file__).resolve().parents[1] / "databricks.yml"
 
 
+class CatalogSchemaTarget(NamedTuple):
+    catalog_name: str
+    schema_name: str
+
+
 @dataclass
 class PermissionGrantConfig:
     memory_type: str
@@ -74,6 +80,7 @@ class PermissionGrantConfig:
     schema_name: str | None = None
     data_catalog_name: str | None = None
     data_schema_name: str | None = None
+    data_catalog_schemas: str | None = None
     volume_name: str | None = None
     instance_name: str | None = None
     database_name: str | None = None
@@ -93,6 +100,54 @@ def _parse_csv(raw_value: str | None) -> list[str]:
     if not raw_value:
         return []
     return [part.strip() for part in raw_value.split(",") if part.strip()]
+
+
+def parse_catalog_schema_targets(raw_value: str | None) -> list[CatalogSchemaTarget]:
+    """Parse 'catalog:schema1, schema2; other:schema_a' into target pairs."""
+    if not raw_value:
+        return []
+
+    targets: list[CatalogSchemaTarget] = []
+    seen: set[CatalogSchemaTarget] = set()
+    for group in raw_value.split(";"):
+        group = group.strip()
+        if not group:
+            continue
+        if ":" not in group:
+            raise ValueError(
+                "Invalid data_catalog_schemas entry "
+                f"{group!r}. Expected format: catalog:schema1, schema2; other_catalog:schema_a."
+            )
+
+        catalog_name, schemas_raw = group.split(":", 1)
+        catalog_name = catalog_name.strip()
+        schema_names = [schema.strip() for schema in schemas_raw.split(",") if schema.strip()]
+        if not catalog_name or not schema_names:
+            raise ValueError(
+                "Invalid data_catalog_schemas entry "
+                f"{group!r}. Each catalog must include at least one schema."
+            )
+
+        for schema_name in schema_names:
+            target = CatalogSchemaTarget(catalog_name, schema_name)
+            if target not in seen:
+                targets.append(target)
+                seen.add(target)
+
+    return targets
+
+
+def resolve_data_uc_targets(config: PermissionGrantConfig) -> list[CatalogSchemaTarget]:
+    targets = parse_catalog_schema_targets(config.data_catalog_schemas)
+    if targets:
+        return targets
+
+    seen = set(targets)
+    if config.data_catalog_name and config.data_schema_name:
+        legacy_target = CatalogSchemaTarget(config.data_catalog_name, config.data_schema_name)
+        if legacy_target not in seen:
+            targets.append(legacy_target)
+    return targets
 
 
 def _load_bundle_config(path: str | None) -> dict:
@@ -160,6 +215,9 @@ def hydrate_config_from_bundle(config: PermissionGrantConfig) -> PermissionGrant
     )
     config.data_schema_name = config.data_schema_name or _resolve_bundle_variable(
         bundle_config, target, "data_schema_name"
+    )
+    config.data_catalog_schemas = config.data_catalog_schemas or _resolve_bundle_variable(
+        bundle_config, target, "data_catalog_schemas"
     )
     config.volume_name = config.volume_name or _resolve_bundle_variable(
         bundle_config, target, "volume_name"
@@ -396,6 +454,8 @@ def validate_permission_config(config: PermissionGrantConfig) -> None:
         raise ValueError(
             "Provide both data_catalog_name and data_schema_name together, or omit both."
         )
+
+    parse_catalog_schema_targets(config.data_catalog_schemas)
 
     if config.volume_name and not (config.catalog_name and config.schema_name):
         raise ValueError(
@@ -738,6 +798,12 @@ def apply_permission_grants(
             f"Source data Unity Catalog target: "
             f"{config.data_catalog_name}.{config.data_schema_name}"
         )
+    data_uc_targets = resolve_data_uc_targets(config)
+    if data_uc_targets:
+        targets_text = ", ".join(
+            f"{target.catalog_name}.{target.schema_name}" for target in data_uc_targets
+        )
+        print(f"Source data Unity Catalog targets: {targets_text}")
 
     schema_tables: dict[str, list[str]] = {
         "public": MEMORY_TYPE_TABLES[config.memory_type],
@@ -840,25 +906,25 @@ def apply_permission_grants(
             ],
             warehouse_id=config.warehouse_id,
         )
-    if config.data_catalog_name and config.data_schema_name:
+    for data_target in data_uc_targets:
         if (
-            config.data_catalog_name == config.catalog_name
-            and config.data_schema_name == config.schema_name
+            data_target.catalog_name == config.catalog_name
+            and data_target.schema_name == config.schema_name
         ):
             print("Source data Unity Catalog target matches primary target, skipping.")
-        else:
-            grant_uc_permissions(
-                workspace_client=workspace_client,
-                grantee=sp_id,
-                catalog_name=config.data_catalog_name,
-                schema_name=config.data_schema_name,
-                uc_catalog=uc_catalog,
-                schema_privileges=[
-                    uc_catalog.Privilege.USE_SCHEMA,
-                    uc_catalog.Privilege.SELECT,
-                ],
-                warehouse_id=config.warehouse_id,
-            )
+            continue
+        grant_uc_permissions(
+            workspace_client=workspace_client,
+            grantee=sp_id,
+            catalog_name=data_target.catalog_name,
+            schema_name=data_target.schema_name,
+            uc_catalog=uc_catalog,
+            schema_privileges=[
+                uc_catalog.Privilege.USE_SCHEMA,
+                uc_catalog.Privilege.SELECT,
+            ],
+            warehouse_id=config.warehouse_id,
+        )
 
     sync_app_resource_permissions(config, workspace_client)
 
@@ -882,6 +948,7 @@ def _build_config_from_args(args) -> PermissionGrantConfig:
         schema_name=args.schema_name,
         data_catalog_name=args.data_catalog_name,
         data_schema_name=args.data_schema_name,
+        data_catalog_schemas=args.data_catalog_schemas,
         volume_name=args.volume_name,
         instance_name=args.instance_name,
         database_name=args.database_name,
@@ -937,6 +1004,13 @@ def main():
     parser.add_argument(
         "--data-schema-name",
         help="Optional second Unity Catalog schema name for source data access.",
+    )
+    parser.add_argument(
+        "--data-catalog-schemas",
+        help=(
+            "Optional source data access mapping. Format: "
+            "catalog_1:schema1, schema2; catalog_2:schema_a, schema_b."
+        ),
     )
     parser.add_argument(
         "--volume-name",

@@ -178,6 +178,7 @@ context = {
     "BUNDLE_SCHEMA_NAME": resolve_bundle_var("schema_name"),
     "BUNDLE_DATA_CATALOG_NAME": resolve_bundle_var("data_catalog_name"),
     "BUNDLE_DATA_SCHEMA_NAME": resolve_bundle_var("data_schema_name"),
+    "BUNDLE_DATA_CATALOG_SCHEMAS": resolve_bundle_var("data_catalog_schemas"),
     "BUNDLE_UC_FUNCTION_NAMES": resolve_bundle_var("uc_function_names"),
     "BUNDLE_SQL_WAREHOUSE_ID": resolve_bundle_var("sql_warehouse_id"),
     "BUNDLE_GENIE_SPACE_IDS": resolve_bundle_var("genie_space_ids"),
@@ -308,6 +309,7 @@ set_env_value "DATABRICKS_CONFIG_PROFILE" "$PROFILE"
 [[ -n "$BUNDLE_SCHEMA_NAME" ]] && set_env_value "SCHEMA_NAME" "$BUNDLE_SCHEMA_NAME"
 [[ -n "$BUNDLE_DATA_CATALOG_NAME" ]] && set_env_value "DATA_CATALOG_NAME" "$BUNDLE_DATA_CATALOG_NAME"
 [[ -n "$BUNDLE_DATA_SCHEMA_NAME" ]] && set_env_value "DATA_SCHEMA_NAME" "$BUNDLE_DATA_SCHEMA_NAME"
+[[ -n "$BUNDLE_DATA_CATALOG_SCHEMAS" ]] && set_env_value "DATA_CATALOG_SCHEMAS" "$BUNDLE_DATA_CATALOG_SCHEMAS"
 [[ -n "$BUNDLE_UC_FUNCTION_NAMES" ]] && set_env_value "UC_FUNCTION_NAMES" "$BUNDLE_UC_FUNCTION_NAMES"
 [[ -n "$BUNDLE_SQL_WAREHOUSE_ID" ]] && set_env_value "SQL_WAREHOUSE_ID" "$BUNDLE_SQL_WAREHOUSE_ID"
 [[ -n "$BUNDLE_GENIE_SPACE_IDS" ]] && set_env_value "GENIE_SPACE_IDS" "$BUNDLE_GENIE_SPACE_IDS"
