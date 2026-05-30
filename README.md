@@ -41,7 +41,7 @@ active repository workflow.
 
 ## Architecture
 
-![Agent Architecture](docs/architecture/architecture_diagram_simple_v2.png)
+![Agent Architecture](docs/architecture/unifiedchat_overall_architecture_with_annotation_wGenieIcon.svg)
 
 The system uses a multi-agent architecture powered by LangGraph:
 
