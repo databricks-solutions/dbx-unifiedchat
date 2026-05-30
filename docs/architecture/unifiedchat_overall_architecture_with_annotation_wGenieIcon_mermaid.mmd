@@ -1,0 +1,75 @@
+graph TD
+    %% ============================================================
+    %% UnifiedChat Overall Architecture - Mermaid companion
+    %% Mirrors unifiedchat_overall_architecture_with_annotation_wGenieIcon.svg
+    %% ============================================================
+
+    User[👤 User Query]
+    Supervisor[🤖 Supervisor Agent<br/>Orchestrator]
+
+    User --> Supervisor
+    NoteIntent[/"Context summary<br/>Is relevant?<br/>Is meta question?<br/>Clarification"/]
+    NoteIntent -.-> Supervisor
+
+    subgraph Planning["Planning Phase"]
+        Planner[🧠 Thinking & Planning Agent<br/>Query Analysis & Planning]
+    end
+    Supervisor -->|Delegates to| Planner
+    NotePlan[/"Break down complex query<br/>Plan - Genie route<br/>Plan - Table route"/]
+    NotePlan -.-> Planner
+
+    subgraph Routing["Routing & Synthesis Phase"]
+        SynthTable[🟧 SQL Synthesis Agent<br/>Table Route]
+        SynthGenie[🟧 SQL Synthesis Agent<br/>Genie Route]
+        GenieAgents[🧞 Genie Agents<br/>Domain-specific Data]
+        SynthGenie -->|Query| GenieAgents
+    end
+    Planner -->|Table Data Plan| SynthTable
+    Planner -->|Genie Spaces Plan| SynthGenie
+
+    NoteRetrieval[/"Multi-step<br/>instructed retrieval"/]
+    NoteRetrieval -.-> SynthTable
+    NoteRoute[/"Start with parallel routing to Genies<br/>then sequential routing to a single<br/>Genie to fill the gaps"/]
+    NoteRoute -.-> SynthGenie
+    NoteGenie[/"Curated high-quality Genie<br/>from user, dbxmetagen,<br/>and dbx Genie Workbench"/]
+    NoteGenie -.-> GenieAgents
+
+    subgraph ExecPhase["Execution & Summary Phase"]
+        Exec[⚙️ SQL Execution Agent<br/>Execute Queries]
+        Summarize[📝 Summarize Agent<br/>Format & Synthesize]
+        Exec -->|Query Results| Summarize
+    end
+    SynthTable -->|Synthesized SQL| Exec
+    SynthGenie -->|Synthesized SQL| Exec
+
+    NoteExec[/"Parallel execution<br/>on SQL Warehouse"/]
+    NoteExec -.-> Exec
+    NoteSummary[/"Parallel kickoff:<br/>streaming markdown summary,<br/>chart generation,<br/>terminology code lookup,<br/>explanation prep"/]
+    NoteSummary -.-> Summarize
+
+    Summarize --> Final[✅ Final Answer]
+
+    Advantages[/"✨ Product Advantages<br/>1. Accuracy<br/>2. Curation<br/>3. Speed"/]
+
+    %% ============================================================
+    %% Styling
+    %% ============================================================
+    classDef userClass fill:#E94B3C,stroke:#A33428,stroke-width:2px,color:#fff,rx:8,ry:8
+    classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff,rx:8,ry:8
+    classDef routeClass fill:#F5A623,stroke:#C17D11,stroke-width:2px,color:#000,rx:8,ry:8
+    classDef execClass fill:#1ABC9C,stroke:#16A085,stroke-width:2px,color:#fff,rx:8,ry:8
+    classDef answerClass fill:#50C878,stroke:#2E7D4E,stroke-width:2px,color:#fff,rx:8,ry:8
+    classDef noteClass fill:#FFF7E0,stroke:#E94B3C,stroke-width:1px,color:#333
+    classDef advClass fill:#8E44AD,stroke:#6C3483,stroke-width:2px,color:#fff
+
+    class User userClass
+    class Supervisor,Planner,GenieAgents,Summarize agentClass
+    class SynthTable,SynthGenie routeClass
+    class Exec execClass
+    class Final answerClass
+    class NoteIntent,NotePlan,NoteRetrieval,NoteRoute,NoteGenie,NoteExec,NoteSummary noteClass
+    class Advantages advClass
+
+    style Planning fill:#FBF8D0,stroke:#D4C84A,color:#333
+    style Routing fill:#FBF8D0,stroke:#D4C84A,color:#333
+    style ExecPhase fill:#FBF8D0,stroke:#D4C84A,color:#333
