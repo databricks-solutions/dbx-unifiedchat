@@ -1,25 +1,41 @@
 graph TD
-    SQLIn[SQL input<br/>raw SQL or markdown block]
-    ExecAgent[SQL Execution Agent]
-    Extract[Extract executable SQL]
-    Limit[Enforce trailing LIMIT<br/>max_rows safety]
-    Auth[Load Databricks Config<br/>unified auth / passthrough]
-    Warehouse[Execute on SQL Warehouse]
-    Error{Execution success?}
-    Normalize[Normalize rows to JSON-safe values]
-    Format[Return dict / json / markdown]
-    Failure[Error type + hint + failed SQL]
+    SQLIn[SQL queries from synthesis]
+    ExecNode[sql_execution_node]
+    Empty{Any SQL queries?}
+    Preserved[Return preserved results<br/>summarize]
+    NoSql[execution_error<br/>summarize]
+    Config[Load SQL warehouse config]
+    Agent[SQL Execution Agent]
+    Mode{execution_mode}
+    Parallel[Execute all queries in parallel]
+    Sequential[Execute one query<br/>for current step]
+    Normalize[Attach metadata<br/>status, labels, row grain hints]
+    Outcome{Execution outcome}
+    Summary[Set execution_results<br/>summarize]
+    Retry[Build retry feedback<br/>preserve successes]
+    NextStep[Build sequential feedback<br/>loop to synthesis]
+    Route[Route back to synthesis<br/>table or Genie route]
+    Synth[SQL synthesis agent]
 
-    SQLIn --> ExecAgent --> Extract --> Limit --> Auth --> Warehouse --> Error
-    Error -->|Yes| Normalize --> Format
-    Error -->|No| Failure
+    SQLIn --> ExecNode --> Empty
+    Empty -->|no, preserved results| Preserved
+    Empty -->|no results| NoSql
+    Empty -->|yes| Config --> Agent --> Mode
+    Mode -->|parallel| Parallel --> Normalize
+    Mode -->|sequential| Sequential --> Normalize
+    Normalize --> Outcome
+    Outcome -->|all success| Summary
+    Outcome -->|partial failure + retry budget| Retry --> Route
+    Outcome -->|sequential success + more steps| NextStep --> Route
+    Outcome -->|failure exhausted or complete| Summary
+    Route --> Synth
 
     classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff
     classDef dataClass fill:#50C878,stroke:#2E7D4E,stroke-width:2px,color:#fff
     classDef processClass fill:#F5A623,stroke:#C17D11,stroke-width:2px,color:#000
     classDef decisionClass fill:#8E44AD,stroke:#6C3483,stroke-width:2px,color:#fff
 
-    class ExecAgent agentClass
-    class SQLIn,Format,Failure dataClass
-    class Extract,Limit,Auth,Warehouse,Normalize processClass
-    class Error decisionClass
+    class ExecNode,Agent agentClass
+    class SQLIn,Preserved,NoSql,Summary,Synth dataClass
+    class Config,Parallel,Sequential,Normalize,Retry,NextStep,Route processClass
+    class Empty,Mode,Outcome decisionClass

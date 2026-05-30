@@ -1,54 +1,44 @@
 graph LR
-    %% Main Flow - Simplified
-    User[👤 User] --> SuperAgent[🤖 Super Agent<br/>with Memory]
-    SuperAgent --> Intent[🎯 Intent Detection]
-    Intent --> Planning[🧠 Planning Agent]
-    Planning --> VSIndex[(📚 Vector Search Index)]
-    
-    %% Decision Points
-    VSIndex --> Decision{Execution<br/>Path?}
-    
-    %% Execution Paths
-    Decision -->|Single Space| GenieAgent[🤖 Genie Agent]
-    Decision -->|Multi + Join<br/>Table Route| SQLTable[⚡ SQL Synthesis<br/>Table Agent]
-    Decision -->|Multi + Join<br/>Genie Route| SQLGenie[🔄 SQL Synthesis<br/>Genie Agent]
-    Decision -->|Multi - No Join| VerbalMerge[💬 Verbal Merge]
-    
-    %% SQL Execution
-    SQLTable --> SQLExec[⚙️ SQL Execution]
+    %% Main Flow - Simplified Current Runtime
+    User[User] --> Workflow[LangGraph supervisor workflow]
+    Workflow --> Clarify[Unified clarification subgraph]
+    Clarify --> Intent{Terminal intent?}
+    Intent -->|meta or irrelevant| End([END])
+    Intent -->|data question| Planning[Planning Agent]
+    Planning --> VSIndex[(Vector Search Index)]
+    VSIndex --> Route{Synthesis route?}
+    Route -->|table_route| SQLTable[SQL Synthesis Table Agent]
+    Route -->|genie_route| SQLGenie[SQL Synthesis Genie Agent]
+    SQLTable --> SQLExec[SQL Execution Agent]
     SQLGenie --> SQLExec
-    GenieAgent --> SQLExec
-    VerbalMerge --> Summarize[📝 Summarize Agent]
-    SQLExec --> Summarize
-    
-    %% Results back to user
-    Summarize --> SuperAgent
-    SuperAgent --> User
-    
-    %% Supporting ETL Pipeline (Build Order: 1→2→3→4)
-    GenieExport[1️⃣ Export Genie<br/>Spaces] --> TableEnrich[2️⃣ Enrich Table<br/>Metadata]
-    TableEnrich --> EnrichedDocs[(📄 Enriched Docs<br/>Delta Table)]
-    EnrichedDocs --> VSBuild[3️⃣ Build VS Index]
+    SQLExec -->|success or exhausted retry| Summarize[Result Summarize Agent]
+    SQLExec -->|retry or sequential next| SQLTable
+    SQLExec -->|retry or sequential next| SQLGenie
+    SQLTable -->|no SQL or error| Summarize
+    SQLGenie -->|no SQL or error| Summarize
+    Summarize --> User
+
+    %% Supporting data and operations
+    GenieExport[Export Genie spaces] --> TableEnrich[Enrich table metadata]
+    TableEnrich --> EnrichedDocs[(Enriched docs Delta table)]
+    EnrichedDocs --> VSBuild[Build VS index]
     VSBuild --> VSIndex
-    
-    %% Data Sources
-    DeltaTables[(💾 Delta Tables)] -.-> SQLExec
-    Lakebase[(🗄️ Lakebase<br/>Memory)] -.-> SuperAgent
-    
-    %% MLflow Integration
-    MLflow[📈 MLflow<br/>Logging] -.logs.-> SuperAgent
-    MLflow -.logs.-> Planning
-    
+    DeltaTables[(Delta tables)] -.-> SQLExec
+    Lakebase[(Lakebase checkpoints)] -.-> Workflow
+    MLflow[MLflow tracing] -.traces.-> Workflow
+
     %% Styling
     classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff
     classDef dataClass fill:#50C878,stroke:#2E7D4E,stroke-width:2px,color:#fff
     classDef processClass fill:#F5A623,stroke:#C17D11,stroke-width:2px,color:#000
-    classDef decisionClass fill:#E94B3C,stroke:#A33428,stroke-width:2px,color:#fff
+    classDef decisionClass fill:#8E44AD,stroke:#6C3483,stroke-width:2px,color:#fff
     classDef etlClass fill:#9B59B6,stroke:#6C3483,stroke-width:2px,color:#fff
-    
-    class SuperAgent,Planning,GenieAgent,SQLTable,SQLGenie,Summarize agentClass
+    classDef boundaryClass fill:#34495E,stroke:#1F2D3A,stroke-width:2px,color:#fff
+
+    class Workflow,Clarify,Planning,SQLTable,SQLGenie,SQLExec,Summarize agentClass
     class VSIndex,DeltaTables,EnrichedDocs,Lakebase dataClass
-    class Intent,SQLExec,VerbalMerge processClass
-    class Decision decisionClass
+    class User,MLflow processClass
+    class Intent,Route decisionClass
     class GenieExport,TableEnrich,VSBuild etlClass
+    class End boundaryClass
 

@@ -1,22 +1,26 @@
-graph LR
-    Query[User query] --> Planner[Planning Agent]
-    Planner --> VS[Vector Search<br/>Genie space index]
-    VS --> Spaces[Relevant spaces<br/>space_id + title + score]
-    Spaces --> Analysis[Analyze question clarity<br/>scope and join need]
+graph TD
+    Query[Current turn<br/>query + context summary] --> Planner[Planning Agent]
+    Planner --> CacheCheck{Follow-up vector search cache?}
+    CacheCheck -->|cache hit| Spaces[Relevant Genie spaces<br/>space_id + title + score]
+    CacheCheck -->|cache miss or new question| VS[Vector Search<br/>Genie space index]
+    VS --> CacheStore[Store vector search results<br/>thread TTL cache]
+    CacheStore --> Spaces
 
-    Analysis --> Clear{Question clear?}
-    Clear -->|No| Clarify[Clarification request]
-    Clear -->|Yes| Route{Execution route}
+    Spaces --> Plan[Create execution plan<br/>original query + context summary]
+    Plan --> Override{Force route override?}
+    Override -->|table_route| Table[Set table route]
+    Override -->|genie_route| Genie[Set Genie route]
+    Override -->|auto| Strategy{join_strategy from plan}
 
-    Route -->|Single space| Single[Single-space plan]
-    Route -->|Multi, no join| Multi[Multi-space no-join plan]
-    Route -->|Join, table route| Table[SQL synthesis table route plan]
-    Route -->|Join, genie route| Genie[SQL synthesis genie route plan]
+    Strategy -->|genie_route| Genie
+    Strategy -->|otherwise| Table
 
-    Table --> Output[Execution plan JSON<br/>sub_questions + relevant_space_ids<br/>requires_join + join_strategy]
+    Table --> Output[Plan state updates<br/>sub_questions + relevant_space_ids<br/>join_strategy + next_agent]
     Genie --> Output
-    Single --> Output
-    Multi --> Output
+    Output --> Next{next_agent}
+    Next -->|sql_synthesis_table| TableNext[SQL synthesis table route]
+    Next -->|sql_synthesis_genie| GenieNext[SQL synthesis Genie route]
+    Next -->|summarize| SummaryNext[Summarize]
 
     classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff
     classDef dataClass fill:#50C878,stroke:#2E7D4E,stroke-width:2px,color:#fff
@@ -24,6 +28,6 @@ graph LR
     classDef decisionClass fill:#8E44AD,stroke:#6C3483,stroke-width:2px,color:#fff
 
     class Planner agentClass
-    class VS,Spaces,Output dataClass
-    class Query,Analysis,Clarify,Single,Multi,Table,Genie processClass
-    class Clear,Route decisionClass
+    class Query,Spaces,Output dataClass
+    class VS,CacheStore,Plan,Table,Genie,TableNext,GenieNext,SummaryNext processClass
+    class CacheCheck,Override,Strategy,Next decisionClass

@@ -1,87 +1,54 @@
 %%{init: {"theme":"base","themeVariables":{"background":"#ffffff"}}}%%
-graph TB
+graph TD
     %% ============================================================
-    %% Summarize Node / ResultSummarizeAgent Architecture
+    %% Result Summarize Agent Architecture
     %% ============================================================
 
-    Start[🔀 Upstream Workflow<br/>Planning / SQL Synthesis / SQL Execution] -->|All terminal paths route here| SumNode[🧠 summarize_node<br/>Final LangGraph Node]
-    SumNode --> End[✅ END]
+    Start[Upstream terminal path<br/>synthesis or execution] --> SumNode[summarize_node<br/>final LangGraph node]
 
-    %% ============================================================
-    %% Summarization Module
-    %% ============================================================
-    subgraph SummarizeModule["📦 Summarization Module (CURRENT)"]
-        direction TB
+    SumNode --> Artifacts[Normalize result artifacts<br/>_build_artifact_entries]
+    SumNode --> Context[Extract summary context<br/>trim messages to recent turns]
+    SumNode --> Writer[Stream writer events]
+    SumNode --> Cache[Get cached ResultSummarizeAgent]
 
-        SumNode --> BuildArtifacts["Normalize result artifacts<br/>_build_artifact_entries()"]
-        SumNode --> ExtractContext["Trim state for summary<br/>extract_summarize_context()"]
-        ExtractContext --> TruncateMsgs[Keep system messages +<br/>last 5 conversation turns]
+    Cache --> SummaryLLM[Summary LLM]
+    Context --> SummaryPrompt[Build summary prompt]
+    SummaryLLM --> StreamSummary[Stream markdown summary]
+    Writer -. text_delta .-> StreamSummary
 
-        SumNode --> Writer["🌊 Stream Writer<br/>get_stream_writer()"]
-        Writer --> StepEvents[summary_start / summarize_step /<br/>text_delta / summary_complete]
+    Artifacts --> Fanout{Successful result artifacts?}
+    Fanout -->|yes| ChartBG[Background chart generation]
+    Fanout -->|yes| EnrichBG[Background code enrichment]
+    Fanout -->|no| Compose[Compose final response]
 
-        SumNode --> CacheAgent["Cache summarize agent<br/>get_cached_summarize_agent()"]
-        CacheAgent --> Config["⚙️ get_config()<br/>summarize_endpoint / chart_endpoint / detect_code_lookup_endpoint"]
-        Config --> SummaryLLM[(🤖 ChatDatabricks<br/>Summary LLM)]
-        CacheAgent --> ResultAgent[📝 ResultSummarizeAgent]
-        SummaryLLM --> ResultAgent
+    ChartBG --> ChartGen[ChartGenerator.generate_chart]
+    ChartGen --> VizPayload[Visualization workspace payload<br/>chart + preview table + downloads]
+    ChartGen --> ChartFallback[Fallback row-count chart<br/>when chart generation unavailable]
 
-        BuildArtifacts --> ParallelHub{Parallel fan-out}
-        ResultAgent --> PromptBuild["Build narrative-only prompt<br/>_build_summary_prompt()"]
-        PromptBuild --> StreamSummary[Stream markdown summary]
-        Writer -.streams.-> StreamSummary
+    EnrichBG --> CodeLookup[Detect and enrich code columns]
+    CodeLookup --> CodeRefs[Code reference sections]
 
-        ParallelHub --> ChartBG[📊 Background chart generation]
-        ParallelHub --> EnrichBG[🔎 Background code enrichment]
+    StreamSummary --> Compose
+    VizPayload --> Compose
+    ChartFallback --> Compose
+    CodeRefs --> Compose
+    Artifacts --> SqlBlocks[SQL text + explanations]
+    SqlBlocks --> Compose
 
-        ChartBG --> ChartGen["ChartGenerator.generate_chart()"]
-        Config --> ChartLLM[(📈 Chart LLM)]
-        ChartLLM --> ChartGen
-        ChartGen --> ChartBlock["echarts-chart blocks<br/>per successful result"]
+    Compose --> FinalSummary[final_summary]
+    Compose --> Message[AIMessage summary content]
+    FinalSummary --> Frontend[Frontend stream renderer]
+    Message --> End([END])
+    Frontend --> User[User]
 
-        EnrichBG --> DetectCodes[Detect coded columns]
-        Config --> LookupLLM[(🔍 Cheap lookup LLM)]
-        LookupLLM --> DetectCodes
-        DetectCodes --> WebSearch[Web/code lookup enrichment]
-        WebSearch --> CodeRef[Collapsible code reference]
-
-        StreamSummary --> SummaryDraft[📄 Base summary text]
-        ChartBlock --> Compose[Append charts + tables + accordions]
-        CodeRef --> Compose
-        SummaryDraft --> Compose
-        BuildArtifacts --> TableBlocks["table-download blocks<br/>preview rows + CSV metadata"]
-        TableBlocks --> Compose
-        BuildArtifacts --> SqlBlocks["Show SQL / SQL Explanation<br/>Plan Executed accordions"]
-        SqlBlocks --> Compose
-
-        Compose --> FinalSummary[📦 final_summary]
-        Compose --> FinalMessage[💬 AIMessage<br/>summary content]
-    end
-
-    %% Frontend / Output
-    Writer --> Frontend[🖥️ Frontend Stream Renderer]
-    FinalSummary --> Frontend
-    FinalMessage --> End
-    Frontend --> User[👤 User]
-
-    %% Observability
-    MLflow[📈 MLflow tracing<br/>via wrapped graph node] -.trace/span.-> SumNode
-
-    %% ============================================================
-    %% Styling
-    %% ============================================================
     classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff
     classDef dataClass fill:#50C878,stroke:#2E7D4E,stroke-width:2px,color:#fff
     classDef processClass fill:#F5A623,stroke:#C17D11,stroke-width:2px,color:#000
-    classDef decisionClass fill:#E94B3C,stroke:#A33428,stroke-width:2px,color:#fff
-    classDef newModuleClass fill:#8E44AD,stroke:#6C3483,stroke-width:2px,color:#fff
-    classDef insightClass fill:#1ABC9C,stroke:#16A085,stroke-width:2px,color:#fff
-    classDef existingClass fill:#7F8C8D,stroke:#566573,stroke-width:2px,color:#fff
+    classDef decisionClass fill:#8E44AD,stroke:#6C3483,stroke-width:2px,color:#fff
+    classDef boundaryClass fill:#34495E,stroke:#1F2D3A,stroke-width:2px,color:#fff
 
-    class SumNode,ResultAgent,Frontend agentClass
-    class SummaryLLM,ChartLLM,LookupLLM,Config,FinalSummary,FinalMessage dataClass
-    class BuildArtifacts,ExtractContext,TruncateMsgs,Writer,StepEvents,CacheAgent,PromptBuild,StreamSummary,ChartBG,EnrichBG,ChartGen,DetectCodes,WebSearch,Compose,TableBlocks,SqlBlocks processClass
-    class ParallelHub decisionClass
-    class SummarizeModule,ChartBlock,CodeRef newModuleClass
-    class SummaryDraft,End,User insightClass
-    class Start,MLflow existingClass
+    class SumNode,Frontend agentClass
+    class Start,SummaryLLM,FinalSummary,Message,User dataClass
+    class Artifacts,Context,Writer,Cache,SummaryPrompt,StreamSummary,ChartBG,EnrichBG,ChartGen,VizPayload,ChartFallback,CodeLookup,CodeRefs,SqlBlocks,Compose processClass
+    class Fanout decisionClass
+    class End boundaryClass

@@ -1,24 +1,22 @@
 %%{init: {"theme":"base","themeVariables":{"background":"#ffffff"}}}%%
 graph LR
     %% Simplified summarize flow
-    Upstream[🔀 Upstream Workflow<br/>SQL Execution / Planning] --> SumNode[🧠 summarize_node]
-    SumNode --> Extract[🧩 Minimal context extraction]
-    Extract --> Agent[📝 ResultSummarizeAgent]
-    Agent --> Summary[📄 Final markdown summary]
+    Upstream[Upstream workflow<br/>synthesis / execution] --> SumNode[summarize_node]
+    SumNode --> Extract[Minimal context extraction<br/>recent messages + result artifacts]
+    Extract --> Agent[ResultSummarizeAgent]
+    Agent --> Summary[Streaming markdown summary]
 
     %% Parallel enrichments
-    SumNode --> Charts[📊 Chart generation]
-    SumNode --> Tables[📥 Table downloads]
-    SumNode --> SQL[📎 SQL / explanation accordions]
-    SumNode --> Code[🔎 Code enrichment]
+    SumNode --> Charts[Visualization workspace generation]
+    SumNode --> SQL[SQL / explanation sections]
+    SumNode --> Code[Code enrichment]
 
     Charts --> Summary
-    Tables --> Summary
     SQL --> Summary
     Code --> Summary
 
-    Summary --> Frontend[🖥️ Frontend stream renderer]
-    Frontend --> User[👤 User]
+    Summary --> Frontend[Frontend stream renderer]
+    Frontend --> User[User]
 
     %% Styling
     classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff
