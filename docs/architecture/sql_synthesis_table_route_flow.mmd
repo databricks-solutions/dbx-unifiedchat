@@ -1,28 +1,39 @@
-graph LR
-    Plan[Execution plan<br/>join_strategy = table_route] --> TableAgent[SQL Synthesis Table Agent]
-    TableAgent --> Check{Enough metadata?}
+graph TD
+    Plan[Plan + relevant_space_ids] --> TableNode[sql_synthesis_table_node]
+    TableNode --> Loop{loop_reason?}
+    Loop -->|retry| Retry[Inject retry feedback<br/>only regenerate failed SQL]
+    Loop -->|sequential_next| Sequential[Inject sequential context<br/>generate one next query]
+    Loop -->|none| Direct[Use plan as-is]
 
-    Check -->|No| Tools[UC function toolkit]
+    Retry --> Agent[SQL Synthesis Table Agent]
+    Sequential --> Agent
+    Direct --> Agent
+
+    Agent --> Tools[UC function toolkit]
     Tools --> Summary[get_space_summary]
     Tools --> Overview[get_table_overview]
     Tools --> Column[get_column_detail]
+    Tools --> Instructions[get_space_instructions]
     Tools --> Details[get_space_details<br/>last resort]
-    Summary --> Gathered[Relevant table metadata]
-    Overview --> Gathered
-    Column --> Gathered
-    Details --> Gathered
+    Summary --> Metadata[Table metadata and instructions]
+    Overview --> Metadata
+    Column --> Metadata
+    Instructions --> Metadata
+    Details --> Metadata
 
-    Check -->|Yes| Draft[Draft SQL]
-    Gathered --> Draft
-    Draft --> Reflect[Reflection + get_space_instructions]
-    Reflect --> Final[Final SQL blocks<br/>with explanation]
+    Metadata --> Draft[Draft SQL + explanation]
+    Draft --> Extract[Extract SQL blocks<br/>and query labels]
+    Extract --> More{Result type}
+    More -->|NO_MORE_QUERIES| Done[Use preserved results<br/>summarize]
+    More -->|SQL found| Exec[Set next_agent<br/>sql_execution]
+    More -->|no SQL or error| SummaryNext[Set synthesis_error<br/>summarize]
 
     classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff
     classDef dataClass fill:#50C878,stroke:#2E7D4E,stroke-width:2px,color:#fff
     classDef processClass fill:#F5A623,stroke:#C17D11,stroke-width:2px,color:#000
     classDef decisionClass fill:#8E44AD,stroke:#6C3483,stroke-width:2px,color:#fff
 
-    class TableAgent agentClass
-    class Plan,Gathered,Final dataClass
-    class Tools,Summary,Overview,Column,Details,Draft,Reflect processClass
-    class Check decisionClass
+    class TableNode,Agent agentClass
+    class Plan,Metadata,Exec,Done,SummaryNext dataClass
+    class Retry,Sequential,Direct,Tools,Summary,Overview,Column,Instructions,Details,Draft,Extract processClass
+    class Loop,More decisionClass

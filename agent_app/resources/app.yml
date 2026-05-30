@@ -19,6 +19,8 @@ resources:
             value: ${var.data_catalog_name}
           - name: DATA_SCHEMA_NAME
             value: ${var.data_schema_name}
+          - name: DATA_CATALOG_SCHEMAS
+            value: ${var.data_catalog_schemas}
           - name: UC_FUNCTION_NAMES
             value: ${var.uc_function_names}
           - name: LLM_ENDPOINT

@@ -52,6 +52,7 @@ _WIDGET_DEFAULTS = {
     "volume_name": "",
     "data_catalog_name": "",
     "data_schema_name": "",
+    "data_catalog_schemas": "",
     "sql_warehouse_id": "",
     "lakebase_project": "",
     "lakebase_branch": "",
@@ -71,6 +72,7 @@ schema_name = params["schema_name"] or None
 volume_name = params["volume_name"] or None
 data_catalog_name = params["data_catalog_name"] or None
 data_schema_name = params["data_schema_name"] or None
+data_catalog_schemas = params["data_catalog_schemas"] or None
 sql_warehouse_id = params["sql_warehouse_id"] or None
 lakebase_project = params["lakebase_project"] or None
 lakebase_branch = params["lakebase_branch"] or None
@@ -253,6 +255,7 @@ for memory_type in ("langgraph-short-term", "langgraph-long-term"):
             schema_name=schema_name,
             data_catalog_name=data_catalog_name,
             data_schema_name=data_schema_name,
+            data_catalog_schemas=data_catalog_schemas,
             warehouse_id=sql_warehouse_id,
             project=lakebase_project,
             branch=lakebase_branch,

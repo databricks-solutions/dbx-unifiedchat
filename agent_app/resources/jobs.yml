@@ -78,6 +78,7 @@ resources:
               volume_name: ${var.volume_name}
               data_catalog_name: ${var.data_catalog_name}
               data_schema_name: ${var.data_schema_name}
+              data_catalog_schemas: ${var.data_catalog_schemas}
               sql_warehouse_id: ${var.sql_warehouse_id}
               lakebase_project: ${var.lakebase_project}
               lakebase_branch: ${var.lakebase_branch}

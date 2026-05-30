@@ -1,0 +1,59 @@
+graph TD
+    %% ============================================================
+    %% Clarification Agent LangGraph Subgraph
+    %% ============================================================
+
+    Start([START])
+    Load[Load space context<br/>cached Genie space summaries]
+
+    subgraph Parallel["Parallel Screening"]
+        direction LR
+        Classify[Classify query type<br/>irrelevant vs meta vs data query]
+        Clarity[Check clarity<br/>context summary + question_clear]
+    end
+
+    Merge[Merge classification<br/>fan-in routing point]
+    Route{Route after classification}
+
+    Irrelevant[Handle irrelevant query<br/>stream polite refusal]
+    Meta[Generate meta answer<br/>available data / capabilities]
+    Clarify[Clarify<br/>stream options + interrupt for user input]
+    Confirm{Confirm continuation}
+    Clear[Handle clear<br/>continue to planning]
+    End([END])
+
+    Start --> Load
+    Load --> Classify
+    Load --> Clarity
+    Classify --> Merge
+    Clarity --> Merge
+
+    Merge --> Route
+    Route -->|is_irrelevant=true| Irrelevant
+    Route -->|is_meta_question=true| Meta
+    Route -->|question_clear=false| Clarify
+    Route -->|question_clear=true| Clear
+
+    Clarify -->|interrupt + user response| Confirm
+    Confirm -->|answers clarification| Clear
+    Confirm -->|new unrelated question| Load
+
+    Irrelevant --> End
+    Meta --> End
+    Clear --> End
+
+    %% ============================================================
+    %% Styling
+    %% ============================================================
+    classDef boundaryClass fill:#34495E,stroke:#1F2D3A,stroke-width:2px,color:#fff,rx:10,ry:10
+    classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff,rx:10,ry:10
+    classDef processClass fill:#F5A623,stroke:#C17D11,stroke-width:2px,color:#000,rx:10,ry:10
+    classDef decisionClass fill:#8E44AD,stroke:#6C3483,stroke-width:2px,color:#fff,rx:10,ry:10
+    classDef terminalClass fill:#50C878,stroke:#2E7D4E,stroke-width:2px,color:#fff,rx:10,ry:10
+    classDef interruptClass fill:#E94B3C,stroke:#A33428,stroke-width:2px,color:#fff,rx:10,ry:10
+
+    class Start,End boundaryClass
+    class Load,Classify,Clarity,Merge,Clear processClass
+    class Route,Confirm decisionClass
+    class Irrelevant,Meta agentClass
+    class Clarify interruptClass

@@ -1,26 +1,44 @@
 graph TD
-    Plan[Execution plan<br/>join_strategy = genie_route<br/>genie_route_plan per space]
-    GenieAgent[SQL Synthesis Genie Agent]
-    Build[Create tools only for relevant Genie spaces]
-    Mode{Execution mode}
-    ToolCalls[LangGraph agent mode<br/>tool calling orchestration]
-    Parallel[RunnableParallel mode<br/>direct parallel invocation]
-    GenieTools[Genie agents as tools<br/>question per space]
-    Outputs[Per-space answers<br/>optional SQL + reasoning]
-    Merge[Merge routed outputs]
-    Final[Combined SQL synthesis result<br/>for downstream execution]
+    Plan[Plan + relevant spaces<br/>genie_route_plan per space]
+    GenieNode[sql_synthesis_genie_node]
+    Validate{Inputs available?}
+    Loop{loop_reason?}
+    Retry[Inject retry guidance<br/>use individual Genie tools]
+    Sequential[Disable stale route plan<br/>choose one Genie room]
+    Direct[Use routed Genie plan]
+    Agent[SQL Synthesis Genie Agent]
+    Tools[Create tools only for<br/>relevant Genie spaces]
+    Mode{Active route plan?}
+    Parallel[Parallel Genie invocation<br/>one question per space]
+    ToolCalls[LLM tool calling<br/>select individual Genie room]
+    Outputs[Per-space answers<br/>SQL + reasoning]
+    Merge[Merge routed outputs<br/>and synthesize final SQL]
+    Extract[Extract SQL blocks<br/>and query labels]
+    Result{Result type}
+    Done[Use preserved results<br/>summarize]
+    Exec[Set next_agent<br/>sql_execution]
+    SummaryNext[Set synthesis_error<br/>summarize]
 
-    Plan --> GenieAgent --> Build --> Mode
-    Mode -->|LangGraph agent mode| ToolCalls --> GenieTools
-    Mode -->|RunnableParallel mode| Parallel --> GenieTools
-    GenieTools --> Outputs --> Merge --> Final
+    Plan --> GenieNode --> Validate
+    Validate -->|missing spaces or plan| SummaryNext
+    Validate -->|yes| Loop
+    Loop -->|retry| Retry --> Agent
+    Loop -->|sequential_next| Sequential --> Agent
+    Loop -->|none| Direct --> Agent
+    Agent --> Tools --> Mode
+    Mode -->|yes| Parallel --> Outputs
+    Mode -->|no| ToolCalls --> Outputs
+    Outputs --> Merge --> Extract --> Result
+    Result -->|NO_MORE_QUERIES| Done
+    Result -->|SQL found| Exec
+    Result -->|no SQL or error| SummaryNext
 
     classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff
     classDef dataClass fill:#50C878,stroke:#2E7D4E,stroke-width:2px,color:#fff
     classDef processClass fill:#F5A623,stroke:#C17D11,stroke-width:2px,color:#000
     classDef decisionClass fill:#8E44AD,stroke:#6C3483,stroke-width:2px,color:#fff
 
-    class GenieAgent agentClass
-    class Plan,Outputs,Final dataClass
-    class Build,ToolCalls,Parallel,GenieTools,Merge processClass
-    class Mode decisionClass
+    class GenieNode,Agent agentClass
+    class Plan,Outputs,Exec,Done,SummaryNext dataClass
+    class Retry,Sequential,Direct,Tools,Parallel,ToolCalls,Merge,Extract processClass
+    class Validate,Loop,Mode,Result decisionClass

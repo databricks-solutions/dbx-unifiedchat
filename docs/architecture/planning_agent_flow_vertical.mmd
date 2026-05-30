@@ -1,25 +1,36 @@
 graph TD
-    Query[User query]
+    Query[Current turn<br/>query + context summary]
     Planner[Planning Agent]
+    CacheCheck{Follow-up vector search cache?}
     VS[Vector Search<br/>Genie space index]
-    Spaces[Relevant spaces<br/>space_id + title + score]
-    Analysis[Analyze question clarity<br/>scope and join need]
-    Clear{Question clear?}
-    Clarify[Clarification request]
-    Route{Execution route}
-    Single[Single-space plan]
-    Multi[Multi-space no-join plan]
-    Table[SQL synthesis table route plan]
-    Genie[SQL synthesis genie route plan]
-    Output[Execution plan JSON<br/>sub_questions + relevant_space_ids<br/>requires_join + join_strategy]
+    CacheStore[Store vector search results<br/>thread TTL cache]
+    Spaces[Relevant Genie spaces<br/>space_id + title + score]
+    Plan[Create execution plan<br/>original query + context summary]
+    Override{Force route override?}
+    Strategy{join_strategy from plan}
+    Table[Set table route]
+    Genie[Set Genie route]
+    Output[Plan state updates<br/>sub_questions + relevant_space_ids<br/>join_strategy + next_agent]
+    Next{next_agent}
+    TableNext[SQL synthesis table route]
+    GenieNext[SQL synthesis Genie route]
+    SummaryNext[Summarize]
 
-    Query --> Planner --> VS --> Spaces --> Analysis --> Clear
-    Clear -->|No| Clarify
-    Clear -->|Yes| Route
-    Route -->|Single space| Single --> Output
-    Route -->|Multi, no join| Multi --> Output
-    Route -->|Join, table route| Table --> Output
-    Route -->|Join, genie route| Genie --> Output
+    Query --> Planner --> CacheCheck
+    CacheCheck -->|cache hit| Spaces
+    CacheCheck -->|cache miss or new question| VS --> CacheStore --> Spaces
+    Spaces --> Plan --> Override
+    Override -->|table_route| Table
+    Override -->|genie_route| Genie
+    Override -->|auto| Strategy
+    Strategy -->|genie_route| Genie
+    Strategy -->|otherwise| Table
+    Table --> Output
+    Genie --> Output
+    Output --> Next
+    Next -->|sql_synthesis_table| TableNext
+    Next -->|sql_synthesis_genie| GenieNext
+    Next -->|summarize| SummaryNext
 
     classDef agentClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff
     classDef dataClass fill:#50C878,stroke:#2E7D4E,stroke-width:2px,color:#fff
@@ -27,6 +38,6 @@ graph TD
     classDef decisionClass fill:#8E44AD,stroke:#6C3483,stroke-width:2px,color:#fff
 
     class Planner agentClass
-    class VS,Spaces,Output dataClass
-    class Query,Analysis,Clarify,Single,Multi,Table,Genie processClass
-    class Clear,Route decisionClass
+    class Query,Spaces,Output dataClass
+    class VS,CacheStore,Plan,Table,Genie,TableNext,GenieNext,SummaryNext processClass
+    class CacheCheck,Override,Strategy,Next decisionClass

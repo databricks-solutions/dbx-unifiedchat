@@ -35,6 +35,11 @@ variables:
     default: "<shared-data-catalog-name>"
   data_schema_name:
     default: "<shared-data-schema-name>"
+  # Optional multi-catalog source data grants.
+  # Format: "catalog_1:schema1, schema2; catalog_2:schema_a, schema_b"
+  # If set, this replaces data_catalog_name/data_schema_name for source grants.
+  data_catalog_schemas:
+    default: ""
   uc_function_names:
     default: "get_space_summary,get_table_overview,get_column_detail,get_space_instructions,get_space_details"
 
@@ -140,6 +145,7 @@ targets:
       schema_name: "<dev-schema-name>"
       data_catalog_name: "<dev-data-catalog-name>"
       data_schema_name: "<dev-data-schema-name>"
+      data_catalog_schemas: "catalog_1:schema1, schema2; catalog_2:schema_a, schema_b"
       experiment_id: "<dev-mlflow-experiment-id>"
       agent_keep_warm_interval_seconds: "600"
       sql_warehouse_id: "<dev-sql-warehouse-id>"
@@ -163,6 +169,7 @@ targets:
       schema_name: "<prod-schema-name>"
       data_catalog_name: "<prod-data-catalog>"
       data_schema_name: "<prod-data-schema>"
+      data_catalog_schemas: "catalog_1:schema1, schema2; catalog_2:schema_a, schema_b"
       experiment_id: "<prod-mlflow-experiment-id>"
       agent_keep_warm_interval_seconds: "600"
       lakebase_project: "<prod-lakebase-project>"
