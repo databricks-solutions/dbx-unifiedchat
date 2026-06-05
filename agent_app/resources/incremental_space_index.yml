@@ -1,0 +1,58 @@
+# Incremental Space Index — Enrich a single Genie Space → Sync Vector Search
+#
+# Triggered by AgentRx's add_space_to_index tool after uploading the space
+# JSON to the UC Volume. Skips step 01 (export) since the tool already
+# handles it.
+#
+# The space_id job parameter controls which space file to process. The
+# enrich notebook uses DELETE + INSERT (not overwrite) so existing spaces
+# in the index are preserved.
+
+resources:
+  jobs:
+    agent_app_incremental_space_index_job:
+      name: "multi-agent-genie-app-incremental-space-index-${bundle.target}"
+      description: >-
+        Enrich a single Genie space and sync the Vector Search index.
+        Triggered by AgentRx when a user asks to add a space to the
+        knowledge base.
+      max_concurrent_runs: 3
+      tags:
+        project: multi_agent_genie_app
+        pipeline: incremental-space-index
+
+      parameters:
+        - name: space_id
+          default: ""
+
+      tasks:
+        - task_key: enrich_single_space
+          notebook_task:
+            notebook_path: ../../etl/02_enrich_table_metadata.py
+            source: WORKSPACE
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+              volume_name: ${var.volume_name}
+              enriched_docs_table: ${var.enriched_docs_table}
+              llm_endpoint: ${var.llm_endpoint}
+              sample_size: ${var.sample_size}
+              max_unique_values: ${var.max_unique_values}
+              space_id: "{{job.parameters.space_id}}"
+          timeout_seconds: 3600
+
+        - task_key: sync_vector_search
+          depends_on:
+            - task_key: enrich_single_space
+          notebook_task:
+            notebook_path: ../../etl/03_build_vector_search_index.py
+            source: WORKSPACE
+            base_parameters:
+              catalog_name: ${var.catalog_name}
+              schema_name: ${var.schema_name}
+              source_table: ${var.source_table}
+              vs_endpoint_name: ${var.vs_endpoint_name}
+              embedding_model: ${var.embedding_model}
+              pipeline_type: ${var.pipeline_type}
+              sync_only: "true"
+          timeout_seconds: 3600

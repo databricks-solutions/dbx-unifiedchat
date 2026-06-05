@@ -19,6 +19,10 @@ setup_mlflow_git_based_version_tracking()
 from agent_server.rechart_api import router as rechart_router  # noqa: E402
 app.include_router(rechart_router)
 
+# Mount the /api/agent-rx endpoint for the AgentRx knowledge-base management UI
+from agent_server.agent_rx_api import router as agent_rx_router  # noqa: E402
+app.include_router(agent_rx_router)
+
 
 def main():
     try:

@@ -37,6 +37,9 @@ dbutils.widgets.text("llm_endpoint", os.getenv("LLM_ENDPOINT", "databricks-claud
 dbutils.widgets.text("sample_size", os.getenv("SAMPLE_SIZE", "20"))
 dbutils.widgets.text("max_unique_values", os.getenv("MAX_UNIQUE_VALUES", "50"))
 dbutils.widgets.text("max_parallel_genies", os.getenv("MAX_PARALLEL_GENIES", "4"))
+# Optional: when set, enrich ONLY this space and DELETE+append into the
+# enriched / chunks tables (used by AgentRx's incremental_space_index job).
+dbutils.widgets.text("space_id", os.getenv("SPACE_ID", ""))
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -47,6 +50,8 @@ sample_size = int(dbutils.widgets.get("sample_size"))
 max_unique_values = int(dbutils.widgets.get("max_unique_values"))
 # Bound driver-side concurrency for Genie space enrichment. Set to 1 for sequential behavior.
 max_parallel_genies = max(1, int(dbutils.widgets.get("max_parallel_genies")))
+space_id = dbutils.widgets.get("space_id").strip()
+incremental_mode = bool(space_id)
 
 enriched_docs_table = f"{catalog_name}.{schema_name}.{enriched_docs_table_short}"
 
@@ -58,6 +63,7 @@ print(f"LLM Endpoint: {llm_endpoint}")
 print(f"Sample Size: {sample_size}")
 print(f"Max Unique Values: {max_unique_values}")
 print(f"Max Parallel Genies: {max_parallel_genies}")
+print(f"Mode: {'INCREMENTAL (space_id=' + space_id + ')' if incremental_mode else 'FULL (all spaces)'}")
 
 # COMMAND ----------
 
@@ -627,8 +633,14 @@ import glob
 import concurrent.futures
 import traceback
 
-space_files = glob.glob(f"{genie_exports_path}/*.space.json")
-print(f"Found {len(space_files)} Genie space files")
+if incremental_mode:
+    space_files = glob.glob(f"{genie_exports_path}/{space_id}__*.space.json")
+    if not space_files:
+        space_files = glob.glob(f"{genie_exports_path}/*{space_id}*.space.json")
+    print(f"Incremental mode: found {len(space_files)} file(s) for space_id={space_id}")
+else:
+    space_files = glob.glob(f"{genie_exports_path}/*.space.json")
+    print(f"Found {len(space_files)} Genie space files")
 
 # Process each space with bounded driver-side concurrency. Each Genie space is
 # independent, and the slow work is Spark SQL sampling + ai_query calls which
@@ -697,11 +709,16 @@ else:
         schema="id INT, enriched_doc STRING, space_id STRING, space_title STRING"
     )
 
-# Save to Delta table
-df_enriched.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(enriched_docs_table)
-
-print(f"\n✓ Saved enriched docs to: {enriched_docs_table}")
-print(f"  Total records: {df_enriched.count()}")
+# Save to Delta table — incremental mode does DELETE+append so existing
+# rows for other spaces are preserved; full mode overwrites the whole table.
+if incremental_mode and all_enriched_docs:
+    spark.sql(f"DELETE FROM {enriched_docs_table} WHERE space_id = '{space_id}'")
+    df_enriched.write.mode("append").saveAsTable(enriched_docs_table)
+    print(f"\n✓ Incremental: replaced enriched docs for space_id={space_id} in {enriched_docs_table}")
+else:
+    df_enriched.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(enriched_docs_table)
+    print(f"\n✓ Saved enriched docs to: {enriched_docs_table}")
+print(f"  Total records: {spark.table(enriched_docs_table).count()}")
 
 # Display sample
 if df_enriched.count() > 0:
@@ -1003,12 +1020,16 @@ if not all_chunks:
 else:
     df_chunks = spark.createDataFrame(all_chunks)
 
-# Save to Delta table
+# Save to Delta table — incremental mode does DELETE+append for the space.
 chunks_table_name = f"{enriched_docs_table}_chunks"
-df_chunks.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(chunks_table_name)
-
-print(f"\n✓ Saved chunks to: {chunks_table_name}")
-print(f"  Total records: {df_chunks.count()}")
+if incremental_mode and all_chunks:
+    spark.sql(f"DELETE FROM {chunks_table_name} WHERE space_id = '{space_id}'")
+    df_chunks.write.mode("append").saveAsTable(chunks_table_name)
+    print(f"\n✓ Incremental: replaced chunks for space_id={space_id} in {chunks_table_name}")
+else:
+    df_chunks.write.mode("overwrite").option("overwriteSchema", "true").saveAsTable(chunks_table_name)
+    print(f"\n✓ Saved chunks to: {chunks_table_name}")
+print(f"  Total records: {spark.table(chunks_table_name).count()}")
 
 # Display samples of each chunk type
 print("\n" + "="*80)

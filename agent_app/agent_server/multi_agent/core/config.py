@@ -108,7 +108,8 @@ class LLMConfig:
     summarize_endpoint: str
     chart_endpoint: str
     detect_code_lookup_endpoint: str
-    
+    agent_rx_endpoint: str
+
     @classmethod
     def from_env(cls) -> 'LLMConfig':
         d = os.getenv("LLM_ENDPOINT", _DEFAULT_LLM)
@@ -122,6 +123,7 @@ class LLMConfig:
             summarize_endpoint=os.getenv("LLM_ENDPOINT_SUMMARIZE", d),
             chart_endpoint=os.getenv("LLM_ENDPOINT_CHART", d),
             detect_code_lookup_endpoint=os.getenv("LLM_ENDPOINT_DETECT_CODE_LOOKUP", "databricks-gpt-5-4-mini"),
+            agent_rx_endpoint=os.getenv("LLM_ENDPOINT_AGENT_RX", d),
         )
 
     @classmethod
@@ -137,6 +139,7 @@ class LLMConfig:
             summarize_endpoint=_mc_get(mc, "llm_endpoint_summarize", d),
             chart_endpoint=_mc_get(mc, "llm_endpoint_chart", d),
             detect_code_lookup_endpoint=_mc_get(mc, "llm_endpoint_detect_code_lookup", "databricks-gpt-5-4-mini"),
+            agent_rx_endpoint=_mc_get(mc, "llm_endpoint_agent_rx", d),
         )
 
 

@@ -19,6 +19,7 @@ import { messagesRouter } from './routes/messages';
 import { configRouter } from './routes/config';
 import { feedbackRouter } from './routes/feedback';
 import { chartWorkspaceRouter } from './routes/chart-workspaces';
+import { agentRxRouter } from './routes/agent-rx';
 import { ChatSDKError } from '@chat-template/core/errors';
 
 // ESM-compatible __dirname
@@ -58,6 +59,7 @@ app.use('/api/messages', messagesRouter);
 app.use('/api/config', configRouter);
 app.use('/api/feedback', feedbackRouter);
 app.use('/api/chart-workspaces', chartWorkspaceRouter);
+app.use('/api/agent-rx', agentRxRouter);
 
 // Agent backend proxy (optional)
 // If API_PROXY is set, proxy /invocations requests to the agent backend

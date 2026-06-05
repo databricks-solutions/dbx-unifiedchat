@@ -28,6 +28,9 @@ dbutils.widgets.text("source_table", os.getenv("SOURCE_TABLE", "enriched_genie_d
 dbutils.widgets.text("vs_endpoint_name", os.getenv("VS_ENDPOINT_NAME", "genie_multi_agent_vs"))
 dbutils.widgets.text("embedding_model", os.getenv("EMBEDDING_MODEL", "databricks-gte-large-en"))
 dbutils.widgets.text("pipeline_type", os.getenv("PIPELINE_TYPE", "TRIGGERED"))
+# When set to "true", skip create/recreate and just call index.sync() on the
+# existing index. Used by AgentRx's incremental_space_index job.
+dbutils.widgets.text("sync_only", os.getenv("SYNC_ONLY", ""))
 
 catalog_name = dbutils.widgets.get("catalog_name")
 schema_name = dbutils.widgets.get("schema_name")
@@ -35,6 +38,7 @@ source_table = dbutils.widgets.get("source_table")
 vs_endpoint_name = dbutils.widgets.get("vs_endpoint_name")
 embedding_model = dbutils.widgets.get("embedding_model")
 pipeline_type = dbutils.widgets.get("pipeline_type")
+sync_only = dbutils.widgets.get("sync_only").strip().lower() in ("true", "1", "yes")
 
 # Construct fully qualified table names
 source_table_name = f"{catalog_name}.{schema_name}.{source_table}"
@@ -45,6 +49,7 @@ print(f"VS Endpoint: {vs_endpoint_name}")
 print(f"Index Name: {index_name}")
 print(f"Embedding Model: {embedding_model}")
 print(f"Pipeline Type: {pipeline_type}")
+print(f"Sync Only: {sync_only}")
 print("\nNote: Using multi-level chunks table with space_summary, table_overview, and column_detail chunks")
 
 # Ensure catalog/schema context is set (each serverless task is a separate session)
@@ -123,40 +128,48 @@ print(f"✓ Endpoint '{vs_endpoint_name}' is online and ready")
 
 # DBTITLE 1,Create or Sync Delta Sync Vector Search Index
 
-print(f"Creating vector search index: {index_name}")
-print(f"  Source: {source_table_name}")
-print(f"  Embedding column: searchable_content")
-print(f"  Primary key: chunk_id")
-print(f"  Embedding model: {embedding_model}")
-
-try:
-    # Check if index already exists
+if sync_only:
+    # AgentRx incremental path: don't recreate, just sync the existing index.
+    print(f"SYNC-ONLY mode: triggering sync on existing index '{index_name}'")
     try:
         index = client.get_index(index_name=index_name)
-        print(f"Index '{index_name}' already exists. Triggering sync...")
         index.sync()
-    except Exception:
-        print(f"Index does not exist, creating new...")
-        # Create new index with metadata filters
-        index = client.create_delta_sync_index(
-            endpoint_name=vs_endpoint_name,
-            source_table_name=source_table_name,
-            index_name=index_name,
-            pipeline_type=pipeline_type,
-            primary_key="chunk_id",
-            embedding_source_column="searchable_content",
-            embedding_model_endpoint_name=embedding_model
-        )
-    
-    print(f"✓ Vector search index creation/sync initiated: {index_name}: {index}")
-    print(f"  Metadata fields available for filtering:")
-    print(f"    - chunk_type (space_summary, table_overview, column_detail)")
-    print(f"    - table_name, column_name")
-    print(f"    - is_categorical, is_temporal, is_identifier, has_value_dictionary")
-    
-except Exception as e:
-    print(f"Error creating index: {str(e)}")
-    raise
+        print(f"✓ Sync triggered for index '{index_name}'")
+    except Exception as e:
+        print(f"Error triggering sync on '{index_name}': {e}")
+        raise
+else:
+    print(f"Creating vector search index: {index_name}")
+    print(f"  Source: {source_table_name}")
+    print(f"  Embedding column: searchable_content")
+    print(f"  Primary key: chunk_id")
+    print(f"  Embedding model: {embedding_model}")
+    try:
+        try:
+            index = client.get_index(index_name=index_name)
+            print(f"Index '{index_name}' already exists. Triggering sync...")
+            index.sync()
+        except Exception:
+            print(f"Index does not exist, creating new...")
+            index = client.create_delta_sync_index(
+                endpoint_name=vs_endpoint_name,
+                source_table_name=source_table_name,
+                index_name=index_name,
+                pipeline_type=pipeline_type,
+                primary_key="chunk_id",
+                embedding_source_column="searchable_content",
+                embedding_model_endpoint_name=embedding_model
+            )
+
+        print(f"✓ Vector search index creation/sync initiated: {index_name}: {index}")
+        print(f"  Metadata fields available for filtering:")
+        print(f"    - chunk_type (space_summary, table_overview, column_detail)")
+        print(f"    - table_name, column_name")
+        print(f"    - is_categorical, is_temporal, is_identifier, has_value_dictionary")
+
+    except Exception as e:
+        print(f"Error creating index: {str(e)}")
+        raise
 
 # COMMAND ----------
 

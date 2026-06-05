@@ -39,6 +39,8 @@ resources:
             value: ${var.llm_endpoint_summarize}
           - name: LLM_ENDPOINT_DETECT_CODE_LOOKUP
             value: ${var.llm_endpoint_detect_code_lookup}
+          - name: LLM_ENDPOINT_AGENT_RX
+            value: ${var.llm_endpoint_agent_rx}
           - name: EMBEDDING_MODEL
             value: ${var.embedding_model}
           - name: VS_ENDPOINT_NAME

@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/sidebar';
 import { Link } from 'react-router-dom';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
-import { PlusIcon } from 'lucide-react';
+import { PlusIcon, WrenchIcon } from 'lucide-react';
 import type { ClientSession } from '@chat-template/auth';
 
 export function AppSidebar({
@@ -42,24 +42,44 @@ export function AppSidebar({
                 Chatbot
               </span>
             </Link>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  type="button"
-                  className="h-8 p-1 md:h-fit md:p-2"
-                  onClick={() => {
-                    setOpenMobile(false);
-                    navigate('/');
-                  }}
-                >
-                  <PlusIcon />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent align="end" className="hidden md:block">
-                New Chat
-              </TooltipContent>
-            </Tooltip>
+            <div className="flex items-center gap-1">
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    type="button"
+                    className="h-8 p-1 md:h-fit md:p-2"
+                    onClick={() => {
+                      setOpenMobile(false);
+                      navigate('/agent-rx');
+                    }}
+                  >
+                    <WrenchIcon />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent align="end" className="hidden md:block">
+                  AgentRx (admin)
+                </TooltipContent>
+              </Tooltip>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    type="button"
+                    className="h-8 p-1 md:h-fit md:p-2"
+                    onClick={() => {
+                      setOpenMobile(false);
+                      navigate('/');
+                    }}
+                  >
+                    <PlusIcon />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent align="end" className="hidden md:block">
+                  New Chat
+                </TooltipContent>
+              </Tooltip>
+            </div>
           </div>
         </SidebarMenu>
       </SidebarHeader>

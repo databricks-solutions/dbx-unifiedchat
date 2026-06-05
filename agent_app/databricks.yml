@@ -82,6 +82,9 @@ variables:
     default: "databricks-claude-sonnet-4-5"
   llm_endpoint_detect_code_lookup:
     default: "databricks-claude-haiku-4-5"
+  llm_endpoint_agent_rx:
+    description: LLM endpoint for AgentRx (knowledge-base management agent)
+    default: "databricks-claude-sonnet-4-5"
 
   # Embedding & vector search
   embedding_model:
@@ -176,6 +179,31 @@ targets:
       lakebase_branch: "production"
       sql_warehouse_id: "<prod-warehouse-id>"
       genie_space_ids: "<prod-comma-separated-genie-space-ids>"
+
+  ian-agents:
+    default: false
+    mode: development
+    workspace:
+      host: https://fevm-classic-stable-ian-agents.cloud.databricks.com
+      profile: ian-agents
+      root_path: /Workspace/Users/${workspace.current_user.userName}/.bundle/${bundle.name}/${bundle.target}
+    variables:
+      # Personal workspace target for Ian (mirrors databricks.local.yml).
+      app_name: "ian-agents-multi-agent-genie"
+      catalog_name: "classic_stable_ian_agents_catalog"
+      schema_name: "multi_agent_genie"
+      # Genie spaces point at samples.nyctaxi.trips, but `samples` is a system
+      # catalog that doesn't accept GRANT. Mirror catalog_name/schema_name here
+      # so prepare_shared_infra skips the duplicate-data-catalog grant. The
+      # agent's SQL execution path resolves data tables via the Genie space
+      # config, not this variable.
+      data_catalog_name: "classic_stable_ian_agents_catalog"
+      data_schema_name: "multi_agent_genie"
+      sql_warehouse_id: "ec8b3f4cd7468502"
+      lakebase_project: "multi-agent-genie-app-ian-agents"
+      lakebase_branch: "production"
+      experiment_id: "962248766433355"
+      genie_space_ids: "01f1172e780a1d61a0822a6c8db74006"
 
 sync:
   paths:
