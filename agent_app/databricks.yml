@@ -199,6 +199,11 @@ targets:
       # config, not this variable.
       data_catalog_name: "classic_stable_ian_agents_catalog"
       data_schema_name: "multi_agent_genie"
+      # Mirror data_catalog_name:data_schema_name so the app's DATA_CATALOG_SCHEMAS
+      # env var is non-empty. DABs drops empty-string env values, which makes the
+      # Apps API reject the deploy ("env var must specify value or valueFrom").
+      # Same single catalog:schema => identical source grants.
+      data_catalog_schemas: "classic_stable_ian_agents_catalog:multi_agent_genie"
       sql_warehouse_id: "ec8b3f4cd7468502"
       lakebase_project: "multi-agent-genie-app-ian-agents"
       lakebase_branch: "production"

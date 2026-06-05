@@ -407,3 +407,82 @@ def test_sync_app_resource_permissions_fails_when_autoscaling_database_missing(m
             ),
             workspace_client=workspace_client,
         )
+
+
+# ---------------------------------------------------------------------------
+# grant_genie_space_manage
+# ---------------------------------------------------------------------------
+
+class _FakeApiClient:
+    """Records api_client.do calls; returns canned GET ACLs keyed by behaviour."""
+
+    def __init__(self, get_levels_by_space, patch_raises=False):
+        self._get_levels = get_levels_by_space
+        self._patch_raises = patch_raises
+        self.calls = []
+
+    def do(self, method, path, body=None):
+        self.calls.append((method, path, body))
+        if method == "PATCH":
+            if self._patch_raises:
+                raise RuntimeError("permission denied")
+            return {}
+        if method == "GET":
+            space_id = path.rsplit("/", 1)[-1]
+            levels = self._get_levels.get(space_id, [])
+            return {"access_control_list": [
+                {"service_principal_name": "sp-1",
+                 "all_permissions": [{"permission_level": lvl} for lvl in levels]}
+            ]}
+        return {}
+
+
+def _cfg(space_ids):
+    return PermissionGrantConfig(
+        memory_type="langgraph-short-term",
+        project="proj", branch="production",
+        genie_space_ids=space_ids,
+    )
+
+
+def test_grant_genie_space_manage_success_is_verified():
+    api = _FakeApiClient({"s1": ["CAN_MANAGE"]})
+    ws = SimpleNamespace(api_client=api)
+    results = grant_module.grant_genie_space_manage(_cfg(["s1"]), "sp-1", ws)
+    assert results == [{"space_id": "s1", "granted": True, "error": None}]
+    methods = [c[0] for c in api.calls]
+    assert "PATCH" in methods and "GET" in methods  # read-back verification happened
+
+
+def test_grant_genie_space_manage_flags_unverified_grant():
+    # PATCH "succeeds" but the read-back shows the SP without CAN_MANAGE.
+    api = _FakeApiClient({"s1": ["CAN_RUN"]})
+    ws = SimpleNamespace(api_client=api)
+    results = grant_module.grant_genie_space_manage(_cfg(["s1"]), "sp-1", ws)
+    assert results[0]["granted"] is False
+    assert results[0]["error"]
+
+
+def test_grant_genie_space_manage_handles_patch_exception():
+    api = _FakeApiClient({}, patch_raises=True)
+    ws = SimpleNamespace(api_client=api)
+    results = grant_module.grant_genie_space_manage(_cfg(["s1"]), "sp-1", ws)
+    assert results[0]["granted"] is False
+    assert "permission denied" in results[0]["error"]
+
+
+def test_grant_genie_space_manage_skips_placeholder_ids():
+    api = _FakeApiClient({})
+    ws = SimpleNamespace(api_client=api)
+    results = grant_module.grant_genie_space_manage(
+        _cfg(["<comma-separated-genie-space-ids>", "  "]), "sp-1", ws
+    )
+    assert results == []
+    assert api.calls == []  # no API calls for placeholders
+
+
+def test_grant_genie_space_manage_empty_is_noop():
+    api = _FakeApiClient({})
+    ws = SimpleNamespace(api_client=api)
+    assert grant_module.grant_genie_space_manage(_cfg([]), "sp-1", ws) == []
+    assert api.calls == []

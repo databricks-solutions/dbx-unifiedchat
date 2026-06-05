@@ -15,6 +15,8 @@ const SUGGESTIONS: string[] = [
   'List the Genie spaces currently indexed in the knowledge base.',
   'Summarise the last 7 days of negative feedback.',
   'Sample the most recent failing traces and suggest a fix.',
+  'List the tables and columns in the NYC Taxi Trip Data Analysis space.',
+  'List the benchmark questions in the NYC Taxi Trip Data Analysis space.',
 ];
 
 export default function AgentRxPage() {

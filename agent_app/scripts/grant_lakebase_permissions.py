@@ -634,6 +634,82 @@ def _sync_app_resource_permissions_raw(config: PermissionGrantConfig, workspace_
     )
 
 
+def _is_placeholder_space_id(space_id: str) -> bool:
+    """True for unreplaced bundle template placeholders like '<...>' or empty."""
+    s = (space_id or "").strip()
+    return not s or (s.startswith("<") and s.endswith(">"))
+
+
+def grant_genie_space_manage(config: PermissionGrantConfig, sp_id: str, workspace_client) -> list[dict]:
+    """Grant the app service principal CAN_MANAGE on each configured Genie space.
+
+    The app's `genie_space` resource only confers CAN_RUN, which is enough to
+    query a space but not to edit it. AgentRx's space-editing tools (benchmark /
+    sample questions, column visibility) require CAN_MANAGE, so grant it directly
+    via the permissions API. Idempotent.
+
+    Each grant is verified by reading the ACL back, because a swallowed PATCH
+    failure (e.g. the deploying identity lacks rights, or a stale space id) would
+    otherwise let the deploy report success while the editing tools 403 at
+    runtime. Returns a per-space result list and prints a prominent summary so a
+    silent failure is visible in the shared-infra job log.
+    """
+    space_ids = [s for s in (config.genie_space_ids or []) if not _is_placeholder_space_id(s)]
+    skipped = [s for s in (config.genie_space_ids or []) if _is_placeholder_space_id(s)]
+    if skipped:
+        print(
+            f"  Note: skipping {len(skipped)} unconfigured/placeholder Genie space id(s); "
+            "AgentRx space-editing is disabled for those."
+        )
+    if not space_ids:
+        print("  No Genie spaces configured for CAN_MANAGE grant (AgentRx editing disabled).")
+        return []
+
+    results: list[dict] = []
+    for space_id in space_ids:
+        result = {"space_id": space_id, "granted": False, "error": None}
+        try:
+            workspace_client.api_client.do(
+                "PATCH",
+                f"/api/2.0/permissions/genie/{space_id}",
+                body={
+                    "access_control_list": [
+                        {"service_principal_name": sp_id, "permission_level": "CAN_MANAGE"}
+                    ]
+                },
+            )
+            # Verify the grant actually took effect.
+            acls = (workspace_client.api_client.do(
+                "GET", f"/api/2.0/permissions/genie/{space_id}"
+            ) or {}).get("access_control_list", [])
+            levels = [
+                p.get("permission_level")
+                for entry in acls
+                if entry.get("service_principal_name") == sp_id
+                for p in entry.get("all_permissions", [])
+            ]
+            if "CAN_MANAGE" in levels:
+                result["granted"] = True
+                print(f"  ✅ Verified CAN_MANAGE on Genie space {space_id} for {sp_id}.")
+            else:
+                result["error"] = f"grant not present after PATCH (levels={levels})"
+                print(f"  ❌ CAN_MANAGE NOT confirmed on Genie space {space_id} (levels={levels}).")
+        except Exception as e:  # noqa: BLE001
+            result["error"] = str(e)
+            print(f"  ❌ Failed to grant CAN_MANAGE on Genie space {space_id}: {e}")
+        results.append(result)
+
+    failed = [r for r in results if not r["granted"]]
+    if failed:
+        print(
+            f"\n  ⚠️  AGENTRX GENIE GRANT INCOMPLETE: {len(failed)}/{len(results)} space(s) "
+            f"did NOT get CAN_MANAGE: {[r['space_id'] for r in failed]}. "
+            "AgentRx space-editing tools will return 403 for those spaces until this is "
+            "resolved (ensure the deploying identity has CAN_MANAGE / the space ids are valid)."
+        )
+    return results
+
+
 def sync_app_resource_permissions(config: PermissionGrantConfig, workspace_client) -> None:
     from databricks.sdk.service import apps as apps_service
 
@@ -927,6 +1003,7 @@ def apply_permission_grants(
         )
 
     sync_app_resource_permissions(config, workspace_client)
+    grant_genie_space_manage(config, sp_id, workspace_client)
 
     print(
         "\nPermission grants complete. If some grants failed because tables don't "
