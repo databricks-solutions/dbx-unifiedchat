@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AgentRx — Core Concepts</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#2d333b;
+    --text:#e6edf3; --muted:#9aa7b4; --accent:#ff5f46; --accent2:#4493f8;
+    --green:#3fb950; --purple:#bc8cff; --amber:#d29922; --pink:#f778ba;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.55;font-size:15px;}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 24px 80px;}
+  header.hero{border:1px solid var(--border);border-radius:16px;padding:32px;
+    background:linear-gradient(135deg,#161b22 0%,#1c2330 100%);margin-bottom:32px;}
+  .badge{display:inline-block;font-size:12px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--accent);font-weight:700;margin-bottom:8px;}
+  h1{margin:0 0 8px;font-size:34px;letter-spacing:-.02em;}
+  h1 .rx{color:var(--accent);}
+  .sub{color:var(--muted);font-size:16px;max-width:780px;margin:0;}
+  h2{font-size:22px;margin:44px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--border);}
+  h3{font-size:16px;margin:24px 0 8px;color:var(--accent2);}
+  p{color:#cdd6df;}
+  code,.mono{font-family:var(--mono);font-size:.88em;}
+  code{background:#222b38;border:1px solid var(--border);border-radius:5px;padding:1px 6px;color:#e6edf3;}
+  .lead{color:var(--muted);}
+  .grid{display:grid;gap:14px;}
+  .cols-2{grid-template-columns:1fr 1fr;}
+  .cols-3{grid-template-columns:repeat(3,1fr);}
+  @media(max-width:820px){.cols-2,.cols-3{grid-template-columns:1fr;}}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px;}
+  .card h4{margin:0 0 6px;font-size:15px;display:flex;align-items:center;gap:8px;}
+  .card .tag{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;padding:2px 8px;border-radius:20px;}
+  .card p{margin:8px 0 0;font-size:13.5px;color:var(--muted);}
+  .t-space{color:var(--accent2);border:1px solid #1e3a4d;background:#10202c;}
+  .t-kb{color:var(--green);border:1px solid #2c5a35;background:#102016;}
+  .t-index{color:var(--purple);border:1px solid #3a2c5a;background:#160f20;}
+  table{width:100%;border-collapse:collapse;margin:10px 0 4px;font-size:13.5px;}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:top;}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em;}
+  tr:last-child td{border-bottom:none;}
+  td .mono{color:var(--pink);}
+  .note{background:#10202c;border:1px solid #1e3a4d;border-left:3px solid var(--accent2);
+    border-radius:8px;padding:12px 16px;margin:14px 0;color:#cfe2f0;font-size:14px;}
+  .note.warn{background:#1f1a0c;border-color:#5a4a1e;border-left-color:var(--amber);color:#ecdca6;}
+  ul.tight{margin:6px 0;padding-left:20px;}
+  ul.tight li{margin:5px 0;color:#cdd6df;}
+  pre{background:#0a0e14;border:1px solid var(--border);border-radius:10px;padding:16px;overflow:auto;
+    font-family:var(--mono);font-size:12.5px;line-height:1.5;color:#cdd6df;}
+  pre .c{color:#6e7781;} pre .k{color:var(--pink);} pre .s{color:var(--green);} pre .n{color:var(--accent2);}
+  .pipe{display:flex;flex-direction:column;gap:0;margin:16px 0;}
+  .pipe .row{display:flex;align-items:stretch;gap:12px;}
+  .pipe .box{flex:1;background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:13px 15px;}
+  .pipe .box .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;}
+  .pipe .box .v{font-weight:600;margin-top:2px;font-size:14px;}
+  .pipe .box .d{font-size:12.5px;color:var(--muted);margin-top:4px;}
+  .pipe .arrow{align-self:center;color:var(--accent);font-size:20px;padding:5px 0;text-align:center;}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin:10px 0 0;font-size:13px;color:var(--muted);}
+  .legend span{display:inline-flex;align-items:center;gap:7px;}
+  .sw{width:12px;height:12px;border-radius:3px;display:inline-block;}
+  .foot{margin-top:50px;padding-top:18px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px;}
+  .kvs{display:grid;grid-template-columns:auto 1fr;gap:5px 16px;font-size:13.5px;}
+  .kvs .kk{color:var(--muted);}
+  svg{max-width:100%;height:auto;}
+  .pillrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+  .pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 9px;border-radius:20px;border:1px solid var(--border);color:var(--muted);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="badge">Core Concepts</div>
+    <h1>Agent<span class="rx">Rx</span> — Knowledge Base, Index &amp; Genie Spaces</h1>
+    <p class="sub">Three concepts sit at the heart of what AgentRx manages. They are easy to
+    conflate but are distinct things: a <strong>Genie Space</strong> is a data source that lives
+    on the workspace; the <strong>knowledge base</strong> is the curated set of spaces the
+    multi-agent system is aware of; the <strong>index</strong> is the searchable, embedded
+    representation that makes the knowledge base usable at query time.</p>
+  </header>
+
+  <h2>1 · The three concepts at a glance</h2>
+  <div class="grid cols-3">
+    <div class="card">
+      <h4><span class="tag t-space">Genie Space</span></h4>
+      <p>A Databricks <em>Genie Space</em> — a natural-language-to-SQL workspace over a set of
+      Unity Catalog tables, with its own instructions, sample questions, benchmark questions and
+      per-column settings. It is the <strong>source of truth</strong>, owned and edited on the
+      workspace, and exists whether or not this app knows about it.</p>
+    </div>
+    <div class="card">
+      <h4><span class="tag t-kb">Knowledge Base</span></h4>
+      <p>The <strong>curated set of Genie Spaces the multi-agent system can discover and route
+      questions to</strong> — i.e. "what the agent has access to." It is a <em>selection</em> of
+      spaces plus their enriched metadata, not the spaces themselves. A space on the workspace is
+      only in the knowledge base once it has been ingested.</p>
+    </div>
+    <div class="card">
+      <h4><span class="tag t-index">Index</span></h4>
+      <p>The <strong>Databricks Vector Search index</strong> built over the knowledge base's
+      enriched metadata. It is <em>how</em> the knowledge base is queried: at runtime the Planning
+      Agent embeds the user's question and searches this index to find the most relevant spaces,
+      tables and columns. The index is a derived, refreshable artifact.</p>
+    </div>
+  </div>
+  <div class="note"><strong>One-line mental model:</strong>
+    <span style="color:var(--accent2)">Genie Spaces</span> are the data sources →
+    the <span style="color:var(--green)">knowledge base</span> is the subset the agent knows about →
+    the <span style="color:var(--purple)">index</span> is the embedded form the agent searches.</div>
+
+  <h2>2 · Membership: a space can be live but not in the knowledge base</h2>
+  <p>Because the knowledge base is a <em>curated selection</em>, the set of Genie Spaces on the
+  workspace and the set in the knowledge base are not the same. This is the distinction AgentRx
+  exists to manage.</p>
+  <div class="grid cols-3">
+    <div class="card"><h4>On workspace, not indexed</h4><p>A Genie Space exists but the agent can't discover or route to it. <code>list_genie_spaces</code> shows it; <code>list_indexed_spaces</code> does not. Fix: <code>add_space_to_index</code>.</p></div>
+    <div class="card"><h4>Indexed (in the KB)</h4><p>Its enriched chunks are in the tables and the Vector Search index, so the Planning Agent can find and route to it. Appears in both listings.</p></div>
+    <div class="card"><h4>Removed from index</h4><p>Chunks deleted from the enriched tables, export files cleaned from the volume, and the index synced — the space is untouched on the workspace but the agent "forgets" it. Tool: <code>remove_space_from_index</code>.</p></div>
+  </div>
+  <div class="note warn"><strong>The index is a cache, so it can drift.</strong> Editing a Genie Space (new tables,
+  changed instructions, renamed columns — or AgentRx's own benchmark/column edits) does <em>not</em> automatically
+  update the knowledge base. The index reflects the space as of the last enrich/sync. Re-run the metadata refresh
+  (or the incremental add) and a Vector Search sync to reconcile.</div>
+
+  <h2>3 · How AgentRx operates on each concept</h2>
+  <table>
+    <tr><th style="width:26%">Concept</th><th>AgentRx capability</th></tr>
+    <tr><td><span class="pill" style="color:var(--accent2);border-color:#1e3a4d">Genie Space (source)</span></td>
+      <td>Discover &amp; inspect (<code>list_genie_spaces</code>, <code>get_genie_space_config</code>, <code>list_space_tables_and_columns</code>); <strong>edit</strong> its config — benchmark/sample questions, column visibility, instructions.</td></tr>
+    <tr><td><span class="pill" style="color:var(--green);border-color:#2c5a35">Knowledge Base (membership)</span></td>
+      <td><code>list_indexed_spaces</code>, <code>get_indexed_space_details</code> (chunk breakdown); <code>add_space_to_index</code> / <code>remove_space_from_index</code>.</td></tr>
+    <tr><td><span class="pill" style="color:var(--purple);border-color:#3a2c5a">Index (freshness)</span></td>
+      <td><code>trigger_vector_search_sync</code> (pick up table changes), <code>trigger_full_etl_pipeline</code> (re-export → enrich → rebuild), <code>invalidate_space_context_cache</code> (clear the in-process cache).</td></tr>
+  </table>
+
+  <h2>4 · How they relate</h2>
+  <p>Genie Spaces are ingested by an ETL pipeline that exports, enriches, chunks and embeds their
+  metadata. The result <em>is</em> the knowledge base, made queryable through the Vector Search
+  index. At query time the agent searches the index, not the spaces directly; it only talks to a
+  Genie Space once the index has pointed it there.</p>
+
+  <svg viewBox="0 0 920 250" width="100%" role="img" aria-label="Genie Spaces to knowledge base to index relationship">
+    <defs>
+      <marker id="a" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#ff5f46"/></marker>
+      <marker id="ag" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#3fb950"/></marker>
+    </defs>
+    <!-- Genie spaces -->
+    <rect x="14" y="78" width="150" height="92" rx="11" fill="#10202c" stroke="#1e3a4d"/>
+    <text x="89" y="104" fill="#4493f8" font-size="13" font-weight="700" text-anchor="middle">Genie Spaces</text>
+    <text x="89" y="124" fill="#9aa7b4" font-size="11" text-anchor="middle">on the workspace</text>
+    <text x="89" y="142" fill="#9aa7b4" font-size="11" text-anchor="middle">tables · instructions</text>
+    <text x="89" y="156" fill="#9aa7b4" font-size="11" text-anchor="middle">questions · columns</text>
+    <!-- ETL -->
+    <rect x="214" y="86" width="180" height="76" rx="11" fill="#1c2330" stroke="#d29922"/>
+    <text x="304" y="110" fill="#d29922" font-size="13" font-weight="700" text-anchor="middle">ETL ingest</text>
+    <text x="304" y="129" fill="#9aa7b4" font-size="10.5" text-anchor="middle">export → enrich →</text>
+    <text x="304" y="143" fill="#9aa7b4" font-size="10.5" text-anchor="middle">chunk → embed</text>
+    <!-- Enriched tables (the KB) -->
+    <rect x="444" y="78" width="186" height="92" rx="11" fill="#102016" stroke="#2c5a35"/>
+    <text x="537" y="103" fill="#3fb950" font-size="13" font-weight="700" text-anchor="middle">Knowledge Base</text>
+    <text x="537" y="122" fill="#9aa7b4" font-size="10.5" text-anchor="middle">enriched_genie_docs</text>
+    <text x="537" y="136" fill="#9aa7b4" font-size="10.5" text-anchor="middle">enriched_genie_docs_chunks</text>
+    <text x="537" y="153" fill="#9aa7b4" font-size="10.5" text-anchor="middle">(Delta tables of metadata)</text>
+    <!-- Index -->
+    <rect x="690" y="78" width="180" height="92" rx="11" fill="#160f20" stroke="#3a2c5a"/>
+    <text x="780" y="103" fill="#bc8cff" font-size="13" font-weight="700" text-anchor="middle">Vector Index</text>
+    <text x="780" y="122" fill="#9aa7b4" font-size="10.5" text-anchor="middle">…_chunks_vs_index</text>
+    <text x="780" y="139" fill="#9aa7b4" font-size="10.5" text-anchor="middle">embedded chunks</text>
+    <text x="780" y="156" fill="#9aa7b4" font-size="10.5" text-anchor="middle">(Delta Sync)</text>
+    <!-- forward arrows -->
+    <path d="M164,124 L212,124" fill="none" stroke="#ff5f46" stroke-width="2" marker-end="url(#a)"/>
+    <path d="M394,124 L442,124" fill="none" stroke="#ff5f46" stroke-width="2" marker-end="url(#a)"/>
+    <path d="M630,124 L688,124" fill="none" stroke="#ff5f46" stroke-width="2" marker-end="url(#a)"/>
+    <!-- query-time loop: index -> agent -> space -->
+    <rect x="360" y="206" width="200" height="34" rx="9" fill="#1c2330" stroke="#2d333b"/>
+    <text x="460" y="228" fill="#e6edf3" font-size="12" text-anchor="middle">Planning Agent (query time)</text>
+    <path d="M780,170 C780,205 600,222 562,223" fill="none" stroke="#3fb950" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ag)"/>
+    <text x="700" y="200" fill="#3fb950" font-size="10.5" text-anchor="middle">① vector search</text>
+    <path d="M360,223 C200,222 89,200 89,172" fill="none" stroke="#3fb950" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ag)"/>
+    <text x="190" y="200" fill="#3fb950" font-size="10.5" text-anchor="middle">② route to chosen space</text>
+  </svg>
+  <div class="legend">
+    <span><span class="sw" style="background:#ff5f46"></span> ingest pipeline (build the KB + index)</span>
+    <span><span class="sw" style="background:#3fb950"></span> query time (search the index, then use the space)</span>
+  </div>
+
+  <h2>5 · The ingest pipeline (how a space becomes searchable)</h2>
+  <p>Three ETL stages turn a live Genie Space into indexed, embedded knowledge. AgentRx triggers
+  these (full or incremental) rather than reimplementing them.</p>
+  <div class="pipe">
+    <div class="row"><div class="box">
+      <div class="k">Stage 1 · Export</div>
+      <div class="v">etl/01_export_genie_spaces.py</div>
+      <div class="d">Pull each Genie Space's config + table metadata from the Genie API and write JSON to the UC Volume (<code>/Volumes/&lt;catalog&gt;/&lt;schema&gt;/volume/genie_exports</code>).</div>
+    </div></div>
+    <div class="arrow">↓</div>
+    <div class="row"><div class="box">
+      <div class="k">Stage 2 · Enrich + chunk</div>
+      <div class="v">etl/02_enrich_table_metadata.py</div>
+      <div class="d">LLM-enrich descriptions, sample values and value dictionaries; write the <code>enriched_genie_docs</code> table, then emit multi-level <em>chunks</em> into <code>enriched_genie_docs_chunks</code>.</div>
+    </div></div>
+    <div class="arrow">↓</div>
+    <div class="row"><div class="box">
+      <div class="k">Stage 3 · Index</div>
+      <div class="v">etl/03_build_vector_search_index.py</div>
+      <div class="d">Build/sync a Delta Sync <strong>Vector Search</strong> index over each chunk's <code>searchable_content</code> (embedding <code>databricks-gte-large-en</code>, key <code>chunk_id</code>) on endpoint <code>genie_multi_agent_vs</code>.</div>
+    </div></div>
+  </div>
+  <div class="note">The <strong>incremental</strong> path (AgentRx's <code>add_space_to_index</code>) runs stages 2–3 for a
+  <em>single</em> space (stage 1 is done by the tool when it exports that space), so one space can be
+  added without rebuilding the whole index.</div>
+
+  <h2>6 · What the knowledge base is made of — chunks</h2>
+  <p>Enrichment produces metadata <em>chunks</em> at four levels of granularity. Each chunk is one
+  embedded row in the index, tagged with <code>chunk_type</code>, <code>space_title</code>,
+  <code>table_name</code>, <code>column_name</code> and flags used for filtered search.</p>
+  <table>
+    <tr><th style="width:22%">chunk_type</th><th style="width:14%">Grain</th><th>What it captures</th></tr>
+    <tr><td><span class="mono">space_summary</span></td><td>1 per space</td><td>Space overview: title, description, and the set of tables it covers.</td></tr>
+    <tr><td><span class="mono">space_details</span></td><td>1 per space</td><td>Deeper space-level context (e.g. instructions / usage guidance).</td></tr>
+    <tr><td><span class="mono">table_overview</span></td><td>1 per table</td><td>Per-table description, key columns, temporal hints.</td></tr>
+    <tr><td><span class="mono">column_detail</span></td><td>1 per column</td><td>Per-column description, type, value dictionary, identifier/temporal flags.</td></tr>
+  </table>
+  <p class="lead" style="font-size:13.5px">At query time the Planning Agent can search broadly or filter by
+  <code>chunk_type</code> — e.g. match <code>space_summary</code> chunks to pick the right space, then drill into
+  <code>column_detail</code> chunks for SQL synthesis. "Chunk count" in AgentRx's listings is just how many of
+  these rows a space contributes.</p>
+
+  <h2>7 · Key names &amp; settings</h2>
+  <div class="card">
+    <div class="kvs">
+      <span class="kk mono">enriched_genie_docs</span><span>Delta table of enriched per-space / per-table / per-column metadata</span>
+      <span class="kk mono">enriched_genie_docs_chunks</span><span>Chunked, embeddable rows (one per chunk) — the index source table</span>
+      <span class="kk mono">…_chunks_vs_index</span><span>The Vector Search index (key <code>chunk_id</code>, embeds <code>searchable_content</code>)</span>
+      <span class="kk mono">genie_multi_agent_vs</span><span>Vector Search endpoint hosting the index</span>
+      <span class="kk mono">databricks-gte-large-en</span><span>Embedding model used to vectorize chunks</span>
+      <span class="kk mono">genie_exports</span><span>UC Volume folder holding exported space JSON</span>
+      <span class="kk mono">GENIE_SPACE_IDS</span><span>Spaces targeted for ingest / management in a given environment</span>
+    </div>
+  </div>
+
+  <div class="foot">
+    Companion to <code>agentrx_architecture.html</code>. Source of truth:
+    <code>etl/01_export_genie_spaces.py</code>, <code>etl/02_enrich_table_metadata.py</code>,
+    <code>etl/03_build_vector_search_index.py</code>, and
+    <code>agent_app/agent_server/multi_agent/tools/{knowledge_base_manager,etl_trigger,genie_space_manager}.py</code>.
+  </div>
+
+</div>
+</body>
+</html>
