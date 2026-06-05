@@ -20,20 +20,35 @@ agentRxRouter.use(authMiddleware);
  * server-sent events back to the client.
  *
  * Body:
- *   - message: string  (required) - admin's natural-language request
+ *   - message: string  (required) - admin's latest natural-language request
+ *   - history: {role, content}[]  (optional) - prior turns for multi-turn memory
  *
  * Streaming: emits SSE frames of shape `data: {json}\n\n` with `type` of
  *   "tool_call" | "tool_result" | "final" | "error", terminated by
  *   `data: [DONE]\n\n`.
  */
 agentRxRouter.post('/', requireAuth, async (req: Request, res: Response) => {
-  const { message } = req.body ?? {};
+  const { message, history } = req.body ?? {};
 
   if (!message || typeof message !== 'string' || message.trim().length === 0) {
     const error = new ChatSDKError('bad_request:api');
     const response = error.toResponse();
     return res.status(response.status).json(response.json);
   }
+
+  // Prior turns ({ role, content }) for multi-turn memory; sanitised + bounded.
+  const safeHistory = Array.isArray(history)
+    ? history
+        .filter(
+          (t: unknown): t is { role: string; content: string } =>
+            !!t &&
+            typeof (t as { role?: unknown }).role === 'string' &&
+            typeof (t as { content?: unknown }).content === 'string' &&
+            (t as { content: string }).content.trim().length > 0,
+        )
+        .map((t) => ({ role: t.role, content: t.content }))
+        .slice(-50)
+    : [];
 
   const agentBackendUrl = process.env.API_PROXY;
   if (!agentBackendUrl) {
@@ -57,7 +72,7 @@ agentRxRouter.post('/', requireAuth, async (req: Request, res: Response) => {
         'Content-Type': 'application/json',
         Accept: 'text/event-stream',
       },
-      body: JSON.stringify({ message }),
+      body: JSON.stringify({ message, history: safeHistory }),
     });
 
     if (!response.ok) {

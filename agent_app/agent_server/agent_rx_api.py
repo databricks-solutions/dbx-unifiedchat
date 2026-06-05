@@ -25,10 +25,31 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
 
+# Keep the most recent N turns of history to bound prompt size on long sessions.
+_MAX_HISTORY_TURNS = 24
+
+
+class ChatTurn(BaseModel):
+    role: str = Field(..., pattern="^(user|assistant|system)$")
+    content: str
+
+
 class AgentRxRequest(BaseModel):
     message: str = Field(..., min_length=1)
+    # Prior turns of the conversation (oldest first), enabling true multi-turn
+    # memory. The current `message` is appended as the latest user turn.
+    history: list[ChatTurn] = Field(default_factory=list)
     # Reserved for future per-user context (admin id, etc.); currently unused.
     user_id: Optional[str] = None
+
+    def to_conversation(self) -> list[Dict[str, str]]:
+        turns = [
+            {"role": t.role, "content": t.content}
+            for t in self.history
+            if t.content and t.content.strip()
+        ][-_MAX_HISTORY_TURNS:]
+        turns.append({"role": "user", "content": self.message})
+        return turns
 
 
 class AgentRxResponse(BaseModel):
@@ -66,7 +87,7 @@ async def invoke_agent_rx(request: AgentRxRequest) -> AgentRxResponse:
     """Non-streaming AgentRx invocation. Returns the final response and tool history."""
     try:
         agent = _get_agent_rx()
-        result = agent.invoke(request.message)
+        result = agent.invoke(request.to_conversation())
         return AgentRxResponse(
             response=result.get("response", ""),
             tool_calls=result.get("tool_calls", []),
@@ -92,7 +113,7 @@ async def stream_agent_rx(request: AgentRxRequest):
     def event_stream():
         try:
             agent = _get_agent_rx()
-            for event in agent.stream(request.message):
+            for event in agent.stream(request.to_conversation()):
                 yield f"data: {json.dumps(event)}\n\n"
         except Exception as exc:
             logger.exception("AgentRx stream failed")

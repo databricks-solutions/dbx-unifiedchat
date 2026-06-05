@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AgentRx — Architecture</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --border:#2d333b;
+    --text:#e6edf3; --muted:#9aa7b4; --accent:#ff5f46; --accent2:#4493f8;
+    --green:#3fb950; --purple:#bc8cff; --amber:#d29922; --pink:#f778ba;
+    --mono:"SF Mono",ui-monospace,"JetBrains Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    line-height:1.55;font-size:15px;}
+  .wrap{max-width:1080px;margin:0 auto;padding:40px 24px 80px;}
+  header.hero{border:1px solid var(--border);border-radius:16px;padding:32px;
+    background:linear-gradient(135deg,#161b22 0%,#1c2330 100%);margin-bottom:32px;}
+  .badge{display:inline-block;font-size:12px;letter-spacing:.08em;text-transform:uppercase;
+    color:var(--accent);font-weight:700;margin-bottom:8px;}
+  h1{margin:0 0 8px;font-size:34px;letter-spacing:-.02em;}
+  h1 .rx{color:var(--accent);}
+  .sub{color:var(--muted);font-size:16px;max-width:760px;margin:0;}
+  h2{font-size:22px;margin:44px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--border);}
+  h3{font-size:16px;margin:24px 0 8px;color:var(--accent2);}
+  p{color:#cdd6df;}
+  code,.mono{font-family:var(--mono);font-size:.88em;}
+  code{background:#222b38;border:1px solid var(--border);border-radius:5px;padding:1px 6px;color:#e6edf3;}
+  .lead{color:var(--muted);}
+  .grid{display:grid;gap:14px;}
+  .cols-2{grid-template-columns:1fr 1fr;}
+  .cols-3{grid-template-columns:repeat(3,1fr);}
+  @media(max-width:780px){.cols-2,.cols-3{grid-template-columns:1fr;}}
+  .card{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:18px;}
+  .card h4{margin:0 0 6px;font-size:15px;}
+  .card p{margin:0;font-size:13.5px;color:var(--muted);}
+  table{width:100%;border-collapse:collapse;margin:10px 0 4px;font-size:13.5px;}
+  th,td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--border);vertical-align:top;}
+  th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.04em;}
+  tr:last-child td{border-bottom:none;}
+  td .mono{color:var(--pink);}
+  .pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;border:1px solid var(--border);}
+  .pill.read{color:var(--green);border-color:#2c5a35;background:#102016;}
+  .pill.write{color:var(--amber);border-color:#5a4a1e;background:#1f1a0c;}
+  .tablecard{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:6px 18px 14px;margin-bottom:18px;}
+  .tablecard > .th-title{display:flex;align-items:center;gap:10px;margin:14px 4px 0;}
+  .tablecard .dot{width:10px;height:10px;border-radius:50%;}
+  .tablecard h3{margin:0;color:var(--text);}
+  .note{background:#10202c;border:1px solid #1e3a4d;border-left:3px solid var(--accent2);
+    border-radius:8px;padding:12px 16px;margin:14px 0;color:#cfe2f0;font-size:14px;}
+  .flow{display:flex;flex-direction:column;gap:0;margin:18px 0;}
+  .flow .row{display:flex;align-items:stretch;gap:14px;}
+  .flow .box{flex:1;background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;}
+  .flow .box .k{font-size:12px;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;}
+  .flow .box .v{font-weight:600;margin-top:2px;}
+  .flow .box .d{font-size:12.5px;color:var(--muted);margin-top:4px;}
+  .arrow{align-self:center;color:var(--accent);font-size:22px;line-height:1;padding:6px 0;text-align:center;}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;margin:8px 0 0;font-size:13px;color:var(--muted);}
+  .legend span{display:inline-flex;align-items:center;gap:6px;}
+  ul.tight{margin:6px 0;padding-left:20px;}
+  ul.tight li{margin:4px 0;color:#cdd6df;}
+  pre{background:#0a0e14;border:1px solid var(--border);border-radius:10px;padding:16px;overflow:auto;
+    font-family:var(--mono);font-size:12.5px;line-height:1.5;color:#cdd6df;}
+  pre .c{color:#6e7781;} pre .k{color:var(--pink);} pre .s{color:var(--green);} pre .n{color:var(--accent2);}
+  .foot{margin-top:50px;padding-top:18px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px;}
+  .kvs{display:grid;grid-template-columns:auto 1fr;gap:4px 16px;font-size:13.5px;}
+  .kvs .kk{color:var(--muted);}
+  svg{max-width:100%;height:auto;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <div class="badge">Architecture Reference</div>
+    <h1>Agent<span class="rx">Rx</span></h1>
+    <p class="sub">An admin-facing agent that lives inside the multi-agent Genie app. It manages the
+    knowledge base (which Genie Spaces the system can answer about), edits Genie Space configuration
+    (benchmark/sample questions, column visibility), and analyses user feedback — driven by a
+    LangGraph ReAct loop over a set of Databricks-native tools.</p>
+  </header>
+
+  <p class="lead">AgentRx runs in the <em>same Python process</em> as the main Genie super-agent but on its
+  own graph and its own backend route — it is <strong>not</strong> part of the user-facing
+  clarification → planning → SQL workflow. It is reached from the dedicated <code>/agent-rx</code> admin
+  page in the chat UI.</p>
+
+  <h2>1 · Request flow</h2>
+  <p>A single admin request travels from the browser, through the Node/Express proxy, into the Python
+  AgentServer, where the LangGraph agent runs and streams its reasoning back as Server-Sent Events (SSE).</p>
+
+  <div class="flow">
+    <div class="row">
+      <div class="box">
+        <div class="k">Client</div>
+        <div class="v">AgentRxPage.tsx</div>
+        <div class="d"><code>/agent-rx</code> React page. <code>POST /api/agent-rx</code> with <code>Accept: text/event-stream</code>; parses SSE frames into a live ReAct trace + final result.</div>
+      </div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="row">
+      <div class="box">
+        <div class="k">App server (Node / Express)</div>
+        <div class="v">routes/agent-rx.ts</div>
+        <div class="d">Thin proxy. Strips a trailing <code>/invocations</code> from <code>API_PROXY</code> and forwards to the Python AgentServer's <code>/api/agent-rx/stream</code>, piping the SSE response straight back.</div>
+      </div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="row">
+      <div class="box">
+        <div class="k">Agent backend (Python / FastAPI)</div>
+        <div class="v">agent_rx_api.py — router prefix <code>/api</code></div>
+        <div class="d"><code>POST /api/agent-rx</code> (buffered) and <code>POST /api/agent-rx/stream</code> (<code>StreamingResponse</code>, <code>text/event-stream</code>). Lazily builds a singleton <code>AgentRxAgent</code> with <code>ChatDatabricks(endpoint=LLM_ENDPOINT_AGENT_RX)</code>.</div>
+      </div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="row">
+      <div class="box">
+        <div class="k">Agent (LangGraph ReAct)</div>
+        <div class="v">AgentRxAgent — agent_rx_agent.py</div>
+        <div class="d"><code>create_react_agent(model, tools, prompt)</code>. <code>.stream(...)</code> emits <code>tool_call</code> / <code>tool_result</code> / <code>final</code> events that become SSE frames.</div>
+      </div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="row">
+      <div class="box">
+        <div class="k">Tools → Databricks platform</div>
+        <div class="v">20 LangChain <code>@tool</code> functions</div>
+        <div class="d">Genie Spaces API · Unity Catalog · SQL Warehouse · Vector Search · Jobs · UC Volumes · MLflow — all authenticated as the Databricks Apps service principal.</div>
+      </div>
+    </div>
+  </div>
+
+  <h2>2 · The LangGraph ReAct loop</h2>
+  <p>AgentRx wraps LangGraph's prebuilt ReAct agent. <code>create_react_agent</code> compiles a real
+  <code>StateGraph</code> with four nodes — <code>__start__</code>, <code>agent</code> (the model call),
+  <code>tools</code> (a <code>ToolNode</code> that executes the bound tools), and <code>__end__</code> —
+  wired by a conditional edge out of <code>agent</code> (loop to <code>tools</code> when the model emitted
+  tool calls, otherwise finish) and a <code>tools → agent</code> edge that closes the loop. Tools are bound
+  once at construction:</p>
+
+  <pre><span class="c"># agent_rx_agent.py</span>
+<span class="k">from</span> langgraph.prebuilt <span class="k">import</span> create_react_agent
+
+self.tools = tools <span class="k">or</span> (
+    ALL_GENIE_TOOLS <span class="c"># Genie Space discovery + editing (11)</span>
+    + ALL_KB_TOOLS <span class="c"># knowledge-base index management (4)</span>
+    + ALL_ETL_TOOLS <span class="c"># ETL / refresh triggers (3)</span>
+    + ALL_FEEDBACK_TOOLS <span class="c"># MLflow feedback analysis (2)</span>
+)
+self._agent = create_react_agent(model=self.llm, tools=self.tools,
+                                 prompt=AGENT_RX_SYSTEM_PROMPT)</pre>
+
+  <div class="grid cols-2" style="margin-top:16px">
+    <div class="card">
+      <h4>Compiled graph (<code>create_react_agent</code>)</h4>
+      <svg viewBox="0 0 340 230" width="100%" role="img" aria-label="LangGraph create_react_agent node graph">
+        <defs>
+          <marker id="ah" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#ff5f46"/>
+          </marker>
+          <marker id="ahg" markerWidth="9" markerHeight="9" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#3fb950"/>
+          </marker>
+        </defs>
+        <!-- nodes -->
+        <ellipse cx="80" cy="28" rx="52" ry="17" fill="#0a0e14" stroke="#2d333b"/>
+        <text x="80" y="33" fill="#9aa7b4" font-size="12" text-anchor="middle" font-family="monospace">__start__</text>
+
+        <rect x="28" y="86" width="104" height="44" rx="10" fill="#1c2330" stroke="#4493f8"/>
+        <text x="80" y="106" fill="#e6edf3" font-size="13" text-anchor="middle" font-family="monospace">agent</text>
+        <text x="80" y="121" fill="#9aa7b4" font-size="10" text-anchor="middle">model call</text>
+
+        <rect x="208" y="86" width="104" height="44" rx="10" fill="#1c2330" stroke="#d29922"/>
+        <text x="260" y="106" fill="#e6edf3" font-size="13" text-anchor="middle" font-family="monospace">tools</text>
+        <text x="260" y="121" fill="#9aa7b4" font-size="10" text-anchor="middle">ToolNode</text>
+
+        <ellipse cx="80" cy="192" rx="52" ry="17" fill="#102016" stroke="#2c5a35"/>
+        <text x="80" y="197" fill="#3fb950" font-size="12" text-anchor="middle" font-family="monospace">__end__</text>
+
+        <!-- edges -->
+        <path d="M80,45 L80,84" fill="none" stroke="#ff5f46" stroke-width="2" marker-end="url(#ah)"/>
+        <!-- agent -> tools (conditional) -->
+        <path d="M132,100 C168,94 176,94 206,100" fill="none" stroke="#ff5f46" stroke-width="2" marker-end="url(#ah)"/>
+        <text x="169" y="86" fill="#ff5f46" font-size="9.5" text-anchor="middle">tool_calls?</text>
+        <!-- tools -> agent (loop) -->
+        <path d="M206,116 C176,124 168,124 134,118" fill="none" stroke="#ff5f46" stroke-width="2" marker-end="url(#ah)"/>
+        <!-- agent -> end (conditional) -->
+        <path d="M80,130 L80,173" fill="none" stroke="#3fb950" stroke-width="2" stroke-dasharray="4 3" marker-end="url(#ahg)"/>
+        <text x="118" y="155" fill="#3fb950" font-size="9.5" text-anchor="middle">else</text>
+      </svg>
+      <p>The conditional edge out of <code>agent</code> routes to <code>tools</code> while the model keeps
+      requesting calls, or to <code>__end__</code> (dashed) once it returns a final answer; <code>tools → agent</code>
+      closes the loop.</p>
+    </div>
+    <div class="card">
+      <h4>Streamed SSE event types</h4>
+      <table>
+        <tr><td><code>tool_call</code></td><td>tool name + args the agent decided to invoke</td></tr>
+        <tr><td><code>tool_result</code></td><td>the JSON string the tool returned</td></tr>
+        <tr><td><code>final</code></td><td>the synthesized markdown answer</td></tr>
+        <tr><td><code>error</code></td><td>surfaced failure message</td></tr>
+      </table>
+      <p style="margin-top:8px">Each frame is <code>data: {json}\n\n</code>; the UI renders them as a live "ReAct trace" disclosure plus a "Result" panel.</p>
+    </div>
+  </div>
+
+  <div class="note"><strong>Reasoning model:</strong> the loop's LLM is a Databricks Model Serving endpoint,
+  configured by <code>LLM_ENDPOINT_AGENT_RX</code> (default <code>databricks-claude-sonnet-4-5</code>) and
+  invoked through <code>databricks_langchain.ChatDatabricks</code>.</div>
+
+  <h2>3 · Tools</h2>
+  <p>Twenty LangChain <code>@tool</code> functions in four modules under
+  <code>agent_server/multi_agent/tools/</code>. <span class="pill read">read</span> = read-only;
+  <span class="pill write">write</span> = mutates a Genie Space, the index, a job, or cache.</p>
+
+  <div class="tablecard">
+    <div class="th-title"><span class="dot" style="background:var(--accent)"></span><h3>genie_space_manager.py — Genie Space discovery &amp; editing (11)</h3></div>
+    <table>
+      <tr><th style="width:34%">Tool</th><th style="width:13%">Kind</th><th>What it does</th></tr>
+      <tr><td><span class="mono">list_genie_spaces</span></td><td><span class="pill read">read</span></td><td>List all Genie Spaces accessible to the workspace.</td></tr>
+      <tr><td><span class="mono">get_genie_space_config</span></td><td><span class="pill read">read</span></td><td>Title, description, warehouse, tables &amp; instructions for a space.</td></tr>
+      <tr><td><span class="mono">list_space_tables_and_columns</span></td><td><span class="pill read">read</span></td><td>Every table + column with visibility &amp; settings (merges UC metadata with the space's column configs).</td></tr>
+      <tr><td><span class="mono">list_benchmark_questions</span></td><td><span class="pill read">read</span></td><td>Evaluation (benchmark) Q&amp;A pairs configured on the space.</td></tr>
+      <tr><td><span class="mono">add_benchmark_question</span></td><td><span class="pill write">write</span></td><td>Add a benchmark question + expected SQL answer.</td></tr>
+      <tr><td><span class="mono">remove_benchmark_question</span></td><td><span class="pill write">write</span></td><td>Remove a benchmark question by id or exact text.</td></tr>
+      <tr><td><span class="mono">list_sample_questions</span></td><td><span class="pill read">read</span></td><td>Curated example questions (with SQL) shown for the space.</td></tr>
+      <tr><td><span class="mono">add_sample_question</span></td><td><span class="pill write">write</span></td><td>Add an example question (SQL + usage guidance optional).</td></tr>
+      <tr><td><span class="mono">remove_sample_question</span></td><td><span class="pill write">write</span></td><td>Remove an example question by id or exact text.</td></tr>
+      <tr><td><span class="mono">list_space_instructions</span></td><td><span class="pill read">read</span></td><td>The space's free-text / system instructions.</td></tr>
+      <tr><td><span class="mono">set_column_visibility</span></td><td><span class="pill write">write</span></td><td>Hide/show one or more columns in a table (validates names against Unity Catalog).</td></tr>
+    </table>
+  </div>
+
+  <div class="tablecard">
+    <div class="th-title"><span class="dot" style="background:var(--accent2)"></span><h3>knowledge_base_manager.py — index membership (4)</h3></div>
+    <table>
+      <tr><th style="width:34%">Tool</th><th style="width:13%">Kind</th><th>What it does</th></tr>
+      <tr><td><span class="mono">list_indexed_spaces</span></td><td><span class="pill read">read</span></td><td>Which spaces the agent currently "knows" (from the enriched metadata tables).</td></tr>
+      <tr><td><span class="mono">get_indexed_space_details</span></td><td><span class="pill read">read</span></td><td>Chunk types, table coverage &amp; counts for one indexed space.</td></tr>
+      <tr><td><span class="mono">add_space_to_index</span></td><td><span class="pill write">write</span></td><td>Export a space's metadata + trigger the incremental enrich/index job.</td></tr>
+      <tr><td><span class="mono">remove_space_from_index</span></td><td><span class="pill write">write</span></td><td>Delete a space's metadata, clean its volume exports, sync Vector Search, invalidate cache.</td></tr>
+    </table>
+  </div>
+
+  <div class="grid cols-2">
+    <div class="tablecard">
+      <div class="th-title"><span class="dot" style="background:var(--amber)"></span><h3>etl_trigger.py — ETL / refresh (3)</h3></div>
+      <table>
+        <tr><th>Tool</th><th>What it does</th></tr>
+        <tr><td><span class="mono">trigger_vector_search_sync</span></td><td>Sync the VS index after table-level changes.</td></tr>
+        <tr><td><span class="mono">trigger_full_etl_pipeline</span></td><td>Run export → enrich → rebuild index (async job).</td></tr>
+        <tr><td><span class="mono">invalidate_space_context_cache</span></td><td>Force the next query to reload space context.</td></tr>
+      </table>
+    </div>
+    <div class="tablecard">
+      <div class="th-title"><span class="dot" style="background:var(--purple)"></span><h3>mlflow_feedback.py — feedback analysis (2)</h3></div>
+      <table>
+        <tr><th>Tool</th><th>What it does</th></tr>
+        <tr><td><span class="mono">summarise_recent_feedback</span></td><td>Thumbs-up/down counts &amp; rate over a window.</td></tr>
+        <tr><td><span class="mono">sample_failing_traces</span></td><td>Surface recent 👎 traces with question + matched spaces.</td></tr>
+      </table>
+    </div>
+  </div>
+
+  <h2>4 · Databricks components</h2>
+  <p>AgentRx's tools talk directly to Databricks platform services over REST (the SDK is used only for
+  auth resolution and Vector Search). Everything runs as the <strong>Databricks Apps service principal</strong>.</p>
+  <table>
+    <tr><th style="width:24%">Component</th><th style="width:30%">Endpoint / SDK</th><th>Used by</th></tr>
+    <tr><td><strong>Model Serving</strong> (Foundation Model API)</td><td><span class="mono">ChatDatabricks</span> · <code>LLM_ENDPOINT_AGENT_RX</code></td><td>The ReAct reasoning LLM (Claude Sonnet 4.5).</td></tr>
+    <tr><td><strong>Genie Spaces API</strong></td><td><span class="mono">/api/2.0/genie/spaces</span> (GET incl. <code>serialized_space</code>, PATCH)</td><td>All discovery + editing tools.</td></tr>
+    <tr><td><strong>Unity Catalog</strong></td><td><span class="mono">/api/2.1/unity-catalog/tables</span></td><td>Full column lists + validating column names for visibility edits.</td></tr>
+    <tr><td><strong>SQL Warehouse</strong> + Statement Execution</td><td><span class="mono">/api/2.0/sql/statements</span></td><td>Querying / mutating the enriched metadata tables (KB tools).</td></tr>
+    <tr><td><strong>Vector Search</strong></td><td><span class="mono">VectorSearchClient</span> · <code>enriched_genie_docs_chunks_vs_index</code></td><td>The knowledge-base index that the planner searches; synced by ETL tools.</td></tr>
+    <tr><td><strong>Jobs (Lakeflow)</strong></td><td><span class="mono">/api/2.1/jobs</span> (list, run-now)</td><td>Incremental-space-index job &amp; the full metadata-refresh ETL pipeline.</td></tr>
+    <tr><td><strong>Unity Catalog Volumes</strong></td><td><span class="mono">/api/2.0/fs/...</span></td><td>Genie-space export JSON (<code>genie_exports</code>) read/cleanup.</td></tr>
+    <tr><td><strong>MLflow</strong> (Experiments / Tracing)</td><td><span class="mono">mlflow.search_traces</span> · <code>MLFLOW_EXPERIMENT_ID</code></td><td>Feedback &amp; failing-trace analysis tools.</td></tr>
+    <tr><td><strong>Permissions API</strong></td><td><span class="mono">/api/2.0/permissions/genie/{id}</span></td><td>App SP granted <code>CAN_MANAGE</code> (set at deploy) so editing tools can write.</td></tr>
+    <tr><td><strong>Databricks Apps</strong></td><td>App SP · OAuth · app resources</td><td>Hosts the whole stack; injects the SP credentials the tools authenticate with.</td></tr>
+  </table>
+
+  <h2>5 · How Genie-Space edits work (the round-trip)</h2>
+  <p>The Genie API has <em>no granular mutation endpoints</em>. Every edit is a read-modify-write on the
+  space's <code>serialized_space</code> JSON blob, performed by the shared <code>_edit_space()</code> helper:</p>
+  <pre><span class="n">GET</span> /api/2.0/genie/spaces/{id}?include_serialized_space=true   <span class="c"># read + etag</span>
+   <span class="c"># → parse serialized_space, apply the mutation in memory</span>
+<span class="n">PATCH</span> /api/2.0/genie/spaces/{id}  body={ serialized_space, etag }  <span class="c"># write</span></pre>
+  <div class="grid cols-3" style="margin-top:8px">
+    <div class="card"><h4>Concurrency-safe</h4><p>On an <code>etag</code> 409 conflict, <code>_edit_space()</code> re-reads and <em>re-applies</em> the mutation onto the fresh snapshot — a concurrent edit is never clobbered.</p></div>
+    <div class="card"><h4>API invariants</h4><p>Benchmark / example / instruction lists are sorted by <code>id</code> and <code>column_configs</code> by <code>column_name</code> before write; text fields are wrapped as the API's list-of-strings.</p></div>
+    <div class="card"><h4>Net-zero &amp; validated</h4><p>"Show" drops now-empty configs and no-ops when already visible; column names are checked against Unity Catalog so typos can't persist junk.</p></div>
+  </div>
+
+  <h2>6 · Auth, permissions &amp; config</h2>
+  <div class="grid cols-2">
+    <div class="card">
+      <h4>Authentication</h4>
+      <p><code>_get_auth()</code> resolves a host + bearer header in order: <code>DATABRICKS_HOST/TOKEN</code> env →
+      <code>databricks.sdk Config()</code> (Apps OAuth / service principal) → notebook/REPL context. In production
+      this is the app's service principal.</p>
+    </div>
+    <div class="card">
+      <h4>Permissions</h4>
+      <p>The <code>genie_space</code> app resource grants only <code>CAN_RUN</code> (query). Editing requires
+      <code>CAN_MANAGE</code>, granted to the app SP at deploy time by the shared-infra job
+      (<code>grant_genie_space_manage</code>), which verifies the grant by reading the ACL back.</p>
+    </div>
+  </div>
+  <h3>Key configuration</h3>
+  <div class="card">
+    <div class="kvs">
+      <span class="kk mono">LLM_ENDPOINT_AGENT_RX</span><span>ReAct model endpoint · default <code>databricks-claude-sonnet-4-5</code></span>
+      <span class="kk mono">GENIE_SPACE_IDS</span><span>Spaces the app targets / is granted <code>CAN_MANAGE</code> on</span>
+      <span class="kk mono">SQL_WAREHOUSE_ID</span><span>Warehouse for Statement Execution (KB tools)</span>
+      <span class="kk mono">VS_ENDPOINT_NAME</span><span>Vector Search endpoint backing the knowledge base</span>
+      <span class="kk mono">MLFLOW_EXPERIMENT_ID</span><span>Experiment scanned by the feedback tools</span>
+      <span class="kk mono">CATALOG_NAME / SCHEMA_NAME</span><span>Location of the enriched metadata tables &amp; volume</span>
+    </div>
+  </div>
+
+  <div class="foot">
+    Generated for the <code>agent_rx</code> branch of <code>dbx-unifiedchat</code>. Source of truth:
+    <code>agent_app/agent_server/agent_rx_api.py</code>,
+    <code>.../multi_agent/agents/agent_rx_agent.py</code>,
+    <code>.../multi_agent/tools/{genie_space_manager,knowledge_base_manager,etl_trigger,mlflow_feedback}.py</code>.
+  </div>
+
+</div>
+</body>
+</html>

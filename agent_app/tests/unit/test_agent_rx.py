@@ -683,5 +683,107 @@ def test_list_space_tables_and_columns_flags_uc_failure(monkeypatch):
     assert "note" in out["tables"][0]
 
 
+# ---------------------------------------------------------------------------
+# Conversation history (multi-turn memory)
+# ---------------------------------------------------------------------------
+
+def test_agent_to_messages_from_string():
+    from agent_server.multi_agent.agents.agent_rx_agent import AgentRxAgent
+
+    assert AgentRxAgent._to_messages("hi") == [{"role": "user", "content": "hi"}]
+
+
+def test_agent_to_messages_filters_and_preserves_order():
+    from agent_server.multi_agent.agents.agent_rx_agent import AgentRxAgent
+
+    convo = [
+        {"role": "user", "content": "list spaces"},
+        {"role": "assistant", "content": "here they are"},
+        {"role": "assistant", "content": ""},          # dropped (empty)
+        {"role": "tool", "content": "junk"},            # dropped (bad role)
+        {"role": "user", "content": "remove the first"},
+    ]
+    assert AgentRxAgent._to_messages(convo) == [
+        {"role": "user", "content": "list spaces"},
+        {"role": "assistant", "content": "here they are"},
+        {"role": "user", "content": "remove the first"},
+    ]
+
+
+def test_agent_to_messages_raises_when_all_empty():
+    from agent_server.multi_agent.agents.agent_rx_agent import AgentRxAgent
+
+    with pytest.raises(ValueError):
+        AgentRxAgent._to_messages([{"role": "assistant", "content": ""}])
+
+
+def test_request_to_conversation_appends_current_and_caps_history():
+    from agent_server.agent_rx_api import AgentRxRequest, _MAX_HISTORY_TURNS
+
+    long_history = [{"role": "user", "content": f"q{i}"} for i in range(_MAX_HISTORY_TURNS + 5)]
+    req = AgentRxRequest(message="latest", history=long_history)
+    convo = req.to_conversation()
+
+    assert convo[-1] == {"role": "user", "content": "latest"}
+    # history capped to the most recent N turns, plus the current message
+    assert len(convo) == _MAX_HISTORY_TURNS + 1
+    assert convo[0] == {"role": "user", "content": "q5"}  # oldest kept after cap
+
+
+def test_request_to_conversation_no_history():
+    from agent_server.agent_rx_api import AgentRxRequest
+
+    assert AgentRxRequest(message="only").to_conversation() == [
+        {"role": "user", "content": "only"}
+    ]
+
+
+def test_stream_skips_history_emits_only_new_steps():
+    """Given prior turns, stream must not re-emit them — only new tool/final events."""
+    from agent_server.multi_agent.agents.agent_rx_agent import AgentRxAgent
+
+    class _AI:
+        def __init__(self, content="", tool_calls=None):
+            self.content = content
+            self.tool_calls = tool_calls or []
+
+    class _Tool:
+        # name mimics ToolMessage via __class__.__name__
+        def __init__(self, name, content):
+            self.name = name
+            self.content = content
+    _Tool.__name__ = "ToolMessage"
+
+    # stream_mode="values" returns the FULL message list each step. The 3 input
+    # messages (2 history + current user) are present from the first chunk; the
+    # agent then appends an AI tool-call, a tool result, and a final answer.
+    inp = [_AI("list spaces"), _AI("here they are"), _AI("remove the first")]
+    ai_call = _AI("", [{"name": "remove_benchmark_question", "args": {"x": 1}}])
+    tool_msg = _Tool("remove_benchmark_question", "ok")
+    ai_final = _AI("Done.")
+    chunks = [
+        {"messages": list(inp)},
+        {"messages": inp + [ai_call]},
+        {"messages": inp + [ai_call, tool_msg]},
+        {"messages": inp + [ai_call, tool_msg, ai_final]},
+    ]
+
+    fake_graph = MagicMock()
+    fake_graph.stream.return_value = iter(chunks)
+
+    with patch("langgraph.prebuilt.create_react_agent", return_value=fake_graph):
+        agent = AgentRxAgent(llm=MagicMock())
+
+    events = list(agent.stream([
+        {"role": "user", "content": "list spaces"},
+        {"role": "assistant", "content": "here they are"},
+        {"role": "user", "content": "remove the first"},
+    ]))
+    types = [e["type"] for e in events]
+    assert types == ["tool_call", "tool_result", "final"]
+    assert events[0]["tool"] == "remove_benchmark_question"
+    assert events[-1]["content"] == "Done."
+
+
 if __name__ == "__main__":  # pragma: no cover - manual run helper
     pytest.main([__file__, "-v"])

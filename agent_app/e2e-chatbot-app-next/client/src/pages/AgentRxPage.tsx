@@ -1,7 +1,8 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSession } from '@/contexts/SessionContext';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { Streamdown } from 'streamdown';
 
 type AgentRxEvent =
   | { type: 'tool_call'; tool: string; args: Record<string, unknown> }
@@ -11,33 +12,66 @@ type AgentRxEvent =
 
 type TraceEntry = AgentRxEvent & { id: number };
 
+type Turn = {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  trace: TraceEntry[];
+  error?: string;
+  running?: boolean;
+};
+
 const SUGGESTIONS: string[] = [
   'List the Genie spaces currently indexed in the knowledge base.',
-  'Summarise the last 7 days of negative feedback.',
-  'Sample the most recent failing traces and suggest a fix.',
   'List the tables and columns in the NYC Taxi Trip Data Analysis space.',
   'List the benchmark questions in the NYC Taxi Trip Data Analysis space.',
+  'Summarise the last 7 days of negative feedback.',
 ];
 
 export default function AgentRxPage() {
   const { session } = useSession();
   const [input, setInput] = useState('');
   const [isRunning, setIsRunning] = useState(false);
-  const [trace, setTrace] = useState<TraceEntry[]>([]);
-  const [finalContent, setFinalContent] = useState<string | null>(null);
+  const [turns, setTurns] = useState<Turn[]>([]);
   const idCounter = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
-  const reset = useCallback(() => {
-    setTrace([]);
-    setFinalContent(null);
+  const nextId = () => ++idCounter.current;
+
+  // Keep the latest turn in view as it streams.
+  useEffect(() => {
+    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
+  }, [turns]);
+
+  const updateTurn = useCallback((id: number, patch: (t: Turn) => Turn) => {
+    setTurns((prev) => prev.map((t) => (t.id === id ? patch(t) : t)));
   }, []);
 
   const submit = useCallback(
     async (message: string) => {
-      if (!message.trim() || isRunning) return;
-      reset();
+      const text = message.trim();
+      if (!text || isRunning) return;
+      setInput('');
       setIsRunning(true);
+
+      // History = all prior turns with content (skip the empty assistant
+      // placeholder we are about to add, and any errored/blank turns).
+      const history = turns
+        .filter((t) => t.content.trim().length > 0)
+        .map((t) => ({ role: t.role, content: t.content }));
+
+      const userTurn: Turn = { id: nextId(), role: 'user', content: text, trace: [] };
+      const assistantId = nextId();
+      const assistantTurn: Turn = {
+        id: assistantId,
+        role: 'assistant',
+        content: '',
+        trace: [],
+        running: true,
+      };
+      setTurns((prev) => [...prev, userTurn, assistantTurn]);
+
       const controller = new AbortController();
       abortRef.current = controller;
 
@@ -48,15 +82,13 @@ export default function AgentRxPage() {
             'Content-Type': 'application/json',
             Accept: 'text/event-stream',
           },
-          body: JSON.stringify({ message }),
+          body: JSON.stringify({ message: text, history }),
           signal: controller.signal,
         });
 
         if (!response.ok || !response.body) {
-          const text = await response.text().catch(() => '');
-          throw new Error(
-            `AgentRx request failed (${response.status}): ${text.slice(0, 400)}`,
-          );
+          const detail = await response.text().catch(() => '');
+          throw new Error(`AgentRx request failed (${response.status}): ${detail.slice(0, 400)}`);
         }
 
         const reader = response.body.getReader();
@@ -68,7 +100,6 @@ export default function AgentRxPage() {
           if (done) break;
           buffer += decoder.decode(value, { stream: true });
 
-          // SSE frames are separated by a blank line.
           const frames = buffer.split('\n\n');
           buffer = frames.pop() ?? '';
           for (const frame of frames) {
@@ -76,120 +107,156 @@ export default function AgentRxPage() {
               if (!line.startsWith('data:')) continue;
               const payload = line.slice(5).trim();
               if (!payload || payload === '[DONE]') continue;
+              let event: AgentRxEvent;
               try {
-                const event = JSON.parse(payload) as AgentRxEvent;
-                const id = ++idCounter.current;
-                if (event.type === 'final') {
-                  setFinalContent(event.content);
-                } else {
-                  setTrace((prev) => [...prev, { ...event, id }]);
-                }
+                event = JSON.parse(payload) as AgentRxEvent;
               } catch (err) {
                 console.warn('[AgentRx] failed to parse SSE frame:', payload, err);
+                continue;
+              }
+              if (event.type === 'final') {
+                updateTurn(assistantId, (t) => ({ ...t, content: event.content }));
+              } else if (event.type === 'error') {
+                updateTurn(assistantId, (t) => ({ ...t, error: event.message }));
+              } else {
+                updateTurn(assistantId, (t) => ({
+                  ...t,
+                  trace: [...t.trace, { ...event, id: nextId() }],
+                }));
               }
             }
           }
         }
       } catch (err) {
         if ((err as Error).name !== 'AbortError') {
-          setTrace((prev) => [
-            ...prev,
-            {
-              id: ++idCounter.current,
-              type: 'error',
-              message: (err as Error).message ?? String(err),
-            },
-          ]);
+          updateTurn(assistantId, (t) => ({ ...t, error: (err as Error).message ?? String(err) }));
         }
       } finally {
+        updateTurn(assistantId, (t) => ({ ...t, running: false }));
         setIsRunning(false);
         abortRef.current = null;
       }
     },
-    [isRunning, reset],
+    [isRunning, turns, updateTurn],
   );
 
-  const handleSubmit = useCallback(() => {
-    submit(input);
-  }, [input, submit]);
+  const handleSubmit = useCallback(() => submit(input), [input, submit]);
+
+  const newConversation = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setTurns([]);
+    setInput('');
+    setIsRunning(false);
+  }, []);
 
   if (!session?.user) {
     return null;
   }
 
   return (
-    <div className="mx-auto flex h-full w-full max-w-3xl flex-col gap-4 p-6">
-      <header>
-        <h1 className="font-bold text-2xl">AgentRx — Knowledge base</h1>
-        <p className="text-muted-foreground text-sm">
-          Admin agent for managing which Genie spaces the system can answer
-          questions about, and for analysing user feedback.
-        </p>
+    <div className="mx-auto flex h-full w-full max-w-3xl flex-col p-6">
+      <header className="flex items-start justify-between gap-4 pb-4">
+        <div>
+          <h1 className="font-bold text-2xl">AgentRx — Knowledge base</h1>
+          <p className="text-muted-foreground text-sm">
+            Admin agent for managing Genie spaces (indexing, benchmark &amp; sample
+            questions, column visibility) and analysing user feedback. Conversational —
+            follow-ups remember earlier turns.
+          </p>
+        </div>
+        {turns.length > 0 && (
+          <Button type="button" variant="outline" size="sm" onClick={newConversation}>
+            New conversation
+          </Button>
+        )}
       </header>
 
-      <section className="flex flex-col gap-2">
-        <div className="flex flex-wrap gap-2">
-          {SUGGESTIONS.map((s) => (
-            <Button
-              key={s}
-              variant="outline"
-              size="sm"
-              type="button"
-              disabled={isRunning}
-              onClick={() => {
-                setInput(s);
-                submit(s);
-              }}
-            >
-              {s}
-            </Button>
-          ))}
-        </div>
+      <div ref={scrollRef} className="flex flex-1 flex-col gap-4 overflow-y-auto pb-4">
+        {turns.length === 0 ? (
+          <div className="flex flex-col gap-3 pt-6">
+            <p className="text-muted-foreground text-sm">Try one of these, or ask your own:</p>
+            <div className="flex flex-wrap gap-2">
+              {SUGGESTIONS.map((s) => (
+                <Button
+                  key={s}
+                  variant="outline"
+                  size="sm"
+                  type="button"
+                  disabled={isRunning}
+                  onClick={() => submit(s)}
+                >
+                  {s}
+                </Button>
+              ))}
+            </div>
+          </div>
+        ) : (
+          turns.map((t) => <TurnView key={t.id} turn={t} />)
+        )}
+      </div>
+
+      <div className="flex flex-col gap-2 border-t pt-3">
         <Textarea
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask AgentRx to list / add / remove indexed Genie spaces, or analyse recent feedback…"
-          rows={3}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault();
+              handleSubmit();
+            }
+          }}
+          placeholder="Ask AgentRx to list / add / remove benchmark or sample questions, hide columns, manage the index, or analyse feedback…"
+          rows={2}
           disabled={isRunning}
         />
-        <div className="flex justify-end gap-2">
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={reset}
-            disabled={isRunning && abortRef.current === null}
-          >
-            Clear
-          </Button>
-          <Button
-            type="button"
-            onClick={handleSubmit}
-            disabled={!input.trim() || isRunning}
-          >
-            {isRunning ? 'Running…' : 'Run AgentRx'}
+        <div className="flex justify-end">
+          <Button type="button" onClick={handleSubmit} disabled={!input.trim() || isRunning}>
+            {isRunning ? 'Running…' : 'Send'}
           </Button>
         </div>
-      </section>
+      </div>
+    </div>
+  );
+}
 
-      {trace.length > 0 && (
-        <section className="flex flex-col gap-2">
-          <h2 className="font-semibold text-lg">ReAct trace</h2>
-          <div className="flex flex-col gap-2 rounded-md border bg-muted/30 p-3">
-            {trace.map((entry) => (
+function TurnView({ turn }: { turn: Turn }) {
+  if (turn.role === 'user') {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[85%] whitespace-pre-wrap rounded-2xl bg-primary px-4 py-2 text-primary-foreground">
+          {turn.content}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      {turn.trace.length > 0 && (
+        <details className="rounded-md border bg-muted/30 p-2 text-sm" open={turn.running}>
+          <summary className="cursor-pointer font-semibold text-muted-foreground">
+            ReAct trace ({turn.trace.length})
+          </summary>
+          <div className="mt-2 flex flex-col gap-1.5">
+            {turn.trace.map((entry) => (
               <TraceLine key={entry.id} entry={entry} />
             ))}
           </div>
-        </section>
+        </details>
       )}
 
-      {finalContent && (
-        <section className="flex flex-col gap-2">
-          <h2 className="font-semibold text-lg">Result</h2>
-          <div className="prose prose-sm max-w-none whitespace-pre-wrap rounded-md border bg-background p-4">
-            {finalContent}
-          </div>
-        </section>
+      {turn.running && !turn.content && !turn.error && (
+        <div className="text-muted-foreground text-sm">Thinking…</div>
       )}
+
+      {turn.content && (
+        <div className="prose prose-sm max-w-none rounded-md border bg-background p-4">
+          <Streamdown>{turn.content}</Streamdown>
+        </div>
+      )}
+
+      {turn.error && <div className="text-destructive text-sm">⚠ {turn.error}</div>}
     </div>
   );
 }
@@ -200,26 +267,20 @@ function TraceLine({ entry }: { entry: TraceEntry }) {
       return (
         <div className="text-sm">
           <span className="font-mono text-blue-600">→ {entry.tool}</span>{' '}
-          <span className="text-muted-foreground">
-            {JSON.stringify(entry.args)}
-          </span>
+          <span className="text-muted-foreground">{JSON.stringify(entry.args)}</span>
         </div>
       );
     case 'tool_result':
       return (
         <details className="text-sm">
-          <summary className="cursor-pointer font-mono text-emerald-700">
-            ← {entry.tool}
-          </summary>
+          <summary className="cursor-pointer font-mono text-emerald-700">← {entry.tool}</summary>
           <pre className="mt-1 whitespace-pre-wrap break-all text-muted-foreground text-xs">
             {entry.result}
           </pre>
         </details>
       );
     case 'error':
-      return (
-        <div className="text-destructive text-sm">⚠ {entry.message}</div>
-      );
+      return <div className="text-destructive text-sm">⚠ {entry.message}</div>;
     default:
       return null;
   }

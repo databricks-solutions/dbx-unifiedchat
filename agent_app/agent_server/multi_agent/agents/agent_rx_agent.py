@@ -92,6 +92,7 @@ These edit the Genie Space itself on the workspace (distinct from the knowledge-
 - If the user asks what data is currently accessible, use **list_indexed_spaces**.
 - For "why is the agent failing" or "what's wrong recently", start with **summarise_recent_feedback**, then drill in with **sample_failing_traces**. Recommend KB changes (add/remove space, refresh metadata) but DO NOT auto-apply them — leave the action to the admin unless they explicitly tell you to run it.
 - For editing a Genie Space (benchmark/sample questions, column visibility): the user must give a target space_id (use **list_genie_spaces** to resolve a name to an id if needed). Before hiding/showing a column, call **list_space_tables_and_columns** to confirm the exact table identifier and column name. These edits apply immediately to the Genie Space itself. If the user wants to see the before/after state, call the matching **list_*** tool before and after the edit (the edit tools themselves return only the change summary, not a full before snapshot — do not fabricate one). Distinguish clearly between editing a space's config (these tools) and adding/removing a space from the knowledge-base index (add_space_to_index / remove_space_from_index).
+- The Genie space write tools (add/remove question, set_column_visibility) report the authoritative result of the change they just applied (e.g. the new id, or the remaining count) — trust that. The Genie read API is eventually consistent: a `list_*` call issued immediately after a write may briefly return stale data, so do NOT re-list right after a write to "confirm" it and do NOT report a write as failed just because an immediate re-read still shows the old state. If a user explicitly wants confirmation, note that the change was applied and that a fresh listing may take a moment to reflect it.
 - Always report the outcome of each operation clearly in markdown.
 - If an operation fails, include the error details and suggest corrective actions.
 
@@ -127,10 +128,31 @@ class AgentRxAgent:
             prompt=AGENT_RX_SYSTEM_PROMPT,
         )
 
-    def invoke(self, user_request: str) -> Dict[str, Any]:
-        """Run the agent on a single admin request and return the rolled-up result."""
+    @staticmethod
+    def _to_messages(conversation) -> List[Dict[str, str]]:
+        """Normalise a string OR a list of {role, content} turns into chat messages.
+
+        Passing prior turns gives the ReAct loop true conversation memory: the
+        agent sees earlier user questions and its own answers, so follow-ups like
+        "now remove that one" resolve against the established context.
+        """
+        if isinstance(conversation, str):
+            return [{"role": "user", "content": conversation}]
+        messages: List[Dict[str, str]] = []
+        for turn in conversation or []:
+            role = (turn.get("role") or "user").strip()
+            content = turn.get("content")
+            if role not in ("user", "assistant", "system") or not content:
+                continue
+            messages.append({"role": role, "content": str(content)})
+        if not messages:
+            raise ValueError("AgentRx requires at least one non-empty message.")
+        return messages
+
+    def invoke(self, conversation) -> Dict[str, Any]:
+        """Run the agent on a request (string) or full conversation (list of turns)."""
         result = self._agent.invoke(
-            {"messages": [{"role": "user", "content": user_request}]}
+            {"messages": self._to_messages(conversation)}
         )
 
         messages = result.get("messages", [])
@@ -148,8 +170,8 @@ class AgentRxAgent:
             "tool_calls": tool_calls,
         }
 
-    def stream(self, user_request: str):
-        """Yield intermediate ReAct steps for the request.
+    def stream(self, conversation):
+        """Yield intermediate ReAct steps for a request (string) or conversation (list).
 
         Emits dicts shaped as:
           - {"type": "tool_call", "tool": <name>, "args": <dict>}
@@ -157,12 +179,14 @@ class AgentRxAgent:
           - {"type": "final", "content": <markdown>}
         Suitable for adapting into MLflow ResponsesAgent stream events.
         """
+        input_messages = self._to_messages(conversation)
         stream_iter = self._agent.stream(
-            {"messages": [{"role": "user", "content": user_request}]},
+            {"messages": input_messages},
             stream_mode="values",
         )
 
-        seen_msgs = 0
+        # Skip the prior turns we sent in (history) so we only stream new steps.
+        seen_msgs = len(input_messages)
         last_content = ""
         for chunk in stream_iter:
             messages = chunk.get("messages", [])
