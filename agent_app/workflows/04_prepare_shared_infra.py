@@ -17,12 +17,15 @@ This notebook is intentionally app-centric:
 # COMMAND ----------
 
 import os
+import shutil
 import sys
 from pathlib import Path
 from typing import Optional
+from urllib.request import urlopen
 
 import mlflow
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.service import catalog as uc_catalog
 from databricks.sdk.service.postgres import Branch, BranchSpec, Project, ProjectSpec
 
 
@@ -58,6 +61,11 @@ _WIDGET_DEFAULTS = {
     "lakebase_branch": "",
     "source_table": "",
     "experiment_id": "",
+    "ltm_enabled": "false",
+    "ltm_provider": "tabicl",
+    "ltm_checkpoint_path": "",
+    "ltm_classifier_checkpoint": "tabicl-classifier-v2-20260212.ckpt",
+    "ltm_regressor_checkpoint": "tabicl-regressor-v2-20260212.ckpt",
 }
 
 for key, default in _WIDGET_DEFAULTS.items():
@@ -77,6 +85,14 @@ sql_warehouse_id = params["sql_warehouse_id"] or None
 lakebase_project = params["lakebase_project"] or None
 lakebase_branch = params["lakebase_branch"] or None
 source_table = params["source_table"] or "enriched_genie_docs_chunks"
+ltm_enabled = params["ltm_enabled"].lower() == "true"
+ltm_provider = params["ltm_provider"] or "tabicl"
+ltm_checkpoint_path = params["ltm_checkpoint_path"] or None
+ltm_classifier_checkpoint = params["ltm_classifier_checkpoint"] or "tabicl-classifier-v2-20260212.ckpt"
+ltm_regressor_checkpoint = params["ltm_regressor_checkpoint"] or "tabicl-regressor-v2-20260212.ckpt"
+
+_TABICL_HF_REPO_ID = "jingang/TabICL"
+_TABICL_HF_BASE_URL = f"https://huggingface.co/{_TABICL_HF_REPO_ID}/resolve/main"
 
 
 def ensure_lakebase_branch(
@@ -222,6 +238,155 @@ def ensure_experiment(
     return experiment
 
 
+def ensure_uc_volume(
+    *,
+    catalog_name: Optional[str],
+    schema_name: Optional[str],
+    volume_name: Optional[str],
+) -> None:
+    if not (catalog_name and schema_name and volume_name):
+        return
+
+    print("\nEnsuring Unity Catalog volume exists...")
+    print(f"  volume: {catalog_name}.{schema_name}.{volume_name}")
+    spark.sql(  # noqa: F821 - provided by Databricks notebook runtime
+        f"CREATE VOLUME IF NOT EXISTS `{catalog_name}`.`{schema_name}`.`{volume_name}`"
+    )
+    print("  ✓ Volume ready")
+
+
+def ensure_ltm_checkpoints(
+    *,
+    enabled: bool,
+    provider: str,
+    checkpoint_path: Optional[str],
+    classifier_checkpoint: str,
+    regressor_checkpoint: str,
+) -> None:
+    if not enabled:
+        print("\nTabular LTM is disabled; skipping checkpoint staging.")
+        return
+    if provider != "tabicl":
+        print(
+            "\nTabular LTM provider is not TabICL "
+            f"({provider!r}); skipping TabICLv2 checkpoint staging."
+        )
+        return
+    if not checkpoint_path:
+        raise RuntimeError(
+            "ltm_enabled=true requires ltm_checkpoint_path so checkpoints can be staged."
+        )
+
+    target_dir = Path(checkpoint_path)
+    print("\nEnsuring TabICLv2 checkpoints are staged...")
+    print(f"  target_dir: {target_dir}")
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    for checkpoint in (classifier_checkpoint, regressor_checkpoint):
+        target_file = target_dir / checkpoint
+        if target_file.exists() and target_file.stat().st_size > 0:
+            print(f"  ✓ {checkpoint} already exists ({target_file.stat().st_size} bytes)")
+            continue
+
+        download_url = f"{_TABICL_HF_BASE_URL}/{checkpoint}"
+        tmp_file = target_file.with_suffix(target_file.suffix + ".tmp")
+        print(f"  Downloading {checkpoint} from {_TABICL_HF_REPO_ID}...")
+        try:
+            with urlopen(download_url, timeout=120) as response, tmp_file.open("wb") as out:
+                shutil.copyfileobj(response, out)
+            tmp_file.replace(target_file)
+        except Exception as exc:
+            if tmp_file.exists():
+                tmp_file.unlink()
+            raise RuntimeError(
+                f"Failed to download TabICLv2 checkpoint '{checkpoint}' to "
+                f"'{target_file}'. Ensure the prep job has outbound internet or "
+                "pre-stage the checkpoint in the configured UC Volume."
+            ) from exc
+
+        print(f"  ✓ staged {checkpoint} ({target_file.stat().st_size} bytes)")
+
+
+def grant_ltm_volume_read_access(
+    workspace_client: WorkspaceClient,
+    *,
+    app_name: str,
+    sp_client_id: str,
+    catalog_name: Optional[str],
+    schema_name: Optional[str],
+    volume_name: Optional[str],
+    enabled: bool,
+) -> None:
+    if not enabled:
+        return
+    if not (catalog_name and schema_name and volume_name):
+        raise RuntimeError(
+            "ltm_enabled=true requires catalog_name, schema_name, and volume_name "
+            "to grant the app read access to the checkpoint volume."
+        )
+
+    volume_full_name = f"{catalog_name}.{schema_name}.{volume_name}"
+    print("\nGranting app read access to TabICLv2 checkpoint volume...")
+    print(f"  volume: {volume_full_name}")
+
+    workspace_client.grants.update(
+        securable_type=uc_catalog.SecurableType.CATALOG,
+        full_name=catalog_name,
+        changes=[
+            uc_catalog.PermissionsChange(
+                add=[uc_catalog.Privilege.USE_CATALOG],
+                principal=sp_client_id,
+            )
+        ],
+    )
+    workspace_client.grants.update(
+        securable_type=uc_catalog.SecurableType.SCHEMA,
+        full_name=f"{catalog_name}.{schema_name}",
+        changes=[
+            uc_catalog.PermissionsChange(
+                add=[uc_catalog.Privilege.USE_SCHEMA],
+                principal=sp_client_id,
+            )
+        ],
+    )
+    workspace_client.grants.update(
+        securable_type=uc_catalog.SecurableType.VOLUME,
+        full_name=volume_full_name,
+        changes=[
+            uc_catalog.PermissionsChange(
+                add=[uc_catalog.Privilege.READ_VOLUME],
+                principal=sp_client_id,
+            )
+        ],
+    )
+
+    # Databricks Apps also track UC dependencies as app resources. Upsert a
+    # read-only volume resource so the app does not need WRITE_VOLUME at runtime.
+    resources_payload = workspace_client.api_client.do("GET", f"/api/2.0/apps/{app_name}")
+    resources = list((resources_payload or {}).get("resources") or [])
+    updated_resources = [
+        resource
+        for resource in resources
+        if resource.get("name") != "ltm-volume-read"
+    ]
+    updated_resources.append(
+        {
+            "name": "ltm-volume-read",
+            "uc_securable": {
+                "securable_full_name": volume_full_name,
+                "securable_type": "VOLUME",
+                "permission": "READ_VOLUME",
+            },
+        }
+    )
+    workspace_client.api_client.do(
+        "PATCH",
+        f"/api/2.0/apps/{app_name}",
+        body={"name": app_name, "resources": updated_resources},
+    )
+    print("  ✓ READ_VOLUME granted for app runtime")
+
+
 print("=" * 80)
 print("PREPARE SHARED INFRA")
 print("=" * 80)
@@ -273,6 +438,30 @@ else:
         "\nSkipping UC function registration because one or more required values are unset: "
         f"catalog_name={catalog_name!r}, schema_name={schema_name!r}, source_table={source_table!r}"
     )
+
+ensure_uc_volume(
+    catalog_name=catalog_name,
+    schema_name=schema_name,
+    volume_name=volume_name,
+)
+
+ensure_ltm_checkpoints(
+    enabled=ltm_enabled,
+    provider=ltm_provider,
+    checkpoint_path=ltm_checkpoint_path,
+    classifier_checkpoint=ltm_classifier_checkpoint,
+    regressor_checkpoint=ltm_regressor_checkpoint,
+)
+
+grant_ltm_volume_read_access(
+    w,
+    app_name=app_name,
+    sp_client_id=sp_client_id,
+    catalog_name=catalog_name,
+    schema_name=schema_name,
+    volume_name=volume_name,
+    enabled=ltm_enabled,
+)
 
 ensure_experiment(
     w,
