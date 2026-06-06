@@ -127,15 +127,13 @@ variables:
   # Checkpoints (~218 MB total: ~108 MB classifier + ~110 MB regressor) are
   # stored on a Unity Catalog Volume and loaded in-process at app startup.
   ltm_enabled:
-    default: "false"
+    default: "true"
   ltm_provider:
     default: "tabicl"
-  # Directory inside a UC Volume that holds the .ckpt files, e.g.
-  # /Volumes/<catalog>/<schema>/<ltm_volume_name>/tabicl
+  # Directory inside a UC Volume that holds the .ckpt files. Built from the
+  # canonical catalog/schema/volume variables so it is not hard-coded.
   ltm_checkpoint_path:
-    default: ""
-  ltm_volume_name:
-    default: "ltm_models"
+    default: "/Volumes/${var.catalog_name}/${var.schema_name}/${var.volume_name}/${var.ltm_provider}"
   ltm_classifier_checkpoint:
     default: "tabicl-classifier-v2-20260212.ckpt"
   ltm_regressor_checkpoint:

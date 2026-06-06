@@ -136,12 +136,13 @@ resources:
         #     permission: 'WRITE_VOLUME'
 
         # UC Volume holding the embedded tabular LTM (TabICLv2) checkpoints
-        # (~218 MB: classifier + regressor). Read access is granted post-deploy
-        # by shared-infra bootstrap; uncomment to manage it via the bundle.
+        # (~218 MB: classifier + regressor) under the <volume>/tabicl subdir.
+        # Read access is granted post-deploy by shared-infra bootstrap;
+        # uncomment to manage it via the bundle.
         # - name: 'ltm-volume'
         #   uc_securable:
         #     securable_type: 'VOLUME'
-        #     securable_full_name: ${var.catalog_name}.${var.schema_name}.${var.ltm_volume_name}
+        #     securable_full_name: ${var.catalog_name}.${var.schema_name}.${var.volume_name}
         #     permission: 'READ_VOLUME'
 
         # # Serving endpoints (LLM + embedding) Access is granted by default on databricks for anyone to can_query.
