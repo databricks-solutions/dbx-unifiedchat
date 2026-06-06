@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-import shutil
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -31,8 +30,6 @@ from .contract import (
 )
 
 logger = logging.getLogger(__name__)
-
-_TABICL_HF_REPO_ID = "jingang/TabICL"
 
 
 class TabICLProvider(LTMProvider):
@@ -67,72 +64,49 @@ class TabICLProvider(LTMProvider):
 
     # -- estimator construction -------------------------------------------------
 
-    def _materialize_checkpoint(self, checkpoint_path: Optional[str], checkpoint_name: str) -> Optional[str]:
-        """Ensure a configured checkpoint path exists, downloading if needed.
+    def _resolve_checkpoint(self, checkpoint_path: Optional[str], checkpoint_name: str) -> Optional[str]:
+        """Resolve a checkpoint file path without writing to its location.
 
-        TabICL's own ``allow_auto_download`` path downloads to its library cache.
-        For app deployments we want the approved/checkpoint cache location to be
-        ``LTM_CHECKPOINT_PATH``, so missing files are materialized there first.
+        Staging checkpoints into a UC Volume is the prep job's responsibility
+        (``04_prepare_shared_infra.py``); the app only holds read access. This
+        method therefore never creates directories or downloads into the
+        configured path. Resolution order:
+
+        1. Configured path exists -> use it.
+        2. Missing but ``allow_auto_download`` -> return ``None`` so TabICL
+           fetches the checkpoint into its own local cache. This is the local
+           dev path, where ``/Volumes`` is not mounted at all.
+        3. Missing and auto-download disabled -> raise with remediation guidance.
         """
         if not checkpoint_path:
             return None
 
         path = Path(checkpoint_path)
-        if path.exists():
+        try:
+            exists = path.exists()
+        except OSError:
+            # e.g. an unreachable /Volumes path on a local machine; treat as
+            # missing rather than propagating the OS error.
+            exists = False
+
+        if exists:
             return str(path)
 
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise ModelUnavailableError(
-                f"Could not create TabICL checkpoint directory '{path.parent}': {exc}"
-            ) from exc
+        if self._allow_auto_download:
+            logger.info(
+                "TabICL checkpoint %s not found at %s; falling back to TabICL's "
+                "local auto-download cache.",
+                checkpoint_name,
+                checkpoint_path,
+            )
+            return None
 
-        try:
-            from huggingface_hub import hf_hub_download
-        except ImportError as exc:  # pragma: no cover - transitive tabicl dep
-            raise ModelUnavailableError(
-                "huggingface_hub is required to download missing TabICL checkpoints."
-            ) from exc
-
-        logger.info(
-            "Downloading TabICL checkpoint %s from %s to %s",
-            checkpoint_name,
-            _TABICL_HF_REPO_ID,
-            path.parent,
+        raise ModelUnavailableError(
+            f"TabICL checkpoint '{checkpoint_name}' not found at '{checkpoint_path}'. "
+            "Stage checkpoints by running the shared-infra prep job "
+            "(04_prepare_shared_infra.py), or set LTM_ALLOW_AUTO_DOWNLOAD=true to "
+            "download them into the local cache."
         )
-        try:
-            downloaded = hf_hub_download(
-                repo_id=_TABICL_HF_REPO_ID,
-                filename=checkpoint_name,
-                local_dir=str(path.parent),
-            )
-        except Exception as exc:  # noqa: BLE001 - normalize download failures
-            raise ModelUnavailableError(
-                f"Could not download TabICL checkpoint '{checkpoint_name}' to "
-                f"'{path.parent}': {exc}"
-            ) from exc
-
-        downloaded_path = Path(downloaded)
-        if downloaded_path != path and downloaded_path.exists() and not path.exists():
-            try:
-                shutil.copy2(downloaded_path, path)
-            except OSError:
-                # hf_hub_download may choose a cache path; in that case let
-                # TabICL load the downloaded path directly for this process.
-                logger.warning(
-                    "Downloaded TabICL checkpoint to %s instead of configured path %s",
-                    downloaded_path,
-                    path,
-                )
-                return str(downloaded_path)
-
-        if not path.exists():
-            raise ModelUnavailableError(
-                f"Downloaded TabICL checkpoint '{checkpoint_name}' but '{path}' does not exist."
-            )
-
-        return str(path)
 
     def _build_classifier(self):
         try:
@@ -143,7 +117,7 @@ class TabICLProvider(LTMProvider):
                 "embedded tabular model."
             ) from exc
 
-        classifier_path = self._materialize_checkpoint(
+        classifier_path = self._resolve_checkpoint(
             self._classifier_path,
             self._classifier_checkpoint,
         )
@@ -165,7 +139,7 @@ class TabICLProvider(LTMProvider):
                 "embedded tabular model."
             ) from exc
 
-        regressor_path = self._materialize_checkpoint(
+        regressor_path = self._resolve_checkpoint(
             self._regressor_path,
             self._regressor_checkpoint,
         )

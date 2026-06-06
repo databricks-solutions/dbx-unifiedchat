@@ -357,7 +357,10 @@ set_env_value "DATABRICKS_CONFIG_PROFILE" "$PROFILE"
 [[ -n "$BUNDLE_LTM_DEVICE" ]] && set_env_value "LTM_DEVICE" "$BUNDLE_LTM_DEVICE"
 [[ -n "$BUNDLE_LTM_MAX_CONTEXT_ROWS" ]] && set_env_value "LTM_MAX_CONTEXT_ROWS" "$BUNDLE_LTM_MAX_CONTEXT_ROWS"
 [[ -n "$BUNDLE_LTM_N_ESTIMATORS" ]] && set_env_value "LTM_N_ESTIMATORS" "$BUNDLE_LTM_N_ESTIMATORS"
-[[ -n "$BUNDLE_LTM_ALLOW_AUTO_DOWNLOAD" ]] && set_env_value "LTM_ALLOW_AUTO_DOWNLOAD" "$BUNDLE_LTM_ALLOW_AUTO_DOWNLOAD"
+# Local dev cannot mount UC Volumes (/Volumes only exists on Databricks compute,
+# and is a root-owned system dir on macOS). Always let TabICL download checkpoints
+# into its own local cache so the embedded LTM works without /Volumes access.
+set_env_value "LTM_ALLOW_AUTO_DOWNLOAD" "true"
 [[ -n "$BUNDLE_LTM_NEXUS_ENDPOINT" ]] && set_env_value "LTM_NEXUS_ENDPOINT" "$BUNDLE_LTM_NEXUS_ENDPOINT"
 [[ -n "$BUNDLE_LTM_NEXUS_REGION" ]] && set_env_value "LTM_NEXUS_REGION" "$BUNDLE_LTM_NEXUS_REGION"
 if [[ -n "$BUNDLE_LAKEBASE_PROJECT" && -n "$BUNDLE_LAKEBASE_BRANCH" ]]; then
