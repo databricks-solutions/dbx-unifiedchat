@@ -6,6 +6,7 @@ fast and verify the contract, budget guardrail, and graceful failure handling.
 
 from pathlib import Path
 import sys
+import types
 
 import pytest
 
@@ -202,6 +203,66 @@ def test_model_unavailable_is_graceful(monkeypatch):
 
     assert resp.success is False
     assert "not installed" in resp.error.lower()
+
+
+def test_tabicl_provider_downloads_missing_checkpoint_to_configured_path(
+    monkeypatch, tmp_path
+):
+    from agent_server.multi_agent.tools.tabular_ltm.tabicl_provider import TabICLProvider
+
+    checkpoint_path = tmp_path / "nested" / "tabicl-regressor-v2-20260212.ckpt"
+    calls = []
+
+    def fake_hf_hub_download(*, repo_id, filename, local_dir):
+        calls.append((repo_id, filename, local_dir))
+        path = Path(local_dir) / filename
+        path.write_text("fake checkpoint")
+        return str(path)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        types.SimpleNamespace(hf_hub_download=fake_hf_hub_download),
+    )
+
+    provider = TabICLProvider(regressor_path=str(checkpoint_path))
+    resolved = provider._materialize_checkpoint(
+        str(checkpoint_path),
+        "tabicl-regressor-v2-20260212.ckpt",
+    )
+
+    assert resolved == str(checkpoint_path)
+    assert checkpoint_path.exists()
+    assert calls == [
+        (
+            "jingang/TabICL",
+            "tabicl-regressor-v2-20260212.ckpt",
+            str(checkpoint_path.parent),
+        )
+    ]
+
+
+def test_tabicl_provider_reuses_existing_checkpoint(monkeypatch, tmp_path):
+    from agent_server.multi_agent.tools.tabular_ltm.tabicl_provider import TabICLProvider
+
+    checkpoint_path = tmp_path / "tabicl-classifier-v2-20260212.ckpt"
+    checkpoint_path.write_text("fake checkpoint")
+
+    def fail_if_downloaded(**_kwargs):
+        raise AssertionError("checkpoint should not be downloaded")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "huggingface_hub",
+        types.SimpleNamespace(hf_hub_download=fail_if_downloaded),
+    )
+
+    provider = TabICLProvider(classifier_path=str(checkpoint_path))
+
+    assert provider._materialize_checkpoint(
+        str(checkpoint_path),
+        "tabicl-classifier-v2-20260212.ckpt",
+    ) == str(checkpoint_path)
 
 
 def test_warmup_disabled_is_noop(monkeypatch):

@@ -17,6 +17,8 @@ Built with PriorLabs-TabPFN (TabICL incorporates TabPFN-derived components).
 from __future__ import annotations
 
 import logging
+from pathlib import Path
+import shutil
 import threading
 from typing import Any, Dict, List, Optional
 
@@ -29,6 +31,8 @@ from .contract import (
 )
 
 logger = logging.getLogger(__name__)
+
+_TABICL_HF_REPO_ID = "jingang/TabICL"
 
 
 class TabICLProvider(LTMProvider):
@@ -63,6 +67,73 @@ class TabICLProvider(LTMProvider):
 
     # -- estimator construction -------------------------------------------------
 
+    def _materialize_checkpoint(self, checkpoint_path: Optional[str], checkpoint_name: str) -> Optional[str]:
+        """Ensure a configured checkpoint path exists, downloading if needed.
+
+        TabICL's own ``allow_auto_download`` path downloads to its library cache.
+        For app deployments we want the approved/checkpoint cache location to be
+        ``LTM_CHECKPOINT_PATH``, so missing files are materialized there first.
+        """
+        if not checkpoint_path:
+            return None
+
+        path = Path(checkpoint_path)
+        if path.exists():
+            return str(path)
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ModelUnavailableError(
+                f"Could not create TabICL checkpoint directory '{path.parent}': {exc}"
+            ) from exc
+
+        try:
+            from huggingface_hub import hf_hub_download
+        except ImportError as exc:  # pragma: no cover - transitive tabicl dep
+            raise ModelUnavailableError(
+                "huggingface_hub is required to download missing TabICL checkpoints."
+            ) from exc
+
+        logger.info(
+            "Downloading TabICL checkpoint %s from %s to %s",
+            checkpoint_name,
+            _TABICL_HF_REPO_ID,
+            path.parent,
+        )
+        try:
+            downloaded = hf_hub_download(
+                repo_id=_TABICL_HF_REPO_ID,
+                filename=checkpoint_name,
+                local_dir=str(path.parent),
+            )
+        except Exception as exc:  # noqa: BLE001 - normalize download failures
+            raise ModelUnavailableError(
+                f"Could not download TabICL checkpoint '{checkpoint_name}' to "
+                f"'{path.parent}': {exc}"
+            ) from exc
+
+        downloaded_path = Path(downloaded)
+        if downloaded_path != path and downloaded_path.exists() and not path.exists():
+            try:
+                shutil.copy2(downloaded_path, path)
+            except OSError:
+                # hf_hub_download may choose a cache path; in that case let
+                # TabICL load the downloaded path directly for this process.
+                logger.warning(
+                    "Downloaded TabICL checkpoint to %s instead of configured path %s",
+                    downloaded_path,
+                    path,
+                )
+                return str(downloaded_path)
+
+        if not path.exists():
+            raise ModelUnavailableError(
+                f"Downloaded TabICL checkpoint '{checkpoint_name}' but '{path}' does not exist."
+            )
+
+        return str(path)
+
     def _build_classifier(self):
         try:
             from tabicl import TabICLClassifier
@@ -72,11 +143,15 @@ class TabICLProvider(LTMProvider):
                 "embedded tabular model."
             ) from exc
 
+        classifier_path = self._materialize_checkpoint(
+            self._classifier_path,
+            self._classifier_checkpoint,
+        )
         return TabICLClassifier(
             n_estimators=self._n_estimators,
-            model_path=self._classifier_path,
+            model_path=classifier_path,
             checkpoint_version=self._classifier_checkpoint,
-            allow_auto_download=self._allow_auto_download,
+            allow_auto_download=self._allow_auto_download if classifier_path is None else False,
             device=self._device,
             random_state=42,
         )
@@ -90,11 +165,15 @@ class TabICLProvider(LTMProvider):
                 "embedded tabular model."
             ) from exc
 
+        regressor_path = self._materialize_checkpoint(
+            self._regressor_path,
+            self._regressor_checkpoint,
+        )
         return TabICLRegressor(
             n_estimators=self._n_estimators,
-            model_path=self._regressor_path,
+            model_path=regressor_path,
             checkpoint_version=self._regressor_checkpoint,
-            allow_auto_download=self._allow_auto_download,
+            allow_auto_download=self._allow_auto_download if regressor_path is None else False,
             device=self._device,
             random_state=42,
         )

@@ -120,6 +120,7 @@ resolve_bundle_context() {
 
   "$VENV_PYTHON" - "$APP_DIR" "${TARGET:-}" "${PROFILE:-}" "${env_target:-}" "${env_profile:-}" <<'PY'
 import pathlib
+import re
 import shlex
 import sys
 
@@ -161,11 +162,23 @@ target_config = targets.get(resolved_target) or {}
 workspace_profile = ((target_config.get("workspace") or {}).get("profile") or "").strip()
 resolved_profile = explicit_profile or workspace_profile or env_profile
 
-def resolve_bundle_var(name: str) -> str:
+def _raw_bundle_var(name: str):
     target_value = (target_config.get("variables") or {}).get(name)
-    value = target_value if target_value is not None else (variables.get(name) or {}).get("default")
+    return target_value if target_value is not None else (variables.get(name) or {}).get("default")
+
+def resolve_bundle_var(name: str, seen: set[str] | None = None) -> str:
+    seen = seen or set()
+    if name in seen:
+        return ""
+    seen.add(name)
+    value = _raw_bundle_var(name)
     if isinstance(value, str):
         value = value.replace("${bundle.target}", resolved_target)
+        value = re.sub(
+            r"\$\{var\.([A-Za-z0-9_]+)\}",
+            lambda match: resolve_bundle_var(match.group(1), set(seen)),
+            value,
+        )
     return "" if value is None else str(value)
 
 context = {
@@ -195,6 +208,17 @@ context = {
     "BUNDLE_LLM_ENDPOINT_SUMMARIZE": resolve_bundle_var("llm_endpoint_summarize"),
     "BUNDLE_LLM_ENDPOINT_CHART": resolve_bundle_var("llm_endpoint_chart"),
     "BUNDLE_LLM_ENDPOINT_DETECT_CODE_LOOKUP": resolve_bundle_var("llm_endpoint_detect_code_lookup"),
+    "BUNDLE_LTM_ENABLED": resolve_bundle_var("ltm_enabled"),
+    "BUNDLE_LTM_PROVIDER": resolve_bundle_var("ltm_provider"),
+    "BUNDLE_LTM_CHECKPOINT_PATH": resolve_bundle_var("ltm_checkpoint_path"),
+    "BUNDLE_LTM_CLASSIFIER_CHECKPOINT": resolve_bundle_var("ltm_classifier_checkpoint"),
+    "BUNDLE_LTM_REGRESSOR_CHECKPOINT": resolve_bundle_var("ltm_regressor_checkpoint"),
+    "BUNDLE_LTM_DEVICE": resolve_bundle_var("ltm_device"),
+    "BUNDLE_LTM_MAX_CONTEXT_ROWS": resolve_bundle_var("ltm_max_context_rows"),
+    "BUNDLE_LTM_N_ESTIMATORS": resolve_bundle_var("ltm_n_estimators"),
+    "BUNDLE_LTM_ALLOW_AUTO_DOWNLOAD": resolve_bundle_var("ltm_allow_auto_download"),
+    "BUNDLE_LTM_NEXUS_ENDPOINT": resolve_bundle_var("ltm_nexus_endpoint"),
+    "BUNDLE_LTM_NEXUS_REGION": resolve_bundle_var("ltm_nexus_region"),
 }
 
 for key, value in context.items():
@@ -325,6 +349,17 @@ set_env_value "DATABRICKS_CONFIG_PROFILE" "$PROFILE"
 [[ -n "$BUNDLE_LLM_ENDPOINT_SUMMARIZE" ]] && set_env_value "LLM_ENDPOINT_SUMMARIZE" "$BUNDLE_LLM_ENDPOINT_SUMMARIZE"
 [[ -n "$BUNDLE_LLM_ENDPOINT_CHART" ]] && set_env_value "LLM_ENDPOINT_CHART" "$BUNDLE_LLM_ENDPOINT_CHART"
 [[ -n "$BUNDLE_LLM_ENDPOINT_DETECT_CODE_LOOKUP" ]] && set_env_value "LLM_ENDPOINT_DETECT_CODE_LOOKUP" "$BUNDLE_LLM_ENDPOINT_DETECT_CODE_LOOKUP"
+[[ -n "$BUNDLE_LTM_ENABLED" ]] && set_env_value "LTM_ENABLED" "$BUNDLE_LTM_ENABLED"
+[[ -n "$BUNDLE_LTM_PROVIDER" ]] && set_env_value "LTM_PROVIDER" "$BUNDLE_LTM_PROVIDER"
+[[ -n "$BUNDLE_LTM_CHECKPOINT_PATH" ]] && set_env_value "LTM_CHECKPOINT_PATH" "$BUNDLE_LTM_CHECKPOINT_PATH"
+[[ -n "$BUNDLE_LTM_CLASSIFIER_CHECKPOINT" ]] && set_env_value "LTM_CLASSIFIER_CHECKPOINT" "$BUNDLE_LTM_CLASSIFIER_CHECKPOINT"
+[[ -n "$BUNDLE_LTM_REGRESSOR_CHECKPOINT" ]] && set_env_value "LTM_REGRESSOR_CHECKPOINT" "$BUNDLE_LTM_REGRESSOR_CHECKPOINT"
+[[ -n "$BUNDLE_LTM_DEVICE" ]] && set_env_value "LTM_DEVICE" "$BUNDLE_LTM_DEVICE"
+[[ -n "$BUNDLE_LTM_MAX_CONTEXT_ROWS" ]] && set_env_value "LTM_MAX_CONTEXT_ROWS" "$BUNDLE_LTM_MAX_CONTEXT_ROWS"
+[[ -n "$BUNDLE_LTM_N_ESTIMATORS" ]] && set_env_value "LTM_N_ESTIMATORS" "$BUNDLE_LTM_N_ESTIMATORS"
+[[ -n "$BUNDLE_LTM_ALLOW_AUTO_DOWNLOAD" ]] && set_env_value "LTM_ALLOW_AUTO_DOWNLOAD" "$BUNDLE_LTM_ALLOW_AUTO_DOWNLOAD"
+[[ -n "$BUNDLE_LTM_NEXUS_ENDPOINT" ]] && set_env_value "LTM_NEXUS_ENDPOINT" "$BUNDLE_LTM_NEXUS_ENDPOINT"
+[[ -n "$BUNDLE_LTM_NEXUS_REGION" ]] && set_env_value "LTM_NEXUS_REGION" "$BUNDLE_LTM_NEXUS_REGION"
 if [[ -n "$BUNDLE_LAKEBASE_PROJECT" && -n "$BUNDLE_LAKEBASE_BRANCH" ]]; then
   set_env_value "LAKEBASE_AUTOSCALING_PROJECT" "$BUNDLE_LAKEBASE_PROJECT"
   set_env_value "LAKEBASE_AUTOSCALING_BRANCH" "$BUNDLE_LAKEBASE_BRANCH"
