@@ -150,6 +150,12 @@ variables:
   # Keep false in production: load from the UC Volume, not the internet.
   ltm_allow_auto_download:
     default: "false"
+  # Fundamental NEXUS (managed SageMaker) — pre-wired but disabled. Set
+  # ltm_provider=nexus and provide an endpoint + AWS region/creds to enable.
+  ltm_nexus_endpoint:
+    default: ""
+  ltm_nexus_region:
+    default: ""
 
   # Genie spaces
   # Common override: set this to the comma-separated Genie spaces for the target.

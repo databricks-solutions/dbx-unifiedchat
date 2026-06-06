@@ -122,6 +122,8 @@ def _enabled_cfg(**overrides):
         max_context_rows=100000,
         n_estimators=8,
         allow_auto_download=False,
+        nexus_endpoint="",
+        nexus_region="",
     )
     base.update(overrides)
     return TabularLTMConfig(**base)
@@ -209,3 +211,41 @@ def test_warmup_disabled_is_noop(monkeypatch):
 
     assert status["enabled"] is False
     assert status["loaded"] is False
+
+
+# --- Nexus provider stub (pre-wired, disabled) ------------------------------
+
+
+def test_nexus_provider_selected_by_factory():
+    from agent_server.multi_agent.tools.tabular_ltm.nexus_provider import NexusProvider
+
+    provider = ltm_service._build_provider(_enabled_cfg(provider="nexus"))
+
+    assert isinstance(provider, NexusProvider)
+    assert provider.name == "nexus"
+
+
+def test_nexus_unconfigured_is_graceful():
+    from agent_server.multi_agent.tools.tabular_ltm.nexus_provider import NexusProvider
+
+    provider = NexusProvider(endpoint_name=None)
+    with pytest.raises(ModelUnavailableError):
+        provider.predict_classification(["x"], [{"x": 1}], ["a"], [{"x": 2}])
+
+
+def test_nexus_via_service_returns_clean_error(monkeypatch):
+    monkeypatch.setattr(
+        ltm_service, "_get_ltm_config", lambda: _enabled_cfg(provider="nexus", nexus_endpoint="")
+    )
+    # Force a fresh provider build so the nexus branch is exercised.
+    monkeypatch.setattr(ltm_service, "_provider", None, raising=False)
+
+    resp = ltm_service.run_tabular_prediction(TabularPredictRequest(**_valid_kwargs()))
+
+    assert resp.success is False
+    assert "not configured" in resp.error.lower()
+
+
+def test_unsupported_provider_raises():
+    with pytest.raises(ModelUnavailableError):
+        ltm_service._build_provider(_enabled_cfg(provider="bogus"))

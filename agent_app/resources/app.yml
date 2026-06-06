@@ -96,6 +96,11 @@ resources:
             value: ${var.ltm_n_estimators}
           - name: LTM_ALLOW_AUTO_DOWNLOAD
             value: ${var.ltm_allow_auto_download}
+          # Fundamental NEXUS (managed SageMaker) — only used when LTM_PROVIDER=nexus
+          - name: LTM_NEXUS_ENDPOINT
+            value: ${var.ltm_nexus_endpoint}
+          - name: LTM_NEXUS_REGION
+            value: ${var.ltm_nexus_region}
 
       resources:
         - name: 'experiment'

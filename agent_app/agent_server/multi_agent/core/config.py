@@ -257,6 +257,9 @@ class TabularLTMConfig:
     max_context_rows: int
     n_estimators: int
     allow_auto_download: bool
+    # Fundamental NEXUS (managed SageMaker) — used only when provider == 'nexus'.
+    nexus_endpoint: str
+    nexus_region: str
 
     def _checkpoint_path(self, filename: str) -> Optional[str]:
         if not filename:
@@ -294,6 +297,8 @@ class TabularLTMConfig:
             max_context_rows=int(os.getenv("LTM_MAX_CONTEXT_ROWS", "100000")),
             n_estimators=int(os.getenv("LTM_N_ESTIMATORS", "8")),
             allow_auto_download=os.getenv("LTM_ALLOW_AUTO_DOWNLOAD", "false").lower() == "true",
+            nexus_endpoint=os.getenv("LTM_NEXUS_ENDPOINT", "").strip(),
+            nexus_region=os.getenv("LTM_NEXUS_REGION", "").strip(),
         )
 
     @classmethod
@@ -312,6 +317,8 @@ class TabularLTMConfig:
             max_context_rows=int(_mc_get(mc, "ltm_max_context_rows", 100000)),
             n_estimators=int(_mc_get(mc, "ltm_n_estimators", 8)),
             allow_auto_download=str(_mc_get(mc, "ltm_allow_auto_download", "false")).lower() == "true",
+            nexus_endpoint=str(_mc_get(mc, "ltm_nexus_endpoint", "") or "").strip(),
+            nexus_region=str(_mc_get(mc, "ltm_nexus_region", "") or "").strip(),
         )
 
 
@@ -567,6 +574,9 @@ class AgentConfig:
         print(f"  Device: {self.tabular_ltm.device or 'auto'}")
         print(f"  Max Context Rows: {self.tabular_ltm.max_context_rows}")
         print(f"  Allow Auto Download: {self.tabular_ltm.allow_auto_download}")
+        if self.tabular_ltm.provider == "nexus":
+            print(f"  NEXUS Endpoint: {self.tabular_ltm.nexus_endpoint or '(unset)'}")
+            print(f"  NEXUS Region: {self.tabular_ltm.nexus_region or '(unset)'}")
         print("="*80)
 
 

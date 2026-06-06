@@ -30,23 +30,37 @@ _provider_lock = threading.Lock()
 
 
 def _build_provider(ltm_cfg) -> LTMProvider:
-    """Instantiate the configured provider. Only TabICL is wired today."""
+    """Instantiate the configured provider.
+
+    'tabicl' is the embedded, in-process default. 'nexus' is a pre-wired stub
+    for Fundamental's managed SageMaker LTM (disabled until configured).
+    """
     provider_name = (ltm_cfg.provider or "tabicl").lower()
-    if provider_name != "tabicl":
-        raise ModelUnavailableError(
-            f"Unsupported LTM provider '{provider_name}'. Only 'tabicl' is currently embedded."
+
+    if provider_name == "tabicl":
+        from .tabicl_provider import TabICLProvider
+
+        return TabICLProvider(
+            classifier_path=ltm_cfg.classifier_path,
+            regressor_path=ltm_cfg.regressor_path,
+            classifier_checkpoint=ltm_cfg.classifier_checkpoint,
+            regressor_checkpoint=ltm_cfg.regressor_checkpoint,
+            device=ltm_cfg.device_or_none,
+            n_estimators=ltm_cfg.n_estimators,
+            allow_auto_download=ltm_cfg.allow_auto_download,
         )
 
-    from .tabicl_provider import TabICLProvider
+    if provider_name == "nexus":
+        from .nexus_provider import NexusProvider
 
-    return TabICLProvider(
-        classifier_path=ltm_cfg.classifier_path,
-        regressor_path=ltm_cfg.regressor_path,
-        classifier_checkpoint=ltm_cfg.classifier_checkpoint,
-        regressor_checkpoint=ltm_cfg.regressor_checkpoint,
-        device=ltm_cfg.device_or_none,
-        n_estimators=ltm_cfg.n_estimators,
-        allow_auto_download=ltm_cfg.allow_auto_download,
+        return NexusProvider(
+            endpoint_name=ltm_cfg.nexus_endpoint or None,
+            region=ltm_cfg.nexus_region or None,
+        )
+
+    raise ModelUnavailableError(
+        f"Unsupported LTM provider '{provider_name}'. Supported: 'tabicl' (embedded), "
+        "'nexus' (managed SageMaker stub)."
     )
 
 
