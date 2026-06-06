@@ -77,6 +77,25 @@ resources:
             value: ${var.agent_prewarm_space_context}
           - name: AGENT_KEEP_WARM_INTERVAL_SECONDS
             value: ${var.agent_keep_warm_interval_seconds}
+          # Embedded tabular LTM (TabICLv2) inference
+          - name: LTM_ENABLED
+            value: ${var.ltm_enabled}
+          - name: LTM_PROVIDER
+            value: ${var.ltm_provider}
+          - name: LTM_CHECKPOINT_PATH
+            value: ${var.ltm_checkpoint_path}
+          - name: LTM_CLASSIFIER_CHECKPOINT
+            value: ${var.ltm_classifier_checkpoint}
+          - name: LTM_REGRESSOR_CHECKPOINT
+            value: ${var.ltm_regressor_checkpoint}
+          - name: LTM_DEVICE
+            value: ${var.ltm_device}
+          - name: LTM_MAX_CONTEXT_ROWS
+            value: ${var.ltm_max_context_rows}
+          - name: LTM_N_ESTIMATORS
+            value: ${var.ltm_n_estimators}
+          - name: LTM_ALLOW_AUTO_DOWNLOAD
+            value: ${var.ltm_allow_auto_download}
 
       resources:
         - name: 'experiment'
@@ -110,6 +129,15 @@ resources:
         #     securable_type: 'VOLUME'
         #     securable_full_name: ${var.catalog_name}.${var.schema_name}.${var.volume_name}
         #     permission: 'WRITE_VOLUME'
+
+        # UC Volume holding the embedded tabular LTM (TabICLv2) checkpoints
+        # (~218 MB: classifier + regressor). Read access is granted post-deploy
+        # by shared-infra bootstrap; uncomment to manage it via the bundle.
+        # - name: 'ltm-volume'
+        #   uc_securable:
+        #     securable_type: 'VOLUME'
+        #     securable_full_name: ${var.catalog_name}.${var.schema_name}.${var.ltm_volume_name}
+        #     permission: 'READ_VOLUME'
 
         # # Serving endpoints (LLM + embedding) Access is granted by default on databricks for anyone to can_query.
         # - name: 'serving-endpoint-sonnet'
