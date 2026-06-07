@@ -203,6 +203,10 @@ export function HeldOutPredictionPanel({ tableData }: { tableData: TableData }) 
 		});
 	}, []);
 
+	const clearHeldOut = useCallback(() => {
+		setHeldOutIndexes(new Set());
+	}, []);
+
 	const selectedFeatures = useMemo(
 		() => parsed.columns.filter((column) => featureColumns.has(column)),
 		[parsed.columns, featureColumns],
@@ -449,6 +453,16 @@ export function HeldOutPredictionPanel({ tableData }: { tableData: TableData }) 
 				<ConfigSection
 					title="Hold-out rows"
 					hint={`${heldOutIndexes.size} held out · ${contextRowCount} context`}
+					action={
+						<button
+							type="button"
+							onClick={clearHeldOut}
+							disabled={heldOutIndexes.size === 0}
+							className="rounded px-1.5 py-0.5 text-[11px] font-medium text-zinc-500 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40 dark:text-zinc-400 dark:hover:bg-zinc-800"
+						>
+							Clear
+						</button>
+					}
 				>
 					<div className="relative mb-2 flex items-center">
 						<Search className="pointer-events-none absolute left-2 h-3.5 w-3.5 text-zinc-400" />
