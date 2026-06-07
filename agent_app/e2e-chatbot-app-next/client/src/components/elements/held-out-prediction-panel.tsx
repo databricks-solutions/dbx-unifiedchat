@@ -1,6 +1,15 @@
 "use client";
 
-import { Search, Sparkles, Target, Wand2 } from "lucide-react";
+import {
+	Copy,
+	Download,
+	Maximize2,
+	Minimize2,
+	Search,
+	Sparkles,
+	Target,
+	Wand2,
+} from "lucide-react";
 import { useCallback, useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -14,6 +23,7 @@ import {
 	type TableDataRow,
 	coerceValue,
 	computeColumnMeta,
+	downloadBlob,
 	formatValueByKind,
 	normalizeTableData,
 } from "./paginated-table-utils";
@@ -72,11 +82,16 @@ type Density = {
 	valueClass: string;
 };
 
+const resultsBtnClass =
+	"inline-flex items-center gap-1 rounded-md border border-zinc-200 bg-white px-2 py-1 font-medium text-zinc-600 transition-colors hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-40 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800";
+
 // -----------------------------------------------------------------------------
 // Component
 // -----------------------------------------------------------------------------
 
-export function HeldOutPredictionPanel({ tableData }: { tableData: TableData }) {
+export function HeldOutPredictionPanel({
+	tableData,
+}: { tableData: TableData }) {
 	const parsed = useMemo<NormalizedTable>(
 		() => normalizeTableData(tableData),
 		[tableData],
@@ -91,7 +106,10 @@ export function HeldOutPredictionPanel({ tableData }: { tableData: TableData }) 
 			.filter((column) => isNumericKind(columnMeta[column]?.kind))
 			.map((column) => ({
 				column,
-				score: scoreLtmTargetColumn(column, columnMeta[column]?.kind ?? "number"),
+				score: scoreLtmTargetColumn(
+					column,
+					columnMeta[column]?.kind ?? "number",
+				),
 			}))
 			.sort((a, b) => b.score - a.score);
 		return scored[0]?.column ?? null;
@@ -225,8 +243,12 @@ export function HeldOutPredictionPanel({ tableData }: { tableData: TableData }) 
 		run.status !== "loading";
 
 	const runPrediction = useCallback(async () => {
-		const features = parsed.columns.filter((column) => featureColumns.has(column));
-		const targets = parsed.columns.filter((column) => targetColumns.has(column));
+		const features = parsed.columns.filter((column) =>
+			featureColumns.has(column),
+		);
+		const targets = parsed.columns.filter((column) =>
+			targetColumns.has(column),
+		);
 		const heldOut = [...heldOutIndexes].sort((a, b) => a - b);
 
 		if (
@@ -249,7 +271,9 @@ export function HeldOutPredictionPanel({ tableData }: { tableData: TableData }) 
 
 				const trainRows = parsed.rows
 					.filter((_, index) => !heldOutIndexes.has(index))
-					.map((row) => buildLtmRequestRow(row, features, columnMeta, target, true))
+					.map((row) =>
+						buildLtmRequestRow(row, features, columnMeta, target, true),
+					)
 					.filter((row) => row[target] != null);
 
 				if (trainRows.length < 1) {
@@ -321,7 +345,14 @@ export function HeldOutPredictionPanel({ tableData }: { tableData: TableData }) 
 				byTarget: Object.fromEntries(entries),
 			},
 		});
-	}, [parsed.columns, parsed.rows, featureColumns, targetColumns, heldOutIndexes, columnMeta]);
+	}, [
+		parsed.columns,
+		parsed.rows,
+		featureColumns,
+		targetColumns,
+		heldOutIndexes,
+		columnMeta,
+	]);
 
 	return (
 		<div className="rounded-lg border border-zinc-200 bg-white shadow-sm dark:border-zinc-700 dark:bg-zinc-900">
@@ -336,8 +367,8 @@ export function HeldOutPredictionPanel({ tableData }: { tableData: TableData }) 
 							Held-out prediction (TabICLv2)
 						</div>
 						<div className="text-xs text-zinc-500 dark:text-zinc-400">
-							Hold out rows, pick features and targets, then compare predicted vs
-							actual.
+							Hold out rows, pick features and targets, then compare predicted
+							vs actual.
 						</div>
 					</div>
 				</div>
@@ -554,13 +585,18 @@ export function HeldOutPredictionPanel({ tableData }: { tableData: TableData }) 
 			{/* Results */}
 			{run.status === "loading" ? (
 				<div className="border-t border-zinc-200 px-4 py-6 text-center text-sm text-zinc-500 dark:border-zinc-700 dark:text-zinc-400">
-					Running TabICLv2 in-context inference for {selectedTargets.length} target
+					Running TabICLv2 in-context inference for {selectedTargets.length}{" "}
+					target
 					{selectedTargets.length === 1 ? "" : "s"}…
 				</div>
 			) : null}
 
 			{run.status === "success" ? (
-				<ResultsView results={run.results} parsed={parsed} columnMeta={columnMeta} />
+				<ResultsView
+					results={run.results}
+					parsed={parsed}
+					columnMeta={columnMeta}
+				/>
 			) : null}
 		</div>
 	);
@@ -604,6 +640,36 @@ function ResultsView({
 
 	const [colMode, setColMode] = useState<ColMode>("fit");
 	const [rowMode, setRowMode] = useState<RowMode>("comfortable");
+	const [copied, setCopied] = useState(false);
+	const [isFullscreen, setIsFullscreen] = useState(false);
+
+	// Copy/download always export the full result matrix (every held-out row plus
+	// the header), independent of any display density or column ordering.
+	const handleCopyTsv = useCallback(() => {
+		const tsv = toDelimited(
+			buildResultMatrix(results, parsed, columnMeta),
+			"\t",
+		);
+		void navigator.clipboard.writeText(tsv).then(() => {
+			setCopied(true);
+			setTimeout(() => setCopied(false), 1600);
+		});
+	}, [results, parsed, columnMeta]);
+
+	const handleDownloadCsv = useCallback(() => {
+		const csv = toDelimited(
+			buildResultMatrix(results, parsed, columnMeta),
+			",",
+		);
+		const base = parsed.filename.endsWith(".csv")
+			? parsed.filename.slice(0, -4)
+			: parsed.filename;
+		downloadBlob(
+			`${base || "results"}-heldout-prediction.csv`,
+			csv,
+			"text/csv;charset=utf-8;",
+		);
+	}, [results, parsed, columnMeta]);
 
 	const density: Density = {
 		headerPadY: "py-1.5",
@@ -614,192 +680,256 @@ function ResultsView({
 	};
 
 	return (
-		<div className="border-t border-zinc-200 dark:border-zinc-700">
-			{/* Legend + layout controls */}
-			<div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 text-[11px] text-zinc-500 dark:text-zinc-400">
-				<div className="flex flex-wrap items-center gap-3">
-					<LegendSwatch className="bg-blue-100 dark:bg-blue-950/50" label="Feature" />
-					<LegendSwatch className="bg-amber-100 dark:bg-amber-950/40" label="Actual" />
-					<LegendSwatch
-						className="bg-violet-100 dark:bg-violet-950/40"
-						label="Predicted"
-					/>
-					<LegendSwatch
-						className="bg-emerald-100 dark:bg-emerald-950/40"
-						label="Close / match"
-					/>
-					<LegendSwatch
-						className="bg-rose-100 dark:bg-rose-950/40"
-						label="Far / mismatch"
-					/>
-				</div>
-				<div className="flex items-center gap-3">
-					<DensityToggle
-						label="Columns"
-						value={colMode}
-						options={[
-							{ value: "fit", label: "Fit" },
-							{ value: "compact", label: "Compact" },
-						]}
-						onChange={setColMode}
-					/>
-					<DensityToggle
-						label="Rows"
-						value={rowMode}
-						options={[
-							{ value: "comfortable", label: "Fit" },
-							{ value: "compact", label: "Compact" },
-						]}
-						onChange={setRowMode}
-					/>
-				</div>
-			</div>
-
-			{failedTargets.length > 0 ? (
-				<div className="mx-4 mb-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300">
-					{failedTargets.map((target) => {
-						const result = byTarget[target];
-						return (
-							<div key={target}>
-								<span className="font-semibold">{target}</span>:{" "}
-								{result?.status === "error" ? result.error : "failed"}
-							</div>
-						);
-					})}
-				</div>
+		<>
+			{isFullscreen ? (
+				<button
+					type="button"
+					className="fixed inset-0 z-40 cursor-default bg-black/50"
+					onClick={() => setIsFullscreen(false)}
+					aria-label="Exit fullscreen"
+				/>
 			) : null}
-
-			<div className="overflow-x-auto px-4 pb-3">
-				<table className="w-full border-collapse text-xs">
-					<thead>
-						<tr>
-							<th
-								rowSpan={2}
-								className={cn(
-									"border-b border-zinc-200 text-left font-medium text-zinc-500 dark:border-zinc-700",
-									density.colPadX,
-									density.headerPadY,
-								)}
+			<div
+				className={cn(
+					"border-t border-zinc-200 dark:border-zinc-700",
+					isFullscreen &&
+						"fixed inset-4 z-50 flex flex-col overflow-hidden rounded-lg border bg-white shadow-2xl dark:bg-zinc-900",
+				)}
+			>
+				{/* Legend + layout controls */}
+				<div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2 text-[11px] text-zinc-500 dark:text-zinc-400">
+					<div className="flex flex-wrap items-center gap-3">
+						<LegendSwatch
+							className="bg-blue-100 dark:bg-blue-950/50"
+							label="Feature"
+						/>
+						<LegendSwatch
+							className="bg-amber-100 dark:bg-amber-950/40"
+							label="Actual"
+						/>
+						<LegendSwatch
+							className="bg-violet-100 dark:bg-violet-950/40"
+							label="Predicted"
+						/>
+						<LegendSwatch
+							className="bg-emerald-100 dark:bg-emerald-950/40"
+							label="Close / match"
+						/>
+						<LegendSwatch
+							className="bg-rose-100 dark:bg-rose-950/40"
+							label="Far / mismatch"
+						/>
+					</div>
+					<div className="flex flex-wrap items-center gap-3">
+						<DensityToggle
+							label="Columns"
+							value={colMode}
+							options={[
+								{ value: "fit", label: "Fit" },
+								{ value: "compact", label: "Compact" },
+							]}
+							onChange={setColMode}
+						/>
+						<DensityToggle
+							label="Rows"
+							value={rowMode}
+							options={[
+								{ value: "comfortable", label: "Fit" },
+								{ value: "compact", label: "Compact" },
+							]}
+							onChange={setRowMode}
+						/>
+						<div className="flex items-center gap-1.5">
+							<button
+								type="button"
+								onClick={handleCopyTsv}
+								className={resultsBtnClass}
 							>
-								#
-							</th>
-							{/* Results first (leftmost): one group per target */}
-							{targetColumns.map((target) => {
-								const result = byTarget[target];
-								return (
-									<th
-										key={target}
-										colSpan={3}
-										className={cn(
-											"border-b border-l border-zinc-200 bg-amber-50 text-center font-semibold text-amber-700 dark:border-zinc-700 dark:bg-amber-950/30 dark:text-amber-300",
-											density.colPadX,
-											density.headerPadY,
-										)}
-									>
-										{target}{" "}
-										<span className="font-normal opacity-70">
-											({result?.task ?? "?"})
-										</span>
-									</th>
-								);
-							})}
-							{featureColumns.length > 0 ? (
+								<Copy className="h-3.5 w-3.5" />
+								{copied ? "Copied" : "Copy TSV"}
+							</button>
+							<button
+								type="button"
+								onClick={handleDownloadCsv}
+								className={resultsBtnClass}
+							>
+								<Download className="h-3.5 w-3.5" />
+								Download CSV
+							</button>
+							<button
+								type="button"
+								onClick={() => setIsFullscreen((value) => !value)}
+								className={resultsBtnClass}
+								aria-label={isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+							>
+								{isFullscreen ? (
+									<Minimize2 className="h-3.5 w-3.5" />
+								) : (
+									<Maximize2 className="h-3.5 w-3.5" />
+								)}
+							</button>
+						</div>
+					</div>
+				</div>
+
+				{failedTargets.length > 0 ? (
+					<div className="mx-4 mb-2 rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300">
+						{failedTargets.map((target) => {
+							const result = byTarget[target];
+							return (
+								<div key={target}>
+									<span className="font-semibold">{target}</span>:{" "}
+									{result?.status === "error" ? result.error : "failed"}
+								</div>
+							);
+						})}
+					</div>
+				) : null}
+
+				<div
+					className={cn(
+						"overflow-x-auto px-4 pb-3",
+						isFullscreen && "min-h-0 flex-1 overflow-auto",
+					)}
+				>
+					<table className="w-full border-collapse text-xs">
+						<thead>
+							<tr>
 								<th
-									colSpan={featureColumns.length}
+									rowSpan={2}
 									className={cn(
-										"border-b border-l border-zinc-200 bg-blue-50 text-center font-semibold text-blue-700 dark:border-zinc-700 dark:bg-blue-950/40 dark:text-blue-300",
+										"border-b border-zinc-200 text-left font-medium text-zinc-500 dark:border-zinc-700",
 										density.colPadX,
 										density.headerPadY,
 									)}
 								>
-									Features
+									#
 								</th>
-							) : null}
-						</tr>
-						<tr>
-							{targetColumns.map((target) => {
-								const task = byTarget[target]?.task ?? "regression";
-								return (
-									<FragmentHeaders key={target} task={task} density={density} />
-								);
-							})}
-							{featureColumns.map((column) => (
-								<th
-									key={column}
-									className={cn(
-										"border-b border-l border-zinc-200 bg-blue-50/60 text-left font-medium text-blue-700 dark:border-zinc-700 dark:bg-blue-950/20 dark:text-blue-300",
-										density.colPadX,
-										"py-1",
-										density.valueClass,
-									)}
-								>
-									{column}
-								</th>
-							))}
-						</tr>
-					</thead>
-					<tbody>
-						{heldOutIndexes.map((rowIndex, position) => {
-							const row = parsed.rows[rowIndex];
-							return (
-								<tr
-									key={rowIndex}
-									className="border-b border-zinc-100 dark:border-zinc-800"
-								>
-									<td
-										className={cn(
-											"text-zinc-400",
-											density.colPadX,
-											density.rowPadY,
-										)}
-									>
-										{rowIndex + 1}
-									</td>
-									{targetColumns.map((target) => (
-										<TargetCells
+								{/* Results first (leftmost): one group per target */}
+								{targetColumns.map((target) => {
+									const result = byTarget[target];
+									return (
+										<th
 											key={target}
-											target={target}
-											position={position}
-											actualRaw={row[target]}
-											kind={columnMeta[target]?.kind ?? "text"}
-											result={byTarget[target]}
-											density={density}
-										/>
-									))}
-									{featureColumns.map((column) => (
-										<td
-											key={column}
+											colSpan={3}
 											className={cn(
-												"border-l border-zinc-100 text-zinc-700 dark:border-zinc-800 dark:text-zinc-300",
+												"border-b border-l border-zinc-200 bg-amber-50 text-center font-semibold text-amber-700 dark:border-zinc-700 dark:bg-amber-950/30 dark:text-amber-300",
 												density.colPadX,
-												density.rowPadY,
-												density.valueClass,
+												density.headerPadY,
 											)}
 										>
-											{formatValueByKind(
-												row[column],
-												columnMeta[column]?.kind ?? "text",
-											) || "—"}
+											{target}{" "}
+											<span className="font-normal opacity-70">
+												({result?.task ?? "?"})
+											</span>
+										</th>
+									);
+								})}
+								{featureColumns.length > 0 ? (
+									<th
+										colSpan={featureColumns.length}
+										className={cn(
+											"border-b border-l border-zinc-200 bg-blue-50 text-center font-semibold text-blue-700 dark:border-zinc-700 dark:bg-blue-950/40 dark:text-blue-300",
+											density.colPadX,
+											density.headerPadY,
+										)}
+									>
+										Features
+									</th>
+								) : null}
+							</tr>
+							<tr>
+								{targetColumns.map((target) => {
+									const task = byTarget[target]?.task ?? "regression";
+									return (
+										<FragmentHeaders
+											key={target}
+											task={task}
+											density={density}
+										/>
+									);
+								})}
+								{featureColumns.map((column) => (
+									<th
+										key={column}
+										className={cn(
+											"border-b border-l border-zinc-200 bg-blue-50/60 text-left font-medium text-blue-700 dark:border-zinc-700 dark:bg-blue-950/20 dark:text-blue-300",
+											density.colPadX,
+											"py-1",
+											density.valueClass,
+										)}
+									>
+										{column}
+									</th>
+								))}
+							</tr>
+						</thead>
+						<tbody>
+							{heldOutIndexes.map((rowIndex, position) => {
+								const row = parsed.rows[rowIndex];
+								return (
+									<tr
+										key={rowIndex}
+										className="border-b border-zinc-100 dark:border-zinc-800"
+									>
+										<td
+											className={cn(
+												"text-zinc-400",
+												density.colPadX,
+												density.rowPadY,
+											)}
+										>
+											{rowIndex + 1}
 										</td>
-									))}
-								</tr>
-							);
-						})}
-					</tbody>
-				</table>
-			</div>
-
-			{provider ? (
-				<div className="px-4 pb-3 text-[11px] text-zinc-400">
-					Provider: {provider}
-					{nContext != null ? ` · ${nContext} context rows` : ""}
+										{targetColumns.map((target) => (
+											<TargetCells
+												key={target}
+												target={target}
+												position={position}
+												actualRaw={row[target]}
+												kind={columnMeta[target]?.kind ?? "text"}
+												result={byTarget[target]}
+												density={density}
+											/>
+										))}
+										{featureColumns.map((column) => (
+											<td
+												key={column}
+												className={cn(
+													"border-l border-zinc-100 text-zinc-700 dark:border-zinc-800 dark:text-zinc-300",
+													density.colPadX,
+													density.rowPadY,
+													density.valueClass,
+												)}
+											>
+												{formatValueByKind(
+													row[column],
+													columnMeta[column]?.kind ?? "text",
+												) || "—"}
+											</td>
+										))}
+									</tr>
+								);
+							})}
+						</tbody>
+					</table>
 				</div>
-			) : null}
-		</div>
+
+				{provider ? (
+					<div className="px-4 pb-3 text-[11px] text-zinc-400">
+						Provider: {provider}
+						{nContext != null ? ` · ${nContext} context rows` : ""}
+					</div>
+				) : null}
+			</div>
+		</>
 	);
 }
 
-function FragmentHeaders({ task, density }: { task: LtmTask; density: Density }) {
+function FragmentHeaders({
+	task,
+	density,
+}: { task: LtmTask; density: Density }) {
 	return (
 		<>
 			<th
@@ -1080,7 +1210,10 @@ function DensityToggle<T extends string>({
 	);
 }
 
-function LegendSwatch({ className, label }: { className: string; label: string }) {
+function LegendSwatch({
+	className,
+	label,
+}: { className: string; label: string }) {
 	return (
 		<span className="inline-flex items-center gap-1.5">
 			<span className={cn("inline-block h-3 w-3 rounded-sm", className)} />
@@ -1109,9 +1242,16 @@ function detectTask(kind: ColumnKind | undefined): LtmTask {
 function scoreLtmTargetColumn(column: string, kind: ColumnKind): number {
 	const lower = column.toLowerCase();
 	let score =
-		kind === "currency" ? 60 : kind === "number" ? 50 : kind === "percent" ? 45 : 30;
+		kind === "currency"
+			? 60
+			: kind === "number"
+				? 50
+				: kind === "percent"
+					? 45
+					: 30;
 	if (/average|avg|mean|per[_\s-]?patient/.test(lower)) score += 80;
-	if (/spend|spending|cost|amount|paid|payment|allowed|charge/.test(lower)) score += 60;
+	if (/spend|spending|cost|amount|paid|payment|allowed|charge/.test(lower))
+		score += 60;
 	if (/rate|ratio|percent|share/.test(lower)) score += 35;
 	if (/score|risk|index/.test(lower)) score += 25;
 	if (/count|total|number|qty|quantity|utilization/.test(lower)) score -= 15;
@@ -1131,7 +1271,10 @@ function buildLtmRequestRow(
 		result[column] = coerceForLtm(row[column], columnMeta[column]?.kind);
 	}
 	if (includeTarget) {
-		result[targetColumn] = coerceForLtm(row[targetColumn], columnMeta[targetColumn]?.kind);
+		result[targetColumn] = coerceForLtm(
+			row[targetColumn],
+			columnMeta[targetColumn]?.kind,
+		);
 	}
 	return result;
 }
@@ -1139,11 +1282,15 @@ function buildLtmRequestRow(
 function coerceForLtm(value: unknown, kind: ColumnKind | undefined): unknown {
 	if (kind && isNumericKind(kind)) {
 		const coerced = coerceValue(value, kind);
-		return typeof coerced === "number" && Number.isFinite(coerced) ? coerced : null;
+		return typeof coerced === "number" && Number.isFinite(coerced)
+			? coerced
+			: null;
 	}
 	if (value == null || value === "") return null;
 	if (value instanceof Date) return value.toISOString();
-	return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
+	return typeof value === "string" ||
+		typeof value === "number" ||
+		typeof value === "boolean"
 		? value
 		: String(value);
 }
@@ -1164,7 +1311,9 @@ function formatPrediction(value: unknown, kind: ColumnKind): string {
 		return formatValueByKind(value, kind) || String(value);
 	}
 	if (typeof value === "number") {
-		return new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 }).format(value);
+		return new Intl.NumberFormat(undefined, {
+			maximumFractionDigits: 4,
+		}).format(value);
 	}
 	return String(value);
 }
@@ -1176,4 +1325,116 @@ function closenessClass(pctError: number | null): string {
 	if (pctError <= 0.25)
 		return "bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-300";
 	return "bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-300";
+}
+
+// -----------------------------------------------------------------------------
+// Result export (plain-text mirror of the displayed results table)
+// -----------------------------------------------------------------------------
+
+function targetCellText(
+	position: number,
+	actualRaw: unknown,
+	kind: ColumnKind,
+	result: TargetResult | undefined,
+): { actual: string; predicted: string; delta: string } {
+	const actual = formatValueByKind(actualRaw, kind) || "";
+	if (!result || result.status === "error") {
+		return { actual, predicted: "", delta: "" };
+	}
+
+	const predictedRaw = result.predictions[position];
+	const predictedText = formatPrediction(predictedRaw, kind);
+	const predicted = predictedText === "—" ? "" : predictedText;
+
+	if (result.task === "classification") {
+		const actualStr = actualRaw == null ? null : String(actualRaw);
+		const predStr = predictedRaw == null ? null : String(predictedRaw);
+		const known = actualStr != null && actualStr !== "";
+		const match = known ? actualStr === predStr : null;
+		return {
+			actual,
+			predicted,
+			delta: match == null ? "" : match ? "match" : "miss",
+		};
+	}
+
+	const actualNum = toFiniteNumber(coerceValue(actualRaw, kind));
+	const predNum = toFiniteNumber(predictedRaw);
+	const diff =
+		actualNum != null && predNum != null ? predNum - actualNum : null;
+	const pctError =
+		actualNum != null && predNum != null && actualNum !== 0
+			? Math.abs(diff as number) / Math.abs(actualNum)
+			: null;
+	let delta = "";
+	if (diff != null) {
+		delta = `${diff >= 0 ? "+" : ""}${formatPrediction(diff, kind)}`;
+		if (pctError != null) delta += ` (${(pctError * 100).toFixed(1)}%)`;
+	}
+	return { actual, predicted, delta };
+}
+
+function buildResultMatrix(
+	results: RunResults,
+	parsed: NormalizedTable,
+	columnMeta: Record<string, ColumnMeta>,
+): string[][] {
+	const { heldOutIndexes, featureColumns, targetColumns, byTarget } = results;
+
+	const header: string[] = ["#"];
+	for (const target of targetColumns) {
+		const task = byTarget[target]?.task ?? "regression";
+		header.push(
+			`${target} (actual)`,
+			`${target} (predicted)`,
+			task === "classification" ? `${target} (result)` : `${target} (Δ)`,
+		);
+	}
+	for (const column of featureColumns) header.push(column);
+
+	const matrix: string[][] = [header];
+	heldOutIndexes.forEach((rowIndex, position) => {
+		const row = parsed.rows[rowIndex];
+		const line: string[] = [String(rowIndex + 1)];
+		for (const target of targetColumns) {
+			const kind = columnMeta[target]?.kind ?? "text";
+			const cell = targetCellText(
+				position,
+				row[target],
+				kind,
+				byTarget[target],
+			);
+			line.push(cell.actual, cell.predicted, cell.delta);
+		}
+		for (const column of featureColumns) {
+			line.push(
+				formatValueByKind(row[column], columnMeta[column]?.kind ?? "text") ||
+					"",
+			);
+		}
+		matrix.push(line);
+	});
+
+	return matrix;
+}
+
+function toDelimited(matrix: string[][], separator: string): string {
+	return matrix
+		.map((line) =>
+			line
+				.map((field) => escapeDelimitedField(field, separator))
+				.join(separator),
+		)
+		.join("\n");
+}
+
+function escapeDelimitedField(value: string, separator: string): string {
+	if (
+		value.includes(separator) ||
+		value.includes("\n") ||
+		value.includes('"')
+	) {
+		return `"${value.replace(/"/g, '""')}"`;
+	}
+	return value;
 }
