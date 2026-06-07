@@ -35,7 +35,6 @@ import {
 	Ruler,
 	Search,
 	Sigma,
-	Sparkles,
 	TableProperties,
 	Thermometer,
 } from "lucide-react";
@@ -177,30 +176,6 @@ const TOTALS_MODES: TotalsMode[] = ["none", "sum", "avg", "min", "max"];
 const DEFAULT_PAGE_SIZE = 10;
 const PAGE_SIZE_OPTIONS = [10, 25, 50, 100];
 
-type LtmPredictionState =
-	| { status: "idle" }
-	| { status: "loading"; targetColumn: string; nTrain: number }
-	| {
-			status: "success";
-			targetColumn: string;
-			heldOutRowLabel: string;
-			actual: unknown;
-			prediction: unknown;
-			nTrain: number;
-			provider?: string;
-			modelCheckpoint?: string;
-	  }
-	| { status: "error"; error: string };
-
-type TabularPredictResponse = {
-	success: boolean;
-	provider?: string;
-	model_checkpoint?: string;
-	n_train?: number;
-	predictions?: Array<{ prediction: unknown; probabilities?: Record<string, number> }>;
-	error?: string;
-};
-
 // -----------------------------------------------------------------------------
 // Small styled bits
 // -----------------------------------------------------------------------------
@@ -285,9 +260,6 @@ export function PaginatedTable(
 	const [visibleRowsAfterFilter, setVisibleRowsAfterFilter] = useState<number>(
 		parsed.totalRows,
 	);
-	const [ltmPrediction, setLtmPrediction] = useState<LtmPredictionState>({
-		status: "idle",
-	});
 
 	const gridApiRef = useRef<GridApi | null>(null);
 	const copyCellButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -307,7 +279,6 @@ export function PaginatedTable(
 		setGridHasFocus(false);
 		setCopiedCell(false);
 		setSelectedCount(0);
-		setLtmPrediction({ status: "idle" });
 		hasLoadedStateRef.current = false;
 	}, [stateKey]);
 
@@ -746,102 +717,6 @@ export function PaginatedTable(
 		});
 		return rows;
 	}, [parsed.rows]);
-
-	const handlePredictHeldOutRow = useCallback(async () => {
-		const displayedRows = getDisplayedRows();
-		if (displayedRows.length < 2) {
-			setLtmPrediction({
-				status: "error",
-				error: "Need at least two rows: one held-out row and one labeled context row.",
-			});
-			return;
-		}
-
-		const selectedRows = gridApiRef.current?.getSelectedRows() as
-			| TableDataRow[]
-			| undefined;
-		const heldOutRow =
-			selectedRows?.length === 1
-				? selectedRows[0]
-				: displayedRows[displayedRows.length - 1];
-		const targetColumn = chooseLtmRegressionTarget(
-			parsed.columns,
-			columnMeta,
-			displayedRows,
-			heldOutRow,
-		);
-
-		if (!targetColumn) {
-			setLtmPrediction({
-				status: "error",
-				error:
-					"No numeric target column was found for the held-out-row demo. Try a table with spend, cost, amount, rate, or count columns.",
-			});
-			return;
-		}
-
-		const featureColumns = parsed.columns.filter((column) => column !== targetColumn);
-		const trainRows = displayedRows
-			.filter((row) => row !== heldOutRow)
-			.map((row) =>
-				buildLtmRequestRow(row, parsed.columns, columnMeta, targetColumn, true),
-			)
-			.filter((row) => row[targetColumn] != null);
-
-		if (trainRows.length < 1) {
-			setLtmPrediction({
-				status: "error",
-				error: `No labeled context rows remain after holding out ${targetColumn}.`,
-			});
-			return;
-		}
-
-		const predictRows = [
-			buildLtmRequestRow(heldOutRow, parsed.columns, columnMeta, targetColumn, false),
-		];
-
-		setLtmPrediction({
-			status: "loading",
-			targetColumn,
-			nTrain: trainRows.length,
-		});
-
-		try {
-			const response = await fetch("/api/tabular/predict", {
-				method: "POST",
-				credentials: "include",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					task: "regression",
-					feature_columns: featureColumns,
-					target_column: targetColumn,
-					train_rows: trainRows,
-					predict_rows: predictRows,
-				}),
-			});
-
-			const payload = (await response.json()) as TabularPredictResponse;
-			if (!response.ok || !payload.success) {
-				throw new Error(payload.error || `TabICLv2 request failed (${response.status})`);
-			}
-
-			setLtmPrediction({
-				status: "success",
-				targetColumn,
-				heldOutRowLabel: describeHeldOutRow(heldOutRow, parsed.columns, targetColumn),
-				actual: coerceForLtm(heldOutRow[targetColumn], columnMeta[targetColumn]?.kind),
-				prediction: payload.predictions?.[0]?.prediction,
-				nTrain: payload.n_train ?? trainRows.length,
-				provider: payload.provider,
-				modelCheckpoint: payload.model_checkpoint,
-			});
-		} catch (error) {
-			setLtmPrediction({
-				status: "error",
-				error: error instanceof Error ? error.message : String(error),
-			});
-		}
-	}, [columnMeta, getDisplayedRows, parsed.columns]);
 
 	const handleCopyTsv = useCallback(() => {
 		const api = gridApiRef.current;
@@ -1453,31 +1328,6 @@ export function PaginatedTable(
 							</TooltipContent>
 						</Tooltip>
 
-						{/* TabICLv2 held-out row demo */}
-						<Tooltip>
-							<TooltipTrigger asChild>
-								<button
-									type="button"
-									onClick={handlePredictHeldOutRow}
-									disabled={
-										!hasData ||
-										parsed.rows.length < 2 ||
-										ltmPrediction.status === "loading"
-									}
-									className={toolbarBtnClass}
-								>
-									<Sparkles className="h-3.5 w-3.5" />
-									{ltmPrediction.status === "loading"
-										? "Predicting..."
-										: "Predict held-out row"}
-								</button>
-							</TooltipTrigger>
-							<TooltipContent side="bottom" className="max-w-xs">
-								Use TabICLv2 to hold out one row, predict a numeric target from
-								the remaining rows, then compare prediction vs actual.
-							</TooltipContent>
-						</Tooltip>
-
 						{/* Reset */}
 						<Tooltip>
 							<TooltipTrigger asChild>
@@ -1536,49 +1386,6 @@ export function PaginatedTable(
 								</div>
 							</TooltipContent>
 						</Tooltip>
-					</div>
-				) : null}
-
-				{isExpanded && ltmPrediction.status !== "idle" ? (
-					<div className="border-b border-zinc-200 bg-blue-50/60 px-3 py-2 text-xs text-zinc-700 dark:border-zinc-700 dark:bg-blue-950/20 dark:text-zinc-200">
-						<div className="flex flex-wrap items-center justify-between gap-2">
-							<div>
-								<span className="font-semibold">TabICLv2 held-out prediction</span>
-								{ltmPrediction.status === "loading" ? (
-									<span className="ml-2 text-zinc-500 dark:text-zinc-400">
-										Predicting {ltmPrediction.targetColumn} from{" "}
-										{ltmPrediction.nTrain} context rows...
-									</span>
-								) : null}
-								{ltmPrediction.status === "error" ? (
-									<span className="ml-2 text-red-600 dark:text-red-300">
-										{ltmPrediction.error}
-									</span>
-								) : null}
-								{ltmPrediction.status === "success" ? (
-									<span className="ml-2">
-										Target <code>{ltmPrediction.targetColumn}</code> for{" "}
-										{ltmPrediction.heldOutRowLabel}: predicted{" "}
-										<span className="font-semibold">
-											{formatLtmValue(ltmPrediction.prediction)}
-										</span>
-										, actual{" "}
-										<span className="font-semibold">
-											{formatLtmValue(ltmPrediction.actual)}
-										</span>{" "}
-										({ltmPrediction.nTrain} context rows
-										{ltmPrediction.provider ? `, ${ltmPrediction.provider}` : ""})
-									</span>
-								) : null}
-							</div>
-							<button
-								type="button"
-								onClick={() => setLtmPrediction({ status: "idle" })}
-								className="rounded px-2 py-0.5 font-medium text-zinc-500 hover:bg-blue-100 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-blue-900/40 dark:hover:text-zinc-100"
-							>
-								Clear
-							</button>
-						</div>
 					</div>
 				) : null}
 
@@ -1701,100 +1508,3 @@ function parseNumericSafe(value: unknown): number | null {
 	return Number.isFinite(num) ? num : null;
 }
 
-function chooseLtmRegressionTarget(
-	columns: string[],
-	columnMeta: Record<string, ColumnMeta>,
-	rows: TableDataRow[],
-	heldOutRow: TableDataRow,
-): string | null {
-	const candidates = columns
-		.map((column) => {
-			const kind = columnMeta[column]?.kind;
-			if (!kind || !isNumericKind(kind)) return null;
-			if (coerceForLtm(heldOutRow[column], kind) == null) return null;
-			const labeledRows = rows.filter(
-				(row) => row !== heldOutRow && coerceForLtm(row[column], kind) != null,
-			);
-			if (labeledRows.length < 1) return null;
-			return {
-				column,
-				score: scoreLtmTargetColumn(column, kind),
-			};
-		})
-		.filter((item): item is { column: string; score: number } => item !== null)
-		.sort((a, b) => b.score - a.score);
-
-	return candidates[0]?.column ?? null;
-}
-
-function isNumericKind(kind: ColumnKind): boolean {
-	return (
-		kind === "integer" ||
-		kind === "number" ||
-		kind === "currency" ||
-		kind === "percent"
-	);
-}
-
-function scoreLtmTargetColumn(column: string, kind: ColumnKind): number {
-	const lower = column.toLowerCase();
-	let score = kind === "currency" ? 60 : kind === "number" ? 50 : kind === "percent" ? 45 : 30;
-	if (/average|avg|mean|per[_\s-]?patient/.test(lower)) score += 80;
-	if (/spend|spending|cost|amount|paid|payment|allowed|charge/.test(lower)) score += 60;
-	if (/rate|ratio|percent|share/.test(lower)) score += 35;
-	if (/score|risk|index/.test(lower)) score += 25;
-	if (/count|total|number|qty|quantity|utilization/.test(lower)) score -= 15;
-	if (/(^|_)id$|identifier|uuid/.test(lower)) score -= 1000;
-	return score;
-}
-
-function buildLtmRequestRow(
-	row: TableDataRow,
-	columns: string[],
-	columnMeta: Record<string, ColumnMeta>,
-	targetColumn: string,
-	includeTarget: boolean,
-): TableDataRow {
-	const result: TableDataRow = {};
-	for (const column of columns) {
-		if (column === targetColumn && !includeTarget) continue;
-		result[column] = coerceForLtm(row[column], columnMeta[column]?.kind);
-	}
-	return result;
-}
-
-function coerceForLtm(value: unknown, kind: ColumnKind | undefined): unknown {
-	if (kind && isNumericKind(kind)) {
-		const coerced = coerceValue(value, kind);
-		return typeof coerced === "number" && Number.isFinite(coerced) ? coerced : null;
-	}
-	if (value == null || value === "") return null;
-	if (value instanceof Date) return value.toISOString();
-	return typeof value === "string" || typeof value === "number" || typeof value === "boolean"
-		? value
-		: String(value);
-}
-
-function describeHeldOutRow(
-	row: TableDataRow,
-	columns: string[],
-	targetColumn: string,
-): string {
-	const labelColumns = columns.filter((column) => {
-		if (column === targetColumn) return false;
-		const lower = column.toLowerCase();
-		return /state|type|category|segment|class|plan|insurance|drug|diabetes/.test(lower);
-	});
-	const parts = (labelColumns.length > 0 ? labelColumns : columns.filter((c) => c !== targetColumn))
-		.slice(0, 3)
-		.map((column) => `${column}=${String(row[column] ?? "NA")}`);
-	return parts.length > 0 ? parts.join(", ") : "selected row";
-}
-
-function formatLtmValue(value: unknown): string {
-	if (typeof value === "number") {
-		return new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 }).format(value);
-	}
-	if (value == null || value === "") return "NA";
-	return String(value);
-}

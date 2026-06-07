@@ -6,6 +6,7 @@ import {
   ChevronDown,
   ChevronUp,
   Plus,
+  Sparkles,
   Table2,
   WandSparkles,
 } from 'lucide-react';
@@ -16,6 +17,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 
 import { PaginatedTable } from './paginated-table';
+import { HeldOutPredictionPanel } from './held-out-prediction-panel';
 import { InteractiveChart } from './interactive-chart';
 import { useMessageId } from './message-context';
 import {
@@ -90,6 +92,7 @@ export function VisualizationWorkspace({ workspace }: VisualizationWorkspaceProp
 
   const [isExpanded, setIsExpanded] = useState(prefersTablePreview);
   const [isTableVisible, setIsTableVisible] = useState(prefersTablePreview);
+  const [isPredictVisible, setIsPredictVisible] = useState(false);
   const [charts, setCharts] = useState<ChartSpec[]>(initialCharts);
   const [chartHistory, setChartHistory] = useState<ChartHistoryState>(
     () => buildInitialChartHistory(initialCharts, workspace.workspaceId),
@@ -544,11 +547,26 @@ export function VisualizationWorkspace({ workspace }: VisualizationWorkspaceProp
               <Table2 className="h-4 w-4" />
               {isTableVisible ? 'Hide table' : 'Show table'}
             </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setIsPredictVisible((current) => !current)}
+            >
+              <Sparkles className="h-4 w-4" />
+              {isPredictVisible ? 'Hide prediction' : 'Predict held-out rows'}
+            </Button>
           </div>
 
           {isTableVisible && (
             <div className="mt-4">
               <PaginatedTable tableData={workspace.table} />
+            </div>
+          )}
+
+          {isPredictVisible && (
+            <div className="mt-4">
+              <HeldOutPredictionPanel tableData={workspace.table} />
             </div>
           )}
         </div>
