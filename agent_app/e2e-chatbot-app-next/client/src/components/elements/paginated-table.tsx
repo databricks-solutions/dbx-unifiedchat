@@ -248,6 +248,7 @@ export function PaginatedTable(
 	const [showFilters, setShowFilters] = useState(false);
 	const [totalsMode, setTotalsMode] = useState<TotalsMode>("none");
 	const [selectedCount, setSelectedCount] = useState(0);
+	const [columnsAutoSized, setColumnsAutoSized] = useState(false);
 	const [detailRow, setDetailRow] = useState<TableDataRow | null>(null);
 	const [focusedCell, setFocusedCell] = useState<{
 		rowIndex: number;
@@ -279,6 +280,7 @@ export function PaginatedTable(
 		setGridHasFocus(false);
 		setCopiedCell(false);
 		setSelectedCount(0);
+		setColumnsAutoSized(false);
 		hasLoadedStateRef.current = false;
 	}, [stateKey]);
 
@@ -648,7 +650,17 @@ export function PaginatedTable(
 	}, [columnMeta, focusedCell, pinnedBottomRowData]);
 
 	const handleFitColumns = useCallback(() => {
-		gridApiRef.current?.autoSizeAllColumns();
+		const api = gridApiRef.current;
+		if (!api) return;
+		setColumnsAutoSized((prev) => {
+			if (prev) {
+				// Already auto-sized to content → collapse back to fit the container.
+				api.sizeColumnsToFit();
+				return false;
+			}
+			api.autoSizeAllColumns();
+			return true;
+		});
 	}, []);
 
 	const handleResetView = useCallback(() => {
@@ -661,6 +673,7 @@ export function PaginatedTable(
 		setHeatmap(false);
 		setShowFilters(false);
 		setTotalsMode("none");
+		setColumnsAutoSized(false);
 		clearTableState(stateKey);
 		api.sizeColumnsToFit();
 		setVisibleRowsAfterFilter(api.getDisplayedRowCount());
@@ -1256,14 +1269,20 @@ export function PaginatedTable(
 								<button
 									type="button"
 									onClick={handleFitColumns}
-									className={toolbarBtnClass}
+									className={cn(
+										toolbarBtnClass,
+										columnsAutoSized &&
+											"border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-950/50 dark:text-blue-300",
+									)}
 								>
 									<TableProperties className="h-3.5 w-3.5" />
-									Fit
+									{columnsAutoSized ? "Compact" : "Fit"}
 								</button>
 							</TooltipTrigger>
 							<TooltipContent side="bottom">
-								Auto-size all columns to fit their content
+								{columnsAutoSized
+									? "Collapse columns back to fit the table width"
+									: "Auto-size all columns to fit their content"}
 							</TooltipContent>
 						</Tooltip>
 
