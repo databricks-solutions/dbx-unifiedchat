@@ -1040,27 +1040,29 @@ function DensityToggle<T extends string>({
 	options: Array<{ value: T; label: string }>;
 	onChange: (value: T) => void;
 }) {
+	const currentIndex = Math.max(
+		0,
+		options.findIndex((option) => option.value === value),
+	);
+	const current = options[currentIndex] ?? options[0];
+	const next = options[(currentIndex + 1) % options.length];
+	const active = currentIndex !== 0;
+
 	return (
-		<div className="flex items-center gap-1">
-			<span className="text-zinc-400">{label}:</span>
-			<div className="inline-flex overflow-hidden rounded-md border border-zinc-200 dark:border-zinc-700">
-				{options.map((option) => (
-					<button
-						key={option.value}
-						type="button"
-						onClick={() => onChange(option.value)}
-						className={cn(
-							"px-1.5 py-0.5 font-medium transition-colors",
-							value === option.value
-								? "bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-100"
-								: "text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800",
-						)}
-					>
-						{option.label}
-					</button>
-				))}
-			</div>
-		</div>
+		<button
+			type="button"
+			onClick={() => onChange(next.value)}
+			title={`${label}: ${current.label} (click for ${next.label})`}
+			className={cn(
+				"inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 font-medium transition-colors",
+				active
+					? "border-blue-300 bg-blue-50 text-blue-700 dark:border-blue-700 dark:bg-blue-950/50 dark:text-blue-300"
+					: "border-zinc-200 text-zinc-500 hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-400 dark:hover:bg-zinc-800",
+			)}
+		>
+			<span className="text-zinc-400 dark:text-zinc-500">{label}:</span>
+			{current.label}
+		</button>
 	);
 }
 
