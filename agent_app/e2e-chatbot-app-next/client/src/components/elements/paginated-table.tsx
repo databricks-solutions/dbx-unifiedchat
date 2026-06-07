@@ -267,6 +267,15 @@ export function PaginatedTable(
 	const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const hasLoadedStateRef = useRef(false);
 
+	// `cellStyle` reads these via refs so the heatmap/theme can change without
+	// rebuilding `columnDefs`. Rebuilding the column defs would re-init the
+	// columns and discard widths set by the Fit/Compact (auto-size) control, so
+	// toggling Heatmap must not invalidate that memo.
+	const heatmapRef = useRef(heatmap);
+	heatmapRef.current = heatmap;
+	const themeModeRef = useRef(themeMode);
+	themeModeRef.current = themeMode;
+
 	// Reset transient UI when the table identity changes.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reset UI state when the table identity changes
 	useEffect(() => {
@@ -391,16 +400,17 @@ export function PaginatedTable(
 			};
 
 			const cellStyle = (params: CellClassParams) => {
+				const activeTheme = themeModeRef.current;
 				if (params.node?.rowPinned) {
 					return {
 						fontWeight: 600,
 						backgroundColor:
-							themeMode === "dark"
+							activeTheme === "dark"
 								? "rgba(39, 39, 42, 0.85)"
 								: "rgba(244, 244, 245, 0.85)",
 					} as Record<string, string | number>;
 				}
-				if (heatmap && isNumeric) {
+				if (heatmapRef.current && isNumeric) {
 					const value =
 						typeof params.value === "number"
 							? params.value
@@ -408,7 +418,7 @@ export function PaginatedTable(
 					if (value == null || m?.min == null || m?.max == null) {
 						return { backgroundColor: "transparent" } as Record<string, string>;
 					}
-					const bg = heatmapBackground(value, m.min, m.max, themeMode);
+					const bg = heatmapBackground(value, m.min, m.max, activeTheme);
 					if (bg) return { backgroundColor: bg } as Record<string, string>;
 				}
 				// Explicitly clear the background so previously applied heatmap
@@ -442,7 +452,10 @@ export function PaginatedTable(
 		});
 
 		return [detailCol, ...dataCols];
-	}, [parsed.columns, columnMeta, heatmap, themeMode]);
+		// `heatmap`/`themeMode` are intentionally excluded: `cellStyle` reads them
+		// via refs and the effect below re-applies the styling. Keeping them out
+		// preserves auto-sized column widths when toggling Heatmap.
+	}, [parsed.columns, columnMeta]);
 
 	const defaultColDef = useMemo<ColDef>(
 		() => ({
@@ -579,6 +592,9 @@ export function PaginatedTable(
 		setVisibleRowsAfterFilter(api.getDisplayedRowCount());
 	}, [quickFilter]);
 
+	// Re-apply cell styling when the heatmap or theme changes. `cellStyle` reads
+	// these via refs, so the only way to repaint is to force a cell refresh here.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: heatmap/themeMode are triggers, not body references
 	useEffect(() => {
 		const api = gridApiRef.current;
 		if (!api || !isExpanded) return;
@@ -652,16 +668,15 @@ export function PaginatedTable(
 	const handleFitColumns = useCallback(() => {
 		const api = gridApiRef.current;
 		if (!api) return;
-		setColumnsAutoSized((prev) => {
-			if (prev) {
-				// Already auto-sized to content → collapse back to fit the container.
-				api.sizeColumnsToFit();
-				return false;
-			}
+		if (columnsAutoSized) {
+			// Currently sized to content → collapse back to fit the table width.
+			api.sizeColumnsToFit();
+			setColumnsAutoSized(false);
+		} else {
 			api.autoSizeAllColumns();
-			return true;
-		});
-	}, []);
+			setColumnsAutoSized(true);
+		}
+	}, [columnsAutoSized]);
 
 	const handleResetView = useCallback(() => {
 		const api = gridApiRef.current;
@@ -1276,13 +1291,13 @@ export function PaginatedTable(
 									)}
 								>
 									<TableProperties className="h-3.5 w-3.5" />
-									{columnsAutoSized ? "Compact" : "Fit"}
+									{columnsAutoSized ? "Fit" : "Compact"}
 								</button>
 							</TooltipTrigger>
 							<TooltipContent side="bottom">
 								{columnsAutoSized
-									? "Collapse columns back to fit the table width"
-									: "Auto-size all columns to fit their content"}
+									? "Columns sized to content — click to fit the table width"
+									: "Columns fit to table width — click to size to content"}
 							</TooltipContent>
 						</Tooltip>
 
