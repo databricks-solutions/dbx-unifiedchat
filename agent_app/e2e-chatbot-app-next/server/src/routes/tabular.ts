@@ -4,6 +4,9 @@ import {
   type Response,
   type Router as RouterType,
 } from 'express';
+import { generateText } from 'ai';
+import { z } from 'zod';
+import { myProvider } from '@chat-template/core';
 
 import { authMiddleware, requireAuth } from '../middleware/auth';
 
@@ -67,3 +70,241 @@ tabularRouter.post('/predict', requireAuth, async (req: Request, res: Response) 
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// Future prediction template (per visualization workspace)
+//
+// Inspects a workspace's current table structure and a small row sample, then
+// asks an auxiliary LLM to propose an editable set of fields the user can fill
+// to generate unlabeled future rows for TabICLv2 inference.
+// ---------------------------------------------------------------------------
+
+const COLUMN_KINDS = [
+  'integer',
+  'currency',
+  'percent',
+  'number',
+  'date',
+  'text',
+] as const;
+
+const futureTemplateRequestSchema = z.object({
+  workspaceId: z.string().min(1),
+  columns: z.array(z.string()).min(1).max(200),
+  columnMeta: z.record(z.string(), z.enum(COLUMN_KINDS)).optional(),
+  sampleRows: z
+    .array(z.record(z.string(), z.unknown()))
+    .max(10)
+    .optional(),
+  targetColumns: z.array(z.string()).optional(),
+  featureColumns: z.array(z.string()).optional(),
+});
+
+const futureTemplateFieldSchema = z.object({
+  name: z.string().min(1),
+  label: z.string().min(1),
+  kind: z.enum(COLUMN_KINDS),
+  inputType: z.enum(['list', 'single']),
+  defaultValue: z.string().default(''),
+  placeholder: z.string().optional(),
+  required: z.boolean().default(false),
+  options: z.array(z.string()).optional(),
+});
+
+const futureTemplateSchema = z.object({
+  title: z.string().min(1),
+  description: z.string().default(''),
+  fields: z.array(futureTemplateFieldSchema).max(40),
+  notes: z.string().optional(),
+});
+
+type FutureTemplate = z.infer<typeof futureTemplateSchema>;
+type FutureTemplateRequest = z.infer<typeof futureTemplateRequestSchema>;
+
+const MAX_CELL_LENGTH = 80;
+
+function truncateCell(value: unknown): unknown {
+  if (typeof value === 'string' && value.length > MAX_CELL_LENGTH) {
+    return `${value.slice(0, MAX_CELL_LENGTH)}…`;
+  }
+  return value;
+}
+
+function collectObservedValues(
+  column: string,
+  sampleRows: Array<Record<string, unknown>>,
+  limit = 8,
+): string[] {
+  const values = new Set<string>();
+  for (const row of sampleRows) {
+    const value = row[column];
+    if (value == null || value === '') continue;
+    values.add(String(value).trim());
+    if (values.size >= limit) break;
+  }
+  return [...values];
+}
+
+function isTimeLikeColumn(column: string, kind: string | undefined): boolean {
+  if (kind === 'date') return true;
+  return /(^|_)(period|month|year|quarter|week|day|date|time)(_|$)/i.test(
+    column,
+  );
+}
+
+function buildFallbackTemplate(request: FutureTemplateRequest): FutureTemplate {
+  const targets = new Set(request.targetColumns ?? []);
+  const meta = request.columnMeta ?? {};
+  const sampleRows = request.sampleRows ?? [];
+
+  const fields: FutureTemplate['fields'] = [];
+  for (const column of request.columns) {
+    if (targets.has(column)) continue;
+    const kind = meta[column] ?? 'text';
+    const observed = collectObservedValues(column, sampleRows);
+    const timeLike = isTimeLikeColumn(column, kind);
+    const isCategorical =
+      kind === 'text' || (observed.length > 0 && observed.length <= 6);
+
+    fields.push({
+      name: column,
+      label: column,
+      kind: COLUMN_KINDS.includes(kind as (typeof COLUMN_KINDS)[number])
+        ? (kind as (typeof COLUMN_KINDS)[number])
+        : 'text',
+      inputType: timeLike || isCategorical ? 'list' : 'single',
+      defaultValue: observed.slice(0, 3).join(', '),
+      placeholder: timeLike ? 'e.g. 2024-01, 02, 03' : observed[0] ?? '',
+      required: timeLike,
+      options: isCategorical && observed.length > 0 ? observed : undefined,
+    });
+  }
+
+  return {
+    title: 'Future prediction rows',
+    description:
+      'Fill these fields to generate unlabeled future rows. Comma-separated values expand into multiple rows.',
+    fields,
+    notes:
+      'Heuristic template generated from column names and sample values (LLM unavailable).',
+  };
+}
+
+function extractJsonObject(text: string): unknown {
+  const trimmed = text.trim();
+  const fenceMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const candidate = fenceMatch ? fenceMatch[1].trim() : trimmed;
+  const start = candidate.indexOf('{');
+  const end = candidate.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) {
+    throw new Error('No JSON object found in model output.');
+  }
+  return JSON.parse(candidate.slice(start, end + 1));
+}
+
+function buildTemplatePrompt(request: FutureTemplateRequest): string {
+  const meta = request.columnMeta ?? {};
+  const sampleRows = (request.sampleRows ?? []).map((row) => {
+    const out: Record<string, unknown> = {};
+    for (const column of request.columns) {
+      out[column] = truncateCell(row[column]);
+    }
+    return out;
+  });
+
+  const columnDescriptions = request.columns.map((column) => ({
+    name: column,
+    kind: meta[column] ?? 'text',
+    isTarget: (request.targetColumns ?? []).includes(column),
+    observedValues: collectObservedValues(column, request.sampleRows ?? []),
+  }));
+
+  return [
+    'You design a form that lets a user create FUTURE rows (timestamps/categories not present yet) for a tabular prediction model.',
+    'Return ONLY a JSON object, no prose, no markdown fences.',
+    '',
+    'JSON shape:',
+    '{',
+    '  "title": string,',
+    '  "description": string,',
+    '  "fields": [',
+    '    {',
+    '      "name": string (must be one of the table columns),',
+    '      "label": string,',
+    '      "kind": "integer"|"currency"|"percent"|"number"|"date"|"text",',
+    '      "inputType": "list" (comma-separated values expand into multiple rows) | "single",',
+    '      "defaultValue": string,',
+    '      "placeholder": string,',
+    '      "required": boolean,',
+    '      "options": string[] (optional; for categorical dimensions)',
+    '    }',
+    '  ],',
+    '  "notes": string (optional, short assumptions)',
+    '}',
+    '',
+    'Rules:',
+    '- Only include fields the user must provide to construct a future row (dimensions/date keys).',
+    '- NEVER include target columns as fields; the model predicts those.',
+    '- Time columns should use inputType "list" and accept comma-separated future periods.',
+    '- Categorical dimensions should set "options" and a sensible default from observed values.',
+    '- Omit derived/computed columns when they can be inferred from a date (e.g. quarter from month).',
+    '',
+    `Target columns (do NOT add as fields): ${JSON.stringify(
+      request.targetColumns ?? [],
+    )}`,
+    `Columns: ${JSON.stringify(columnDescriptions)}`,
+    `Sample rows (up to 10): ${JSON.stringify(sampleRows)}`,
+  ].join('\n');
+}
+
+tabularRouter.post(
+  '/future-template',
+  requireAuth,
+  async (req: Request, res: Response) => {
+    const parsedRequest = futureTemplateRequestSchema.safeParse(req.body);
+    if (!parsedRequest.success) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid future-template request.',
+        issues: parsedRequest.error.issues,
+      });
+    }
+
+    const request = parsedRequest.data;
+    const targetSet = new Set(request.targetColumns ?? []);
+
+    try {
+      const model = await myProvider.languageModel('artifact-model');
+      const { text } = await generateText({
+        model,
+        system:
+          'You output strict JSON describing a form for generating future tabular rows. No prose.',
+        prompt: buildTemplatePrompt(request),
+      });
+
+      const validated = futureTemplateSchema.parse(extractJsonObject(text));
+      const columnSet = new Set(request.columns);
+      const fields = validated.fields.filter(
+        (field) => columnSet.has(field.name) && !targetSet.has(field.name),
+      );
+
+      if (fields.length === 0) {
+        return res.json({ success: true, template: buildFallbackTemplate(request) });
+      }
+
+      return res.json({
+        success: true,
+        template: { ...validated, fields },
+      });
+    } catch (error) {
+      console.warn(
+        '[future-template] LLM template generation failed, using fallback:',
+        error instanceof Error ? error.message : String(error),
+      );
+      return res.json({
+        success: true,
+        template: buildFallbackTemplate(request),
+      });
+    }
+  },
+);

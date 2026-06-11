@@ -10,7 +10,7 @@ import {
 	Target,
 	Wand2,
 } from "lucide-react";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -82,6 +82,30 @@ type RunState =
 	| { status: "success"; results: RunResults }
 	| { status: "error"; error: string };
 
+type FutureTemplateField = {
+	name: string;
+	label: string;
+	kind: ColumnKind;
+	inputType: "list" | "single";
+	defaultValue: string;
+	placeholder?: string;
+	required: boolean;
+	options?: string[];
+};
+
+type FutureTemplate = {
+	title: string;
+	description: string;
+	fields: FutureTemplateField[];
+	notes?: string;
+};
+
+type TemplateState =
+	| { status: "idle" }
+	| { status: "loading" }
+	| { status: "success"; template: FutureTemplate }
+	| { status: "error"; error: string };
+
 type ColMode = "fit" | "compact";
 type RowMode = "comfortable" | "compact";
 
@@ -101,7 +125,8 @@ const resultsBtnClass =
 
 export function HeldOutPredictionPanel({
 	tableData,
-}: { tableData: TableData }) {
+	workspaceId,
+}: { tableData: TableData; workspaceId: string }) {
 	const parsed = useMemo<NormalizedTable>(
 		() => normalizeTableData(tableData),
 		[tableData],
@@ -135,12 +160,12 @@ export function HeldOutPredictionPanel({
 		parsed.rows.length > 0 ? new Set([0]) : new Set(),
 	);
 	const [includeFutureRows, setIncludeFutureRows] = useState(false);
-	const [futurePeriodInput, setFuturePeriodInput] = useState(() =>
-		defaultFuturePeriodInput(parsed),
-	);
-	const [futurePayTypeInput, setFuturePayTypeInput] = useState(() =>
-		defaultFuturePayTypeInput(parsed),
-	);
+	const [templateState, setTemplateState] = useState<TemplateState>({
+		status: "idle",
+	});
+	const [futureFieldValues, setFutureFieldValues] = useState<
+		Record<string, string>
+	>({});
 	const [rowQuery, setRowQuery] = useState("");
 	const [run, setRun] = useState<RunState>({ status: "idle" });
 
@@ -198,12 +223,92 @@ export function HeldOutPredictionPanel({
 		() => parsed.columns.filter((column) => !targetColumns.has(column)),
 		[parsed.columns, targetColumns],
 	);
+
+	// Per-workspace template is tied to this workspace's table signature. When the
+	// underlying table changes we must drop a stale template so it cannot be
+	// applied to a different result set.
+	const tableSignature = useMemo(
+		() => `${workspaceId}::${parsed.columns.join("|")}::${parsed.rows.length}`,
+		[workspaceId, parsed.columns, parsed.rows.length],
+	);
+	const lastSignatureRef = useRef<string | null>(null);
+	useEffect(() => {
+		if (lastSignatureRef.current === tableSignature) return;
+		lastSignatureRef.current = tableSignature;
+		setTemplateState({ status: "idle" });
+		setFutureFieldValues({});
+		setIncludeFutureRows(false);
+	}, [tableSignature]);
+
+	const futureTemplate =
+		templateState.status === "success" ? templateState.template : null;
+
 	const futureRows = useMemo(
-		() => buildFutureRows(futurePeriodInput, futurePayTypeInput, parsed.columns),
-		[futurePeriodInput, futurePayTypeInput, parsed.columns],
+		() =>
+			futureTemplate
+				? buildFutureRowsFromTemplate(
+						futureTemplate,
+						futureFieldValues,
+						parsed.columns,
+						targetColumns,
+					)
+				: [],
+		[futureTemplate, futureFieldValues, parsed.columns, targetColumns],
 	);
 	const activeFutureRows = includeFutureRows ? futureRows : [];
-	const hasPayTypeColumn = parsed.columns.includes("pay_type");
+
+	const generateTemplate = useCallback(async () => {
+		setTemplateState({ status: "loading" });
+		try {
+			const response = await fetch("/api/tabular/future-template", {
+				method: "POST",
+				credentials: "include",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					workspaceId,
+					columns: parsed.columns,
+					columnMeta: Object.fromEntries(
+						parsed.columns.map((column) => [
+							column,
+							columnMeta[column]?.kind ?? "text",
+						]),
+					),
+					sampleRows: parsed.rows.slice(0, 10),
+					targetColumns: parsed.columns.filter((column) =>
+						targetColumns.has(column),
+					),
+					featureColumns: parsed.columns.filter((column) =>
+						featureColumns.has(column),
+					),
+				}),
+			});
+
+			const payload = (await response.json()) as {
+				success: boolean;
+				template?: FutureTemplate;
+				error?: string;
+			};
+			if (!response.ok || !payload.success || !payload.template) {
+				throw new Error(
+					payload.error || `Template request failed (${response.status})`,
+				);
+			}
+
+			const template = payload.template;
+			setTemplateState({ status: "success", template });
+			setFutureFieldValues(
+				Object.fromEntries(
+					template.fields.map((field) => [field.name, field.defaultValue ?? ""]),
+				),
+			);
+			setIncludeFutureRows(true);
+		} catch (error) {
+			setTemplateState({
+				status: "error",
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}, [workspaceId, parsed.columns, parsed.rows, columnMeta, targetColumns, featureColumns]);
 
 	const filteredRowIndexes = useMemo(() => {
 		const query = rowQuery.trim().toLowerCase();
@@ -289,7 +394,7 @@ export function HeldOutPredictionPanel({
 				hasActual: true,
 			})),
 			...activeFutureRows.map((row, index) => ({
-				id: `future-${index}-${row.period ?? ""}-${row.pay_type ?? ""}`,
+				id: `future-${index}-${futureRowKey(row)}`,
 				label: `Future ${index + 1}`,
 				source: "future" as const,
 				row,
@@ -636,71 +741,135 @@ export function HeldOutPredictionPanel({
 								Future prediction rows
 							</h4>
 							<p className="mt-1 text-xs text-zinc-400">
-								Generate unlabeled future rows from static date features; example:
-								2024-01, 02, 03.
+								{futureTemplate?.description ||
+									"Generate a table-aware template, fill the fields, then predict unlabeled future rows."}
 							</p>
 						</div>
 						<div className="flex items-center gap-3">
-							<label className="inline-flex cursor-pointer items-center gap-2 text-xs font-medium text-zinc-600 dark:text-zinc-300">
-								<input
-									type="checkbox"
-									checked={includeFutureRows}
-									onChange={(event) =>
-										setIncludeFutureRows(event.target.checked)
-									}
-									className="accent-blue-600"
-								/>
-								Include future rows
-							</label>
+							{futureTemplate ? (
+								<label className="inline-flex cursor-pointer items-center gap-2 text-xs font-medium text-zinc-600 dark:text-zinc-300">
+									<input
+										type="checkbox"
+										checked={includeFutureRows}
+										onChange={(event) =>
+											setIncludeFutureRows(event.target.checked)
+										}
+										className="accent-blue-600"
+									/>
+									Include future rows
+								</label>
+							) : null}
 							<span className="text-[11px] text-zinc-400">
 								{activeFutureRows.length} active · {futureRows.length} configured
 							</span>
+							<button
+								type="button"
+								onClick={generateTemplate}
+								disabled={templateState.status === "loading"}
+								className="rounded-md border border-zinc-200 bg-white px-2 py-1 text-[11px] font-medium text-zinc-600 hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800"
+							>
+								{templateState.status === "loading"
+									? "Generating…"
+									: futureTemplate
+										? "Regenerate template"
+										: "Generate template"}
+							</button>
 						</div>
 					</div>
-					<div className="grid gap-3 md:grid-cols-2">
-						<label className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-							Future months
-							<input
-								type="text"
-								value={futurePeriodInput}
-								onChange={(event) => setFuturePeriodInput(event.target.value)}
-								placeholder="2024-01, 02, 03"
-								className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs font-normal text-zinc-700 placeholder-zinc-400 shadow-sm focus:border-zinc-400 focus:outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
-							/>
-						</label>
-						<label className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
-							Pay type{hasPayTypeColumn ? "" : " (not in table)"}
-							<input
-								type="text"
-								value={futurePayTypeInput}
-								onChange={(event) => setFuturePayTypeInput(event.target.value)}
-								disabled={!hasPayTypeColumn}
-								placeholder="COMMERCIAL"
-								className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs font-normal text-zinc-700 placeholder-zinc-400 shadow-sm focus:border-zinc-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
-							/>
-						</label>
-					</div>
-					{futureRows.length > 0 ? (
-						<div
-							className={cn(
-								"mt-3 flex flex-wrap gap-1.5",
-								!includeFutureRows && "opacity-50",
-							)}
-						>
-							{futureRows.slice(0, 12).map((row, index) => (
-								<span
-									key={`${row.period}-${row.pay_type ?? ""}-${index}`}
-									className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] text-blue-700 dark:bg-blue-950/30 dark:text-blue-300"
-								>
-									{formatFutureRowLabel(row)}
-								</span>
-							))}
-							{futureRows.length > 12 ? (
-								<span className="px-1 py-0.5 text-[11px] text-zinc-400">
-									+{futureRows.length - 12} more
-								</span>
+
+					{templateState.status === "idle" ? (
+						<div className="rounded-md border border-dashed border-zinc-200 px-3 py-4 text-center text-xs text-zinc-400 dark:border-zinc-700">
+							No template yet. Generate a template tailored to this table to
+							define future rows.
+						</div>
+					) : null}
+
+					{templateState.status === "loading" ? (
+						<div className="rounded-md border border-zinc-200 px-3 py-4 text-center text-xs text-zinc-400 dark:border-zinc-700">
+							Inspecting the table and building a template…
+						</div>
+					) : null}
+
+					{templateState.status === "error" ? (
+						<div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700 dark:border-rose-900/60 dark:bg-rose-950/30 dark:text-rose-300">
+							{templateState.error}
+						</div>
+					) : null}
+
+					{futureTemplate ? (
+						<>
+							<div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+								{futureTemplate.fields.map((field) => (
+									<label
+										key={field.name}
+										className="text-xs font-medium text-zinc-500 dark:text-zinc-400"
+									>
+										{field.label}
+										{field.required ? (
+											<span className="ml-0.5 text-rose-500">*</span>
+										) : null}
+										<span className="ml-1 text-[10px] uppercase tracking-wide text-zinc-400">
+											{field.inputType === "list" ? "list" : field.kind}
+										</span>
+										<input
+											type="text"
+											value={futureFieldValues[field.name] ?? ""}
+											onChange={(event) =>
+												setFutureFieldValues((prev) => ({
+													...prev,
+													[field.name]: event.target.value,
+												}))
+											}
+											placeholder={
+												field.placeholder ||
+												(field.inputType === "list"
+													? "comma-separated values"
+													: "")
+											}
+											className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs font-normal text-zinc-700 placeholder-zinc-400 shadow-sm focus:border-zinc-400 focus:outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
+										/>
+										{field.options && field.options.length > 0 ? (
+											<span className="mt-1 block truncate text-[10px] text-zinc-400">
+												options: {field.options.join(", ")}
+											</span>
+										) : null}
+									</label>
+								))}
+							</div>
+
+							{futureTemplate.notes ? (
+								<p className="mt-2 text-[11px] text-zinc-400">
+									{futureTemplate.notes}
+								</p>
 							) : null}
-						</div>
+
+							{futureRows.length > 0 ? (
+								<div
+									className={cn(
+										"mt-3 flex flex-wrap gap-1.5",
+										!includeFutureRows && "opacity-50",
+									)}
+								>
+									{futureRows.slice(0, 12).map((row, index) => (
+										<span
+											key={`${futureRowKey(row)}-${index}`}
+											className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] text-blue-700 dark:bg-blue-950/30 dark:text-blue-300"
+										>
+											{formatFutureRowLabel(row, futureTemplate.fields)}
+										</span>
+									))}
+									{futureRows.length > 12 ? (
+										<span className="px-1 py-0.5 text-[11px] text-zinc-400">
+											+{futureRows.length - 12} more
+										</span>
+									) : null}
+								</div>
+							) : (
+								<p className="mt-3 text-[11px] text-zinc-400">
+									Fill the fields above to generate future rows.
+								</p>
+							)}
+						</>
 					) : null}
 				</section>
 			</div>
@@ -1387,58 +1556,96 @@ function scoreLtmTargetColumn(column: string, kind: ColumnKind): number {
 
 type YearMonth = { year: number; month: number };
 
-function defaultFuturePeriodInput(parsed: NormalizedTable): string {
-	const latest = latestYearMonth(parsed);
-	const start = latest ? addMonths(latest, 1) : { year: 2024, month: 1 };
-	return formatFuturePeriodInput([start, addMonths(start, 1), addMonths(start, 2)]);
-}
+const MAX_FUTURE_ROWS = 500;
 
-function defaultFuturePayTypeInput(parsed: NormalizedTable): string {
-	if (!parsed.columns.includes("pay_type")) return "";
-	const values = new Set<string>();
-	for (const row of parsed.rows) {
-		const value = row.pay_type;
-		if (value != null && String(value).trim()) values.add(String(value).trim());
-	}
-	return [...values][0] ?? "";
-}
-
-function buildFutureRows(
-	periodInput: string,
-	payTypeInput: string,
+// Expands a generated template plus the user's field values into concrete future
+// rows. List fields expand into a cartesian product; required-but-empty fields
+// short-circuit to no rows. Target columns are never populated.
+function buildFutureRowsFromTemplate(
+	template: FutureTemplate,
+	values: Record<string, string>,
 	columns: string[],
+	targetColumns: Set<string>,
 ): TableDataRow[] {
-	const periods = parseFutureYearMonths(periodInput);
-	const payTypes = columns.includes("pay_type")
-		? splitCsvish(payTypeInput).filter(Boolean)
-		: [""];
-	const effectivePayTypes = payTypes.length > 0 ? payTypes : [""];
-
-	return periods.flatMap(({ year, month }) =>
-		effectivePayTypes.map((payType) => {
-			const row: TableDataRow = {};
-			const period = `${year}-${pad2(month)}-01`;
-			if (columns.includes("period")) row.period = period;
-			if (columns.includes("period_type")) row.period_type = "month";
-			if (columns.includes("year")) row.year = year;
-			if (columns.includes("month")) row.month = month;
-			if (columns.includes("quarter")) row.quarter = Math.ceil(month / 3);
-			if (columns.includes("pay_type") && payType) row.pay_type = payType;
-			return row;
-		}),
+	const fields = template.fields.filter(
+		(field) => columns.includes(field.name) && !targetColumns.has(field.name),
 	);
+	if (fields.length === 0) return [];
+
+	const perField: Array<{ name: string; values: unknown[] }> = [];
+	for (const field of fields) {
+		const raw = (values[field.name] ?? "").trim();
+		const parts =
+			field.inputType === "list" ? splitCsvish(raw) : raw ? [raw] : [];
+		if (parts.length === 0) {
+			if (field.required) return [];
+			continue;
+		}
+		perField.push({
+			name: field.name,
+			values: parts.map((part) => coerceTemplateValue(part, field.kind)),
+		});
+	}
+	if (perField.length === 0) return [];
+
+	let combos: TableDataRow[] = [{}];
+	for (const { name, values: fieldValues } of perField) {
+		const next: TableDataRow[] = [];
+		for (const combo of combos) {
+			for (const value of fieldValues) {
+				next.push({ ...combo, [name]: value });
+			}
+		}
+		combos = next.slice(0, MAX_FUTURE_ROWS);
+	}
+
+	return combos.map((row) => applyDerivedDateColumns(row, columns));
 }
 
-function latestYearMonth(parsed: NormalizedTable): YearMonth | null {
-	let latest: YearMonth | null = null;
-	for (const row of parsed.rows) {
-		const candidate = readYearMonth(row);
-		if (!candidate) continue;
-		if (!latest || monthOrdinal(candidate) > monthOrdinal(latest)) {
-			latest = candidate;
+function coerceTemplateValue(value: string, kind: ColumnKind): unknown {
+	if (isNumericKind(kind)) {
+		const num = Number(value.replace(/,/g, "").replace(/^[$€£¥₹]\s?/, ""));
+		return Number.isFinite(num) ? num : value;
+	}
+	return value;
+}
+
+// Fill obvious date-derived columns (year/month/quarter/period_type) when the
+// table has them but the template did not expose them as inputs.
+function applyDerivedDateColumns(
+	row: TableDataRow,
+	columns: string[],
+): TableDataRow {
+	const out = { ...row };
+	const ym = readYearMonth(out);
+	if (ym) {
+		if (columns.includes("year") && out.year == null) out.year = ym.year;
+		if (columns.includes("month") && out.month == null) out.month = ym.month;
+		if (columns.includes("quarter") && out.quarter == null) {
+			out.quarter = Math.ceil(ym.month / 3);
 		}
 	}
-	return latest;
+	if (columns.includes("period_type") && out.period_type == null) {
+		out.period_type = "month";
+	}
+	return out;
+}
+
+function futureRowKey(row: TableDataRow): string {
+	return Object.entries(row)
+		.map(([key, value]) => `${key}=${value == null ? "" : String(value)}`)
+		.join("&");
+}
+
+function formatFutureRowLabel(
+	row: TableDataRow,
+	fields: FutureTemplateField[],
+): string {
+	const parts = fields
+		.map((field) => row[field.name])
+		.filter((value) => value != null && value !== "")
+		.map((value) => String(value));
+	return parts.length > 0 ? parts.join(" · ") : "future row";
 }
 
 function readYearMonth(row: TableDataRow): YearMonth | null {
@@ -1472,69 +1679,11 @@ function readYearMonth(row: TableDataRow): YearMonth | null {
 	return null;
 }
 
-function parseFutureYearMonths(input: string): YearMonth[] {
-	const result: YearMonth[] = [];
-	const seen = new Set<string>();
-	let currentYear: number | null = null;
-
-	for (const token of splitCsvish(input)) {
-		let next: YearMonth | null = null;
-		const full = token.match(/^(19\d{2}|20\d{2})[-/_](\d{1,2})$/);
-		if (full) {
-			next = { year: Number(full[1]), month: Number(full[2]) };
-			currentYear = next.year;
-		} else if (/^\d{1,2}$/.test(token) && currentYear != null) {
-			next = { year: currentYear, month: Number(token) };
-		}
-
-		if (!next || next.month < 1 || next.month > 12) continue;
-		const key = `${next.year}-${pad2(next.month)}`;
-		if (!seen.has(key)) {
-			seen.add(key);
-			result.push(next);
-		}
-	}
-
-	return result;
-}
-
 function splitCsvish(value: string): string[] {
 	return value
-		.split(/[,\n\r\t ]+/)
+		.split(/[,\n\r\t]+/)
 		.map((part) => part.trim())
 		.filter(Boolean);
-}
-
-function addMonths(value: YearMonth, count: number): YearMonth {
-	const ordinal = monthOrdinal(value) + count;
-	return {
-		year: Math.floor(ordinal / 12),
-		month: (ordinal % 12) + 1,
-	};
-}
-
-function monthOrdinal(value: YearMonth): number {
-	return value.year * 12 + (value.month - 1);
-}
-
-function formatFuturePeriodInput(values: YearMonth[]): string {
-	return values
-		.map((value, index) =>
-			index > 0 && value.year === values[index - 1]?.year
-				? pad2(value.month)
-				: `${value.year}-${pad2(value.month)}`,
-		)
-		.join(", ");
-}
-
-function formatFutureRowLabel(row: TableDataRow): string {
-	const period = typeof row.period === "string" ? row.period.slice(0, 7) : "";
-	const payType = row.pay_type == null ? "" : String(row.pay_type);
-	return [period, payType].filter(Boolean).join(" · ");
-}
-
-function pad2(value: number): string {
-	return String(value).padStart(2, "0");
 }
 
 function toInteger(value: unknown): number | null {

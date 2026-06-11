@@ -566,7 +566,10 @@ export function VisualizationWorkspace({ workspace }: VisualizationWorkspaceProp
 
           {isPredictVisible && (
             <div className="mt-4">
-              <HeldOutPredictionPanel tableData={workspace.table} />
+              <HeldOutPredictionPanel
+                tableData={workspace.table}
+                workspaceId={workspace.workspaceId}
+              />
             </div>
           )}
         </div>
