@@ -554,7 +554,7 @@ export function VisualizationWorkspace({ workspace }: VisualizationWorkspaceProp
               onClick={() => setIsPredictVisible((current) => !current)}
             >
               <Sparkles className="h-4 w-4" />
-              {isPredictVisible ? 'Hide prediction' : 'Predict held-out rows'}
+              {isPredictVisible ? 'Hide prediction' : 'Predict (LTM)'}
             </Button>
           </div>
 
