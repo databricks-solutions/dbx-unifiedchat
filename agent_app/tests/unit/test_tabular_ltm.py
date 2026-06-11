@@ -218,11 +218,12 @@ def test_resolve_checkpoint_uses_existing(tmp_path):
     ) == str(checkpoint_path)
 
 
-def test_resolve_checkpoint_returns_none_when_missing_and_auto_download():
-    """Missing checkpoint + auto-download => defer to TabICL's local cache.
+def test_resolve_checkpoint_returns_none_when_missing_and_auto_download(monkeypatch):
+    """Missing checkpoint + Files API unavailable + auto-download => local cache.
 
-    This is the local-dev path: the configured /Volumes path is unreachable,
-    so the provider returns None instead of trying to write to it.
+    This is the local-dev path: the configured /Volumes path is unreachable and
+    cannot be pulled via the Files API, so the provider returns None and lets
+    TabICL fetch from its own cache.
     """
     from agent_server.multi_agent.tools.tabular_ltm.tabicl_provider import TabICLProvider
 
@@ -230,6 +231,8 @@ def test_resolve_checkpoint_returns_none_when_missing_and_auto_download():
         classifier_path="/Volumes/cat/sch/vol/tabicl/missing.ckpt",
         allow_auto_download=True,
     )
+    # Simulate the Files API download being unavailable (e.g., no workspace auth).
+    monkeypatch.setattr(provider, "_download_from_volume", lambda *a, **k: None)
 
     assert (
         provider._resolve_checkpoint(
@@ -240,19 +243,44 @@ def test_resolve_checkpoint_returns_none_when_missing_and_auto_download():
     )
 
 
-def test_resolve_checkpoint_raises_when_missing_and_no_auto_download():
+def test_resolve_checkpoint_raises_when_missing_and_no_auto_download(monkeypatch):
     from agent_server.multi_agent.tools.tabular_ltm.tabicl_provider import TabICLProvider
 
     provider = TabICLProvider(
         classifier_path="/Volumes/cat/sch/vol/tabicl/missing.ckpt",
         allow_auto_download=False,
     )
+    monkeypatch.setattr(provider, "_download_from_volume", lambda *a, **k: None)
 
     with pytest.raises(ModelUnavailableError):
         provider._resolve_checkpoint(
             "/Volumes/cat/sch/vol/tabicl/missing.ckpt",
             "tabicl-classifier-v2-20260212.ckpt",
         )
+
+
+def test_resolve_checkpoint_downloads_from_volume_when_not_mounted(tmp_path, monkeypatch):
+    """Databricks Apps don't mount /Volumes: fall back to a Files API download."""
+    from agent_server.multi_agent.tools.tabular_ltm.tabicl_provider import TabICLProvider
+
+    staged = tmp_path / "tabicl-regressor-v2-20260212.ckpt"
+    staged.write_text("fake checkpoint")
+
+    provider = TabICLProvider(
+        regressor_path="/Volumes/cat/sch/vol/tabicl/tabicl-regressor-v2-20260212.ckpt",
+        allow_auto_download=False,
+    )
+    monkeypatch.setattr(
+        provider, "_download_from_volume", lambda *a, **k: str(staged)
+    )
+
+    assert (
+        provider._resolve_checkpoint(
+            "/Volumes/cat/sch/vol/tabicl/tabicl-regressor-v2-20260212.ckpt",
+            "tabicl-regressor-v2-20260212.ckpt",
+        )
+        == str(staged)
+    )
 
 
 def test_warmup_disabled_is_noop(monkeypatch):

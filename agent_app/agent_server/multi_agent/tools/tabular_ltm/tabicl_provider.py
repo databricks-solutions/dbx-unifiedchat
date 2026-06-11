@@ -17,6 +17,9 @@ Built with PriorLabs-TabPFN (TabICL incorporates TabPFN-derived components).
 from __future__ import annotations
 
 import logging
+import os
+import shutil
+import tempfile
 from pathlib import Path
 import threading
 from typing import Any, Dict, List, Optional
@@ -65,18 +68,20 @@ class TabICLProvider(LTMProvider):
     # -- estimator construction -------------------------------------------------
 
     def _resolve_checkpoint(self, checkpoint_path: Optional[str], checkpoint_name: str) -> Optional[str]:
-        """Resolve a checkpoint file path without writing to its location.
+        """Resolve a checkpoint to a locally-readable file path.
 
         Staging checkpoints into a UC Volume is the prep job's responsibility
-        (``04_prepare_shared_infra.py``); the app only holds read access. This
-        method therefore never creates directories or downloads into the
-        configured path. Resolution order:
+        (``04_prepare_shared_infra.py``); the app only holds read access.
+        Resolution order:
 
-        1. Configured path exists -> use it.
-        2. Missing but ``allow_auto_download`` -> return ``None`` so TabICL
-           fetches the checkpoint into its own local cache. This is the local
-           dev path, where ``/Volumes`` is not mounted at all.
-        3. Missing and auto-download disabled -> raise with remediation guidance.
+        1. Configured path exists on the local filesystem -> use it directly
+           (clusters/notebooks/local dev where the path is reachable).
+        2. Path is a ``/Volumes/...`` UC path that is not mounted (Databricks
+           Apps do not FUSE-mount Volumes) -> download it via the Files API into
+           a local cache and use that copy.
+        3. Still unavailable but ``allow_auto_download`` -> return ``None`` so
+           TabICL fetches the checkpoint into its own local cache.
+        4. Otherwise -> raise with remediation guidance.
         """
         if not checkpoint_path:
             return None
@@ -92,6 +97,15 @@ class TabICLProvider(LTMProvider):
         if exists:
             return str(path)
 
+        # Databricks Apps (and other non-FUSE runtimes) do not mount UC Volumes
+        # as a local filesystem path, so a "/Volumes/..." path never "exists"
+        # even when the app's service principal has READ_VOLUME. Pull it down via
+        # the Files API and load the local copy instead.
+        if checkpoint_path.startswith("/Volumes/"):
+            local_path = self._download_from_volume(checkpoint_path, checkpoint_name)
+            if local_path:
+                return local_path
+
         if self._allow_auto_download:
             logger.info(
                 "TabICL checkpoint %s not found at %s; falling back to TabICL's "
@@ -104,9 +118,68 @@ class TabICLProvider(LTMProvider):
         raise ModelUnavailableError(
             f"TabICL checkpoint '{checkpoint_name}' not found at '{checkpoint_path}'. "
             "Stage checkpoints by running the shared-infra prep job "
-            "(04_prepare_shared_infra.py), or set LTM_ALLOW_AUTO_DOWNLOAD=true to "
-            "download them into the local cache."
+            "(04_prepare_shared_infra.py). On Databricks Apps the Volume is read "
+            "via the Files API, which requires the app's service principal to hold "
+            "READ_VOLUME (plus USE_CATALOG/USE_SCHEMA); alternatively set "
+            "LTM_ALLOW_AUTO_DOWNLOAD=true to download the checkpoint into the local cache."
         )
+
+    def _local_cache_dir(self) -> Path:
+        base = os.getenv("LTM_LOCAL_CACHE_DIR", "").strip() or os.path.join(
+            tempfile.gettempdir(), "tabicl_checkpoints"
+        )
+        return Path(base)
+
+    def _download_from_volume(
+        self, volume_path: str, checkpoint_name: str
+    ) -> Optional[str]:
+        """Download a UC Volume checkpoint to a local cache via the Files API.
+
+        Returns the local file path, or ``None`` if the download is not possible
+        (so the caller can fall back to auto-download or raise). The download is
+        cached on local disk so subsequent model builds in the same container
+        reuse the staged copy.
+        """
+        cache_dir = self._local_cache_dir()
+        local_file = cache_dir / checkpoint_name
+
+        # Reuse a previously staged copy.
+        try:
+            if local_file.exists() and local_file.stat().st_size > 0:
+                return str(local_file)
+        except OSError:
+            pass
+
+        try:
+            from databricks.sdk import WorkspaceClient
+
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            client = WorkspaceClient()
+            logger.info(
+                "Downloading TabICL checkpoint %s from UC Volume %s via Files API...",
+                checkpoint_name,
+                volume_path,
+            )
+            response = client.files.download(volume_path)
+            tmp_file = local_file.with_name(local_file.name + ".part")
+            with open(tmp_file, "wb") as handle:
+                shutil.copyfileobj(response.contents, handle)
+            tmp_file.replace(local_file)
+            logger.info(
+                "Staged TabICL checkpoint %s -> %s (%d bytes)",
+                checkpoint_name,
+                local_file,
+                local_file.stat().st_size,
+            )
+            return str(local_file)
+        except Exception as exc:  # noqa: BLE001 - fall back to other strategies
+            logger.warning(
+                "Failed to download TabICL checkpoint %s from %s via Files API: %s",
+                checkpoint_name,
+                volume_path,
+                exc,
+            )
+            return None
 
     def _build_classifier(self):
         try:
