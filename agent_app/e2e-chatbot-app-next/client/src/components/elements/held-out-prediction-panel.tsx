@@ -1581,7 +1581,9 @@ function normalizeFutureTemplateForFeatures(
 	const selected = new Set(selectedFeatures);
 	const fields = template.fields
 		.filter((field) => selected.has(field.name))
-		.map(normalizeFutureTemplateField);
+		.map((field) =>
+			normalizeFutureTemplateField(field, columnMeta[field.name], rows),
+		);
 	const existing = new Set(fields.map((field) => field.name));
 	for (const feature of selectedFeatures) {
 		if (!existing.has(feature)) {
@@ -1600,14 +1602,27 @@ function normalizeFutureTemplateForFeatures(
 
 function normalizeFutureTemplateField(
 	field: FutureTemplateField,
+	meta: ColumnMeta | undefined,
+	rows: TableDataRow[],
 ): FutureTemplateField {
-	return isCategoricalTemplateField(field) || field.kind === "date"
-		? { ...field, inputType: "list" }
-		: field;
-}
-
-function isCategoricalTemplateField(field: FutureTemplateField): boolean {
-	return field.kind === "text" || (field.options?.length ?? 0) > 0;
+	const kind = meta?.kind ?? field.kind;
+	const timeLike = kind === "date" || isTemplateTimeLikeColumn(field.name);
+	const observed = collectObservedValues(field.name, rows);
+	return {
+		...field,
+		kind,
+		inputType: "list",
+		defaultValue: timeLike
+			? defaultFutureDateValues(field.name, rows)
+			: isNumericKind(kind)
+				? defaultNumericValues(field.name, kind, rows)
+				: observed.slice(0, 3).join(", "),
+		placeholder: timeLike
+			? "2024-01-01, 2024-02-01, 2024-03-01"
+			: field.placeholder,
+		options: observed.length > 0 ? observed : field.options,
+		required: field.required || timeLike,
+	};
 }
 
 function makeFeatureTemplateField(
@@ -1622,13 +1637,15 @@ function makeFeatureTemplateField(
 		name: column,
 		label: column,
 		kind,
-		inputType: timeLike || kind === "text" ? "list" : "single",
+		inputType: "list",
 		defaultValue: timeLike
 			? defaultFutureDateValues(column, rows)
-			: observed.slice(0, kind === "text" ? 3 : 1).join(", "),
+			: isNumericKind(kind)
+				? defaultNumericValues(column, kind, rows)
+				: observed.slice(0, 3).join(", "),
 		placeholder: timeLike ? "2024-01-01, 2024-02-01, 2024-03-01" : observed[0],
 		required: timeLike,
-		options: kind === "text" && observed.length > 0 ? observed : undefined,
+		options: observed.length > 0 ? observed : undefined,
 	};
 }
 
@@ -1668,13 +1685,40 @@ function defaultFutureDateValues(column: string, rows: TableDataRow[]): string {
 		.join(", ");
 }
 
+function defaultNumericValues(
+	column: string,
+	kind: ColumnKind,
+	rows: TableDataRow[],
+): string {
+	const values = rows
+		.map((row) => coerceValue(row[column], kind))
+		.filter((value): value is number => typeof value === "number" && Number.isFinite(value))
+		.sort((a, b) => a - b);
+	if (values.length === 0) return "";
+
+	const median = medianNumber(values);
+	const defaults = [median];
+	const nearestDifferent = values.find((value) => value !== median);
+	if (nearestDifferent != null) defaults.push(nearestDifferent);
+	return defaults.map((value) => formatNumberForTemplate(value)).join(", ");
+}
+
+function medianNumber(sortedValues: number[]): number {
+	const mid = Math.floor(sortedValues.length / 2);
+	if (sortedValues.length % 2 === 1) return sortedValues[mid] as number;
+	return ((sortedValues[mid - 1] as number) + (sortedValues[mid] as number)) / 2;
+}
+
+function formatNumberForTemplate(value: number): string {
+	return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(6)));
+}
+
 function initialFutureFieldValue(field: FutureTemplateField): string {
 	const explicitDefault = field.defaultValue.trim();
 	if (explicitDefault) return explicitDefault;
 
 	if (field.options && field.options.length > 0) {
-		const count = field.inputType === "list" ? 3 : 1;
-		return field.options.slice(0, count).join(", ");
+		return field.options.slice(0, 3).join(", ");
 	}
 
 	const placeholder = field.placeholder?.trim() ?? "";
@@ -1703,7 +1747,9 @@ function buildFutureRowsFromTemplate(
 
 	const perField: Array<{ name: string; values: unknown[] }> = [];
 	for (const field of fields) {
-		const raw = (values[field.name] ?? "").trim();
+		const enteredRaw = (values[field.name] ?? "").trim();
+		const raw =
+			enteredRaw || (isNumericKind(field.kind) ? field.defaultValue.trim() : "");
 		const parts =
 			field.inputType === "list" ? splitCsvish(raw) : raw ? [raw] : [];
 		if (parts.length === 0) {
