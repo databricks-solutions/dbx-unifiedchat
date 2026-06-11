@@ -61,9 +61,19 @@ type TargetResult =
 
 type RunResults = {
 	heldOutIndexes: number[];
+	predictionRows: PredictionRow[];
 	featureColumns: string[];
 	targetColumns: string[];
 	byTarget: Record<string, TargetResult>;
+};
+
+type PredictionRow = {
+	id: string;
+	label: string;
+	source: "held-out" | "future";
+	rowIndex?: number;
+	row: TableDataRow;
+	hasActual: boolean;
 };
 
 type RunState =
@@ -124,6 +134,13 @@ export function HeldOutPredictionPanel({
 	const [heldOutIndexes, setHeldOutIndexes] = useState<Set<number>>(() =>
 		parsed.rows.length > 0 ? new Set([0]) : new Set(),
 	);
+	const [includeFutureRows, setIncludeFutureRows] = useState(false);
+	const [futurePeriodInput, setFuturePeriodInput] = useState(() =>
+		defaultFuturePeriodInput(parsed),
+	);
+	const [futurePayTypeInput, setFuturePayTypeInput] = useState(() =>
+		defaultFuturePayTypeInput(parsed),
+	);
 	const [rowQuery, setRowQuery] = useState("");
 	const [run, setRun] = useState<RunState>({ status: "idle" });
 
@@ -181,6 +198,12 @@ export function HeldOutPredictionPanel({
 		() => parsed.columns.filter((column) => !targetColumns.has(column)),
 		[parsed.columns, targetColumns],
 	);
+	const futureRows = useMemo(
+		() => buildFutureRows(futurePeriodInput, futurePayTypeInput, parsed.columns),
+		[futurePeriodInput, futurePayTypeInput, parsed.columns],
+	);
+	const activeFutureRows = includeFutureRows ? futureRows : [];
+	const hasPayTypeColumn = parsed.columns.includes("pay_type");
 
 	const filteredRowIndexes = useMemo(() => {
 		const query = rowQuery.trim().toLowerCase();
@@ -244,7 +267,7 @@ export function HeldOutPredictionPanel({
 	const canRun =
 		selectedTargets.length > 0 &&
 		selectedFeatures.length > 0 &&
-		heldOutIndexes.size > 0 &&
+		(heldOutIndexes.size > 0 || activeFutureRows.length > 0) &&
 		contextRowCount > 0 &&
 		run.status !== "loading";
 
@@ -256,11 +279,28 @@ export function HeldOutPredictionPanel({
 			targetColumns.has(column),
 		);
 		const heldOut = [...heldOutIndexes].sort((a, b) => a - b);
+		const predictionRows: PredictionRow[] = [
+			...heldOut.map((index) => ({
+				id: `held-out-${index}`,
+				label: String(index + 1),
+				source: "held-out" as const,
+				rowIndex: index,
+				row: parsed.rows[index],
+				hasActual: true,
+			})),
+			...activeFutureRows.map((row, index) => ({
+				id: `future-${index}-${row.period ?? ""}-${row.pay_type ?? ""}`,
+				label: `Future ${index + 1}`,
+				source: "future" as const,
+				row,
+				hasActual: false,
+			})),
+		];
 
 		if (
 			features.length === 0 ||
 			targets.length === 0 ||
-			heldOut.length === 0 ||
+			predictionRows.length === 0 ||
 			parsed.rows.length - heldOut.length < 1
 		) {
 			return;
@@ -268,7 +308,7 @@ export function HeldOutPredictionPanel({
 
 		setRun({ status: "loading" });
 
-		const predictBaseRows = heldOut.map((index) => parsed.rows[index]);
+		const predictBaseRows = predictionRows.map(({ row }) => row);
 
 		const entries = await Promise.all(
 			targets.map(async (target): Promise<[string, TargetResult]> => {
@@ -346,6 +386,7 @@ export function HeldOutPredictionPanel({
 			status: "success",
 			results: {
 				heldOutIndexes: heldOut,
+				predictionRows,
 				featureColumns: features,
 				targetColumns: targets,
 				byTarget: Object.fromEntries(entries),
@@ -357,6 +398,7 @@ export function HeldOutPredictionPanel({
 		featureColumns,
 		targetColumns,
 		heldOutIndexes,
+		activeFutureRows,
 		columnMeta,
 	]);
 
@@ -586,6 +628,81 @@ export function HeldOutPredictionPanel({
 						</table>
 					</div>
 				</ConfigSection>
+
+				<section className="rounded-lg border border-zinc-200 p-3 dark:border-zinc-800 lg:col-span-3">
+					<div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+						<div>
+							<h4 className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+								Future prediction rows
+							</h4>
+							<p className="mt-1 text-xs text-zinc-400">
+								Generate unlabeled future rows from static date features; example:
+								2024-01, 02, 03.
+							</p>
+						</div>
+						<div className="flex items-center gap-3">
+							<label className="inline-flex cursor-pointer items-center gap-2 text-xs font-medium text-zinc-600 dark:text-zinc-300">
+								<input
+									type="checkbox"
+									checked={includeFutureRows}
+									onChange={(event) =>
+										setIncludeFutureRows(event.target.checked)
+									}
+									className="accent-blue-600"
+								/>
+								Include future rows
+							</label>
+							<span className="text-[11px] text-zinc-400">
+								{activeFutureRows.length} active · {futureRows.length} configured
+							</span>
+						</div>
+					</div>
+					<div className="grid gap-3 md:grid-cols-2">
+						<label className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+							Future months
+							<input
+								type="text"
+								value={futurePeriodInput}
+								onChange={(event) => setFuturePeriodInput(event.target.value)}
+								placeholder="2024-01, 02, 03"
+								className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs font-normal text-zinc-700 placeholder-zinc-400 shadow-sm focus:border-zinc-400 focus:outline-none dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
+							/>
+						</label>
+						<label className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+							Pay type{hasPayTypeColumn ? "" : " (not in table)"}
+							<input
+								type="text"
+								value={futurePayTypeInput}
+								onChange={(event) => setFuturePayTypeInput(event.target.value)}
+								disabled={!hasPayTypeColumn}
+								placeholder="COMMERCIAL"
+								className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-xs font-normal text-zinc-700 placeholder-zinc-400 shadow-sm focus:border-zinc-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-200"
+							/>
+						</label>
+					</div>
+					{futureRows.length > 0 ? (
+						<div
+							className={cn(
+								"mt-3 flex flex-wrap gap-1.5",
+								!includeFutureRows && "opacity-50",
+							)}
+						>
+							{futureRows.slice(0, 12).map((row, index) => (
+								<span
+									key={`${row.period}-${row.pay_type ?? ""}-${index}`}
+									className="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] text-blue-700 dark:bg-blue-950/30 dark:text-blue-300"
+								>
+									{formatFutureRowLabel(row)}
+								</span>
+							))}
+							{futureRows.length > 12 ? (
+								<span className="px-1 py-0.5 text-[11px] text-zinc-400">
+									+{futureRows.length - 12} more
+								</span>
+							) : null}
+						</div>
+					) : null}
+				</section>
 			</div>
 
 			{/* Results */}
@@ -623,7 +740,7 @@ function ResultsView({
 	parsed: NormalizedTable;
 	columnMeta: Record<string, ColumnMeta>;
 }) {
-	const { heldOutIndexes, featureColumns, targetColumns, byTarget } = results;
+	const { predictionRows, featureColumns, targetColumns, byTarget } = results;
 
 	const failedTargets = targetColumns.filter(
 		(target) => byTarget[target]?.status === "error",
@@ -653,7 +770,7 @@ function ResultsView({
 	// the header), independent of any display density or column ordering.
 	const handleCopyTsv = useCallback(() => {
 		const tsv = toDelimited(
-			buildResultMatrix(results, parsed, columnMeta),
+			buildResultMatrix(results, columnMeta),
 			"\t",
 		);
 		void navigator.clipboard.writeText(tsv).then(() => {
@@ -664,7 +781,7 @@ function ResultsView({
 
 	const handleDownloadCsv = useCallback(() => {
 		const csv = toDelimited(
-			buildResultMatrix(results, parsed, columnMeta),
+			buildResultMatrix(results, columnMeta),
 			",",
 		);
 		const base = parsed.filename.endsWith(".csv")
@@ -871,11 +988,11 @@ function ResultsView({
 							</tr>
 						</thead>
 						<tbody>
-							{heldOutIndexes.map((rowIndex, position) => {
-								const row = parsed.rows[rowIndex];
+							{predictionRows.map((predictionRow, position) => {
+								const { row } = predictionRow;
 								return (
 									<tr
-										key={rowIndex}
+										key={predictionRow.id}
 										className="border-b border-zinc-100 dark:border-zinc-800"
 									>
 										<td
@@ -885,14 +1002,15 @@ function ResultsView({
 												density.rowPadY,
 											)}
 										>
-											{rowIndex + 1}
+											{predictionRow.label}
 										</td>
 										{targetColumns.map((target) => (
 											<TargetCells
 												key={target}
 												target={target}
 												position={position}
-												actualRaw={row[target]}
+												actualRaw={predictionRow.hasActual ? row[target] : undefined}
+												hasActual={predictionRow.hasActual}
 												kind={columnMeta[target]?.kind ?? "text"}
 												result={byTarget[target]}
 												density={density}
@@ -973,6 +1091,7 @@ function TargetCells({
 	target,
 	position,
 	actualRaw,
+	hasActual,
 	kind,
 	result,
 	density,
@@ -980,6 +1099,7 @@ function TargetCells({
 	target: string;
 	position: number;
 	actualRaw: unknown;
+	hasActual: boolean;
 	kind: ColumnKind;
 	result: TargetResult | undefined;
 	density: Density;
@@ -1006,13 +1126,13 @@ function TargetCells({
 
 	const task = result.task;
 	const predictedRaw = result.predictions[position];
-	const actualText = formatValueByKind(actualRaw, kind) || "—";
+	const actualText = hasActual ? formatValueByKind(actualRaw, kind) || "—" : "—";
 	const predictedText = formatPrediction(predictedRaw, kind);
 
 	if (task === "classification") {
 		const actualStr = actualRaw == null ? null : String(actualRaw);
 		const predStr = predictedRaw == null ? null : String(predictedRaw);
-		const known = actualStr != null && actualStr !== "";
+		const known = hasActual && actualStr != null && actualStr !== "";
 		const match = known ? actualStr === predStr : null;
 		return (
 			<>
@@ -1050,7 +1170,7 @@ function TargetCells({
 	}
 
 	// Regression
-	const actualNum = toFiniteNumber(coerceValue(actualRaw, kind));
+	const actualNum = hasActual ? toFiniteNumber(coerceValue(actualRaw, kind)) : null;
 	const predNum = toFiniteNumber(predictedRaw);
 	const delta =
 		actualNum != null && predNum != null ? predNum - actualNum : null;
@@ -1265,6 +1385,167 @@ function scoreLtmTargetColumn(column: string, kind: ColumnKind): number {
 	return score;
 }
 
+type YearMonth = { year: number; month: number };
+
+function defaultFuturePeriodInput(parsed: NormalizedTable): string {
+	const latest = latestYearMonth(parsed);
+	const start = latest ? addMonths(latest, 1) : { year: 2024, month: 1 };
+	return formatFuturePeriodInput([start, addMonths(start, 1), addMonths(start, 2)]);
+}
+
+function defaultFuturePayTypeInput(parsed: NormalizedTable): string {
+	if (!parsed.columns.includes("pay_type")) return "";
+	const values = new Set<string>();
+	for (const row of parsed.rows) {
+		const value = row.pay_type;
+		if (value != null && String(value).trim()) values.add(String(value).trim());
+	}
+	return [...values][0] ?? "";
+}
+
+function buildFutureRows(
+	periodInput: string,
+	payTypeInput: string,
+	columns: string[],
+): TableDataRow[] {
+	const periods = parseFutureYearMonths(periodInput);
+	const payTypes = columns.includes("pay_type")
+		? splitCsvish(payTypeInput).filter(Boolean)
+		: [""];
+	const effectivePayTypes = payTypes.length > 0 ? payTypes : [""];
+
+	return periods.flatMap(({ year, month }) =>
+		effectivePayTypes.map((payType) => {
+			const row: TableDataRow = {};
+			const period = `${year}-${pad2(month)}-01`;
+			if (columns.includes("period")) row.period = period;
+			if (columns.includes("period_type")) row.period_type = "month";
+			if (columns.includes("year")) row.year = year;
+			if (columns.includes("month")) row.month = month;
+			if (columns.includes("quarter")) row.quarter = Math.ceil(month / 3);
+			if (columns.includes("pay_type") && payType) row.pay_type = payType;
+			return row;
+		}),
+	);
+}
+
+function latestYearMonth(parsed: NormalizedTable): YearMonth | null {
+	let latest: YearMonth | null = null;
+	for (const row of parsed.rows) {
+		const candidate = readYearMonth(row);
+		if (!candidate) continue;
+		if (!latest || monthOrdinal(candidate) > monthOrdinal(latest)) {
+			latest = candidate;
+		}
+	}
+	return latest;
+}
+
+function readYearMonth(row: TableDataRow): YearMonth | null {
+	const year = toInteger(row.year);
+	const month = toInteger(row.month);
+	if (year != null && month != null && month >= 1 && month <= 12) {
+		return { year, month };
+	}
+
+	const period = row.period;
+	if (period instanceof Date && !Number.isNaN(period.getTime())) {
+		return { year: period.getFullYear(), month: period.getMonth() + 1 };
+	}
+	if (period == null) return null;
+
+	const text = String(period).trim();
+	const isoMatch = text.match(/\b(19\d{2}|20\d{2})[-/_](\d{1,2})\b/);
+	if (isoMatch) {
+		const parsedYear = Number(isoMatch[1]);
+		const parsedMonth = Number(isoMatch[2]);
+		if (parsedMonth >= 1 && parsedMonth <= 12) {
+			return { year: parsedYear, month: parsedMonth };
+		}
+	}
+
+	const timestamp = Date.parse(text);
+	if (!Number.isNaN(timestamp)) {
+		const date = new Date(timestamp);
+		return { year: date.getFullYear(), month: date.getMonth() + 1 };
+	}
+	return null;
+}
+
+function parseFutureYearMonths(input: string): YearMonth[] {
+	const result: YearMonth[] = [];
+	const seen = new Set<string>();
+	let currentYear: number | null = null;
+
+	for (const token of splitCsvish(input)) {
+		let next: YearMonth | null = null;
+		const full = token.match(/^(19\d{2}|20\d{2})[-/_](\d{1,2})$/);
+		if (full) {
+			next = { year: Number(full[1]), month: Number(full[2]) };
+			currentYear = next.year;
+		} else if (/^\d{1,2}$/.test(token) && currentYear != null) {
+			next = { year: currentYear, month: Number(token) };
+		}
+
+		if (!next || next.month < 1 || next.month > 12) continue;
+		const key = `${next.year}-${pad2(next.month)}`;
+		if (!seen.has(key)) {
+			seen.add(key);
+			result.push(next);
+		}
+	}
+
+	return result;
+}
+
+function splitCsvish(value: string): string[] {
+	return value
+		.split(/[,\n\r\t ]+/)
+		.map((part) => part.trim())
+		.filter(Boolean);
+}
+
+function addMonths(value: YearMonth, count: number): YearMonth {
+	const ordinal = monthOrdinal(value) + count;
+	return {
+		year: Math.floor(ordinal / 12),
+		month: (ordinal % 12) + 1,
+	};
+}
+
+function monthOrdinal(value: YearMonth): number {
+	return value.year * 12 + (value.month - 1);
+}
+
+function formatFuturePeriodInput(values: YearMonth[]): string {
+	return values
+		.map((value, index) =>
+			index > 0 && value.year === values[index - 1]?.year
+				? pad2(value.month)
+				: `${value.year}-${pad2(value.month)}`,
+		)
+		.join(", ");
+}
+
+function formatFutureRowLabel(row: TableDataRow): string {
+	const period = typeof row.period === "string" ? row.period.slice(0, 7) : "";
+	const payType = row.pay_type == null ? "" : String(row.pay_type);
+	return [period, payType].filter(Boolean).join(" · ");
+}
+
+function pad2(value: number): string {
+	return String(value).padStart(2, "0");
+}
+
+function toInteger(value: unknown): number | null {
+	if (typeof value === "number" && Number.isInteger(value)) return value;
+	if (typeof value === "string") {
+		const parsed = Number(value.replace(/,/g, "").trim());
+		if (Number.isInteger(parsed)) return parsed;
+	}
+	return null;
+}
+
 function buildLtmRequestRow(
 	row: TableDataRow,
 	featureColumns: string[],
@@ -1340,10 +1621,11 @@ function closenessClass(pctError: number | null): string {
 function targetCellText(
 	position: number,
 	actualRaw: unknown,
+	hasActual: boolean,
 	kind: ColumnKind,
 	result: TargetResult | undefined,
 ): { actual: string; predicted: string; delta: string } {
-	const actual = formatValueByKind(actualRaw, kind) || "";
+	const actual = hasActual ? formatValueByKind(actualRaw, kind) || "" : "";
 	if (!result || result.status === "error") {
 		return { actual, predicted: "", delta: "" };
 	}
@@ -1355,7 +1637,7 @@ function targetCellText(
 	if (result.task === "classification") {
 		const actualStr = actualRaw == null ? null : String(actualRaw);
 		const predStr = predictedRaw == null ? null : String(predictedRaw);
-		const known = actualStr != null && actualStr !== "";
+		const known = hasActual && actualStr != null && actualStr !== "";
 		const match = known ? actualStr === predStr : null;
 		return {
 			actual,
@@ -1364,7 +1646,7 @@ function targetCellText(
 		};
 	}
 
-	const actualNum = toFiniteNumber(coerceValue(actualRaw, kind));
+	const actualNum = hasActual ? toFiniteNumber(coerceValue(actualRaw, kind)) : null;
 	const predNum = toFiniteNumber(predictedRaw);
 	const diff =
 		actualNum != null && predNum != null ? predNum - actualNum : null;
@@ -1382,10 +1664,9 @@ function targetCellText(
 
 function buildResultMatrix(
 	results: RunResults,
-	parsed: NormalizedTable,
 	columnMeta: Record<string, ColumnMeta>,
 ): string[][] {
-	const { heldOutIndexes, featureColumns, targetColumns, byTarget } = results;
+	const { predictionRows, featureColumns, targetColumns, byTarget } = results;
 
 	const header: string[] = ["#"];
 	for (const target of targetColumns) {
@@ -1399,14 +1680,15 @@ function buildResultMatrix(
 	for (const column of featureColumns) header.push(column);
 
 	const matrix: string[][] = [header];
-	heldOutIndexes.forEach((rowIndex, position) => {
-		const row = parsed.rows[rowIndex];
-		const line: string[] = [String(rowIndex + 1)];
+	predictionRows.forEach((predictionRow, position) => {
+		const { row } = predictionRow;
+		const line: string[] = [predictionRow.label];
 		for (const target of targetColumns) {
 			const kind = columnMeta[target]?.kind ?? "text";
 			const cell = targetCellText(
 				position,
-				row[target],
+				predictionRow.hasActual ? row[target] : undefined,
+				predictionRow.hasActual,
 				kind,
 				byTarget[target],
 			);
