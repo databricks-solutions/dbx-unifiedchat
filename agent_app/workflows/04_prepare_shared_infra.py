@@ -329,8 +329,12 @@ def grant_ltm_volume_read_access(
     print("\nGranting app read access to TabICLv2 checkpoint volume...")
     print(f"  volume: {volume_full_name}")
 
+    # NOTE: `grants.update` types `securable_type` as a plain `str` and
+    # interpolates it straight into the request path. Passing the enum object
+    # serializes to "SecurableType.CATALOG", which the API rejects as an invalid
+    # securable type. Pass the enum's `.value` ("CATALOG"/"SCHEMA"/"VOLUME").
     workspace_client.grants.update(
-        securable_type=uc_catalog.SecurableType.CATALOG,
+        securable_type=uc_catalog.SecurableType.CATALOG.value,
         full_name=catalog_name,
         changes=[
             uc_catalog.PermissionsChange(
@@ -340,7 +344,7 @@ def grant_ltm_volume_read_access(
         ],
     )
     workspace_client.grants.update(
-        securable_type=uc_catalog.SecurableType.SCHEMA,
+        securable_type=uc_catalog.SecurableType.SCHEMA.value,
         full_name=f"{catalog_name}.{schema_name}",
         changes=[
             uc_catalog.PermissionsChange(
@@ -350,7 +354,7 @@ def grant_ltm_volume_read_access(
         ],
     )
     workspace_client.grants.update(
-        securable_type=uc_catalog.SecurableType.VOLUME,
+        securable_type=uc_catalog.SecurableType.VOLUME.value,
         full_name=volume_full_name,
         changes=[
             uc_catalog.PermissionsChange(
