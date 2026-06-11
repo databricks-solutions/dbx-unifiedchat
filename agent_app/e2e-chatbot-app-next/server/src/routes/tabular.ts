@@ -152,14 +152,22 @@ function isTimeLikeColumn(column: string, kind: string | undefined): boolean {
   );
 }
 
-function buildFallbackTemplate(request: FutureTemplateRequest): FutureTemplate {
+function getTemplateColumns(request: FutureTemplateRequest): string[] {
   const targets = new Set(request.targetColumns ?? []);
+  const columnSet = new Set(request.columns);
+  const selectedFeatures = (request.featureColumns ?? []).filter(
+    (column) => columnSet.has(column) && !targets.has(column),
+  );
+  if (selectedFeatures.length > 0) return selectedFeatures;
+  return request.columns.filter((column) => !targets.has(column));
+}
+
+function buildFallbackTemplate(request: FutureTemplateRequest): FutureTemplate {
   const meta = request.columnMeta ?? {};
   const sampleRows = request.sampleRows ?? [];
 
   const fields: FutureTemplate['fields'] = [];
-  for (const column of request.columns) {
-    if (targets.has(column)) continue;
+  for (const column of getTemplateColumns(request)) {
     const kind = meta[column] ?? 'text';
     const observed = collectObservedValues(column, sampleRows);
     const timeLike = isTimeLikeColumn(column, kind);
@@ -173,8 +181,12 @@ function buildFallbackTemplate(request: FutureTemplateRequest): FutureTemplate {
         ? (kind as (typeof COLUMN_KINDS)[number])
         : 'text',
       inputType: timeLike || isCategorical ? 'list' : 'single',
-      defaultValue: observed.slice(0, 3).join(', '),
-      placeholder: timeLike ? 'e.g. 2024-01, 02, 03' : observed[0] ?? '',
+      defaultValue: timeLike
+        ? defaultFutureDateValues(column, sampleRows)
+        : observed.slice(0, 3).join(', '),
+      placeholder: timeLike
+        ? '2024-01-01, 2024-02-01, 2024-03-01'
+        : observed[0] ?? '',
       required: timeLike,
       options: isCategorical && observed.length > 0 ? observed : undefined,
     });
@@ -188,6 +200,66 @@ function buildFallbackTemplate(request: FutureTemplateRequest): FutureTemplate {
     notes:
       'Heuristic template generated from column names and sample values (LLM unavailable).',
   };
+}
+
+function normalizeTemplateField(field: FutureTemplate['fields'][number]): FutureTemplate['fields'][number] {
+  const categorical = field.kind === 'text' || field.options?.length;
+  return categorical || field.kind === 'date'
+    ? { ...field, inputType: 'list' }
+    : field;
+}
+
+type YearMonth = { year: number; month: number };
+
+function defaultFutureDateValues(
+  column: string,
+  rows: Array<Record<string, unknown>>,
+): string {
+  let latest: YearMonth | null = null;
+  for (const row of rows) {
+    const candidate = readYearMonthFromValue(row[column]);
+    if (!candidate) continue;
+    if (!latest || monthOrdinal(candidate) > monthOrdinal(latest)) {
+      latest = candidate;
+    }
+  }
+  const start = latest ? addMonths(latest, 1) : { year: 2024, month: 1 };
+  return [start, addMonths(start, 1), addMonths(start, 2)]
+    .map((value) => `${value.year}-${pad2(value.month)}-01`)
+    .join(', ');
+}
+
+function readYearMonthFromValue(value: unknown): YearMonth | null {
+  if (value == null) return null;
+  const text = String(value).trim();
+  const isoMatch = text.match(/\b(19\d{2}|20\d{2})[-/_](\d{1,2})\b/);
+  if (isoMatch) {
+    const year = Number(isoMatch[1]);
+    const month = Number(isoMatch[2]);
+    if (month >= 1 && month <= 12) return { year, month };
+  }
+  const timestamp = Date.parse(text);
+  if (!Number.isNaN(timestamp)) {
+    const date = new Date(timestamp);
+    return { year: date.getFullYear(), month: date.getMonth() + 1 };
+  }
+  return null;
+}
+
+function addMonths(value: YearMonth, count: number): YearMonth {
+  const ordinal = monthOrdinal(value) + count;
+  return {
+    year: Math.floor(ordinal / 12),
+    month: (ordinal % 12) + 1,
+  };
+}
+
+function monthOrdinal(value: YearMonth): number {
+  return value.year * 12 + (value.month - 1);
+}
+
+function pad2(value: number): string {
+  return String(value).padStart(2, '0');
 }
 
 function extractJsonObject(text: string): unknown {
@@ -244,13 +316,19 @@ function buildTemplatePrompt(request: FutureTemplateRequest): string {
     '',
     'Rules:',
     '- Only include fields the user must provide to construct a future row (dimensions/date keys).',
+    '- The fields MUST be selected feature columns only. Do not add unselected feature columns.',
     '- NEVER include target columns as fields; the model predicts those.',
     '- Time columns should use inputType "list" and accept comma-separated future periods.',
+    '- ALL categorical/text dimensions must use inputType "list" and accept comma-separated values.',
     '- Categorical dimensions should set "options" and a sensible default from observed values.',
+    '- Final prediction rows are the cartesian product of all list-valued fields, capped by the client.',
     '- Omit derived/computed columns when they can be inferred from a date (e.g. quarter from month).',
     '',
     `Target columns (do NOT add as fields): ${JSON.stringify(
       request.targetColumns ?? [],
+    )}`,
+    `Selected feature columns (fields MUST be limited to this list): ${JSON.stringify(
+      getTemplateColumns(request),
     )}`,
     `Columns: ${JSON.stringify(columnDescriptions)}`,
     `Sample rows (up to 10): ${JSON.stringify(sampleRows)}`,
@@ -271,7 +349,7 @@ tabularRouter.post(
     }
 
     const request = parsedRequest.data;
-    const targetSet = new Set(request.targetColumns ?? []);
+    const featureSet = new Set(getTemplateColumns(request));
 
     try {
       const model = await myProvider.languageModel('artifact-model');
@@ -283,10 +361,18 @@ tabularRouter.post(
       });
 
       const validated = futureTemplateSchema.parse(extractJsonObject(text));
-      const columnSet = new Set(request.columns);
-      const fields = validated.fields.filter(
-        (field) => columnSet.has(field.name) && !targetSet.has(field.name),
+      const fields = validated.fields
+        .filter((field) => featureSet.has(field.name))
+        .map(normalizeTemplateField);
+      const fallbackByName = new Map(
+        buildFallbackTemplate(request).fields.map((field) => [field.name, field]),
       );
+      for (const column of featureSet) {
+        if (!fields.some((field) => field.name === column)) {
+          const fallback = fallbackByName.get(column);
+          if (fallback) fields.push(fallback);
+        }
+      }
 
       if (fields.length === 0) {
         return res.json({ success: true, template: buildFallbackTemplate(request) });

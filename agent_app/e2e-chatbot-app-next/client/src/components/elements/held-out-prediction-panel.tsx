@@ -228,8 +228,11 @@ export function HeldOutPredictionPanel({
 	// underlying table changes we must drop a stale template so it cannot be
 	// applied to a different result set.
 	const tableSignature = useMemo(
-		() => `${workspaceId}::${parsed.columns.join("|")}::${parsed.rows.length}`,
-		[workspaceId, parsed.columns, parsed.rows.length],
+		() =>
+			`${workspaceId}::${parsed.columns.join("|")}::${parsed.rows.length}::features=${parsed.columns
+				.filter((column) => featureColumns.has(column))
+				.join("|")}`,
+		[workspaceId, parsed.columns, parsed.rows.length, featureColumns],
 	);
 	const lastSignatureRef = useRef<string | null>(null);
 	useEffect(() => {
@@ -294,11 +297,22 @@ export function HeldOutPredictionPanel({
 				);
 			}
 
-			const template = payload.template;
+			const selectedFeatureNames = parsed.columns.filter((column) =>
+				featureColumns.has(column),
+			);
+			const template = normalizeFutureTemplateForFeatures(
+				payload.template,
+				selectedFeatureNames,
+				columnMeta,
+				parsed.rows,
+			);
 			setTemplateState({ status: "success", template });
 			setFutureFieldValues(
 				Object.fromEntries(
-					template.fields.map((field) => [field.name, field.defaultValue ?? ""]),
+					template.fields.map((field) => [
+						field.name,
+						initialFutureFieldValue(field),
+					]),
 				),
 			);
 			setIncludeFutureRows(true);
@@ -1558,6 +1572,121 @@ type YearMonth = { year: number; month: number };
 
 const MAX_FUTURE_ROWS = 500;
 
+function normalizeFutureTemplateForFeatures(
+	template: FutureTemplate,
+	selectedFeatures: string[],
+	columnMeta: Record<string, ColumnMeta>,
+	rows: TableDataRow[],
+): FutureTemplate {
+	const selected = new Set(selectedFeatures);
+	const fields = template.fields
+		.filter((field) => selected.has(field.name))
+		.map(normalizeFutureTemplateField);
+	const existing = new Set(fields.map((field) => field.name));
+	for (const feature of selectedFeatures) {
+		if (!existing.has(feature)) {
+			fields.push(makeFeatureTemplateField(feature, columnMeta[feature], rows));
+		}
+	}
+
+	return {
+		...template,
+		description:
+			template.description ||
+			"Create future rows using the currently selected feature columns.",
+		fields,
+	};
+}
+
+function normalizeFutureTemplateField(
+	field: FutureTemplateField,
+): FutureTemplateField {
+	return isCategoricalTemplateField(field) || field.kind === "date"
+		? { ...field, inputType: "list" }
+		: field;
+}
+
+function isCategoricalTemplateField(field: FutureTemplateField): boolean {
+	return field.kind === "text" || (field.options?.length ?? 0) > 0;
+}
+
+function makeFeatureTemplateField(
+	column: string,
+	meta: ColumnMeta | undefined,
+	rows: TableDataRow[],
+): FutureTemplateField {
+	const kind = meta?.kind ?? "text";
+	const observed = collectObservedValues(column, rows);
+	const timeLike = kind === "date" || isTemplateTimeLikeColumn(column);
+	return {
+		name: column,
+		label: column,
+		kind,
+		inputType: timeLike || kind === "text" ? "list" : "single",
+		defaultValue: timeLike
+			? defaultFutureDateValues(column, rows)
+			: observed.slice(0, kind === "text" ? 3 : 1).join(", "),
+		placeholder: timeLike ? "2024-01-01, 2024-02-01, 2024-03-01" : observed[0],
+		required: timeLike,
+		options: kind === "text" && observed.length > 0 ? observed : undefined,
+	};
+}
+
+function collectObservedValues(
+	column: string,
+	rows: TableDataRow[],
+	limit = 8,
+): string[] {
+	const values = new Set<string>();
+	for (const row of rows) {
+		const value = row[column];
+		if (value == null || value === "") continue;
+		values.add(String(value).trim());
+		if (values.size >= limit) break;
+	}
+	return [...values];
+}
+
+function isTemplateTimeLikeColumn(column: string): boolean {
+	return /(^|_)(period|month|year|quarter|week|day|date|time)(_|$)/i.test(
+		column,
+	);
+}
+
+function defaultFutureDateValues(column: string, rows: TableDataRow[]): string {
+	let latest: YearMonth | null = null;
+	for (const row of rows) {
+		const candidate = readYearMonthFromValue(row[column]);
+		if (!candidate) continue;
+		if (!latest || monthOrdinal(candidate) > monthOrdinal(latest)) {
+			latest = candidate;
+		}
+	}
+	const start = latest ? addMonths(latest, 1) : { year: 2024, month: 1 };
+	return [start, addMonths(start, 1), addMonths(start, 2)]
+		.map((value) => `${value.year}-${pad2(value.month)}-01`)
+		.join(", ");
+}
+
+function initialFutureFieldValue(field: FutureTemplateField): string {
+	const explicitDefault = field.defaultValue.trim();
+	if (explicitDefault) return explicitDefault;
+
+	if (field.options && field.options.length > 0) {
+		const count = field.inputType === "list" ? 3 : 1;
+		return field.options.slice(0, count).join(", ");
+	}
+
+	const placeholder = field.placeholder?.trim() ?? "";
+	if (isConcretePlaceholder(placeholder)) return placeholder;
+	return "";
+}
+
+function isConcretePlaceholder(value: string): boolean {
+	if (!value) return false;
+	return !/^e\.g\.|^example:?|comma[-\s]?separated|enter |type /i.test(value);
+}
+
 // Expands a generated template plus the user's field values into concrete future
 // rows. List fields expand into a cartesian product; required-but-empty fields
 // short-circuit to no rows. Target columns are never populated.
@@ -1677,6 +1806,46 @@ function readYearMonth(row: TableDataRow): YearMonth | null {
 		return { year: date.getFullYear(), month: date.getMonth() + 1 };
 	}
 	return null;
+}
+
+function readYearMonthFromValue(value: unknown): YearMonth | null {
+	if (value instanceof Date && !Number.isNaN(value.getTime())) {
+		return { year: value.getFullYear(), month: value.getMonth() + 1 };
+	}
+	if (value == null) return null;
+
+	const text = String(value).trim();
+	const isoMatch = text.match(/\b(19\d{2}|20\d{2})[-/_](\d{1,2})\b/);
+	if (isoMatch) {
+		const parsedYear = Number(isoMatch[1]);
+		const parsedMonth = Number(isoMatch[2]);
+		if (parsedMonth >= 1 && parsedMonth <= 12) {
+			return { year: parsedYear, month: parsedMonth };
+		}
+	}
+
+	const timestamp = Date.parse(text);
+	if (!Number.isNaN(timestamp)) {
+		const date = new Date(timestamp);
+		return { year: date.getFullYear(), month: date.getMonth() + 1 };
+	}
+	return null;
+}
+
+function addMonths(value: YearMonth, count: number): YearMonth {
+	const ordinal = monthOrdinal(value) + count;
+	return {
+		year: Math.floor(ordinal / 12),
+		month: (ordinal % 12) + 1,
+	};
+}
+
+function monthOrdinal(value: YearMonth): number {
+	return value.year * 12 + (value.month - 1);
+}
+
+function pad2(value: number): string {
+	return String(value).padStart(2, "0");
 }
 
 function splitCsvish(value: string): string[] {
