@@ -128,17 +128,23 @@ export function HeldOutPredictionPanel({
 	const [run, setRun] = useState<RunState>({ status: "idle" });
 
 	// Selecting a column as a target removes it from the feature set; clearing a
-	// target makes it available as a feature again (but does not auto-select it).
+	// target auto-selects it as an active feature again.
 	const toggleTarget = useCallback((column: string) => {
+		let becameTarget = false;
 		setTargetColumns((prev) => {
 			const next = new Set(prev);
-			if (next.has(column)) next.delete(column);
-			else next.add(column);
+			if (next.has(column)) {
+				next.delete(column);
+			} else {
+				next.add(column);
+				becameTarget = true;
+			}
 			return next;
 		});
 		setFeatureColumns((prev) => {
 			const next = new Set(prev);
-			next.delete(column);
+			if (becameTarget) next.delete(column);
+			else next.add(column);
 			return next;
 		});
 	}, []);
