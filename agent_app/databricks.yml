@@ -35,11 +35,14 @@ variables:
     default: "<shared-data-catalog-name>"
   data_schema_name:
     default: "<shared-data-schema-name>"
-  # Optional multi-catalog source data grants.
-  # Format: "catalog_1:schema1, schema2; catalog_2:schema_a, schema_b"
-  # If set, this replaces data_catalog_name/data_schema_name for source grants.
+  # Multi-catalog source data grants.
+  # Format: "catalog_1:schema1, schema2; catalog_2:schema_a, schema_b".
+  # When set, this replaces data_catalog_name/data_schema_name for source grants.
+  # Defaults to the single canonical source catalog/schema so the value is never
+  # empty (DABs drop empty-string env values, which Databricks Apps rejects).
+  # This default is behavior-equivalent to the single-catalog grant path.
   data_catalog_schemas:
-    default: ""
+    default: "${var.data_catalog_name}:${var.data_schema_name}"
   uc_function_names:
     default: "get_space_summary,get_table_overview,get_column_detail,get_space_instructions,get_space_details"
 
@@ -138,9 +141,12 @@ variables:
     default: "tabicl-classifier-v2-20260212.ckpt"
   ltm_regressor_checkpoint:
     default: "tabicl-regressor-v2-20260212.ckpt"
-  # Empty = auto-select CUDA/CPU; set "cpu", "cuda", or "mps" to force.
+  # Databricks Apps run on CPU-only containers, so pin to CPU (this is also what
+  # auto-select resolves to there). Set "cuda" or "mps" only for GPU/Metal
+  # compute. Must stay non-empty: DABs drop empty-string env values, which the
+  # Apps control plane rejects.
   ltm_device:
-    default: ""
+    default: "cpu"
   ltm_max_context_rows:
     default: "100000"
   ltm_n_estimators:
@@ -148,12 +154,15 @@ variables:
   # Keep false in production: load from the UC Volume, not the internet.
   ltm_allow_auto_download:
     default: "false"
-  # Fundamental NEXUS (managed SageMaker) — pre-wired but disabled. Set
-  # ltm_provider=nexus and provide an endpoint + AWS region/creds to enable.
+  # Fundamental NEXUS (managed SageMaker) — pre-wired but disabled. Only read
+  # when ltm_provider=nexus (default is tabicl), so these values are inert today.
+  # They must stay non-empty: DABs drop empty-string env values, which the Apps
+  # control plane rejects. To enable NEXUS, set ltm_provider=nexus and replace
+  # the endpoint placeholder below with your real SageMaker endpoint name.
   ltm_nexus_endpoint:
-    default: ""
+    default: "REPLACE_WITH_NEXUS_ENDPOINT"
   ltm_nexus_region:
-    default: ""
+    default: "us-east-1"
 
   # Genie spaces
   # Common override: set this to the comma-separated Genie spaces for the target.
