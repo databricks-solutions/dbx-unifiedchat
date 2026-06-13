@@ -235,6 +235,93 @@ class ModelServingConfig:
         )
 
 
+_DEFAULT_LTM_CLASSIFIER_CKPT = "tabicl-classifier-v2-20260212.ckpt"
+_DEFAULT_LTM_REGRESSOR_CKPT = "tabicl-regressor-v2-20260212.ckpt"
+
+
+@dataclass
+class TabularLTMConfig:
+    """Embedded tabular large-model (LTM) inference configuration.
+
+    Defaults target TabICLv2 checkpoints stored on a Unity Catalog Volume and
+    loaded in-process at app startup. Runtime Hugging Face downloads are
+    disabled by default; set ``allow_auto_download`` only when outbound network
+    access and governance explicitly allow it.
+    """
+    enabled: bool
+    provider: str
+    checkpoint_dir: str
+    classifier_checkpoint: str
+    regressor_checkpoint: str
+    device: str
+    max_context_rows: int
+    n_estimators: int
+    allow_auto_download: bool
+    # Fundamental NEXUS (managed SageMaker) — used only when provider == 'nexus'.
+    nexus_endpoint: str
+    nexus_region: str
+
+    def _checkpoint_path(self, filename: str) -> Optional[str]:
+        if not filename:
+            return None
+        if self.checkpoint_dir:
+            return os.path.join(self.checkpoint_dir, filename)
+        # No directory configured: rely on allow_auto_download to fetch by name.
+        return None
+
+    @property
+    def classifier_path(self) -> Optional[str]:
+        return self._checkpoint_path(self.classifier_checkpoint)
+
+    @property
+    def regressor_path(self) -> Optional[str]:
+        return self._checkpoint_path(self.regressor_checkpoint)
+
+    @property
+    def device_or_none(self) -> Optional[str]:
+        return self.device or None
+
+    @classmethod
+    def from_env(cls) -> 'TabularLTMConfig':
+        return cls(
+            enabled=os.getenv("LTM_ENABLED", "false").lower() == "true",
+            provider=os.getenv("LTM_PROVIDER", "tabicl").strip() or "tabicl",
+            checkpoint_dir=os.getenv("LTM_CHECKPOINT_PATH", "").strip(),
+            classifier_checkpoint=os.getenv(
+                "LTM_CLASSIFIER_CHECKPOINT", _DEFAULT_LTM_CLASSIFIER_CKPT
+            ).strip(),
+            regressor_checkpoint=os.getenv(
+                "LTM_REGRESSOR_CHECKPOINT", _DEFAULT_LTM_REGRESSOR_CKPT
+            ).strip(),
+            device=os.getenv("LTM_DEVICE", "").strip(),
+            max_context_rows=int(os.getenv("LTM_MAX_CONTEXT_ROWS", "100000")),
+            n_estimators=int(os.getenv("LTM_N_ESTIMATORS", "8")),
+            allow_auto_download=os.getenv("LTM_ALLOW_AUTO_DOWNLOAD", "false").lower() == "true",
+            nexus_endpoint=os.getenv("LTM_NEXUS_ENDPOINT", "").strip(),
+            nexus_region=os.getenv("LTM_NEXUS_REGION", "").strip(),
+        )
+
+    @classmethod
+    def from_model_config(cls, mc: Any) -> 'TabularLTMConfig':
+        return cls(
+            enabled=str(_mc_get(mc, "ltm_enabled", "false")).lower() == "true",
+            provider=str(_mc_get(mc, "ltm_provider", "tabicl")).strip() or "tabicl",
+            checkpoint_dir=str(_mc_get(mc, "ltm_checkpoint_path", "") or "").strip(),
+            classifier_checkpoint=str(
+                _mc_get(mc, "ltm_classifier_checkpoint", _DEFAULT_LTM_CLASSIFIER_CKPT)
+            ).strip(),
+            regressor_checkpoint=str(
+                _mc_get(mc, "ltm_regressor_checkpoint", _DEFAULT_LTM_REGRESSOR_CKPT)
+            ).strip(),
+            device=str(_mc_get(mc, "ltm_device", "") or "").strip(),
+            max_context_rows=int(_mc_get(mc, "ltm_max_context_rows", 100000)),
+            n_estimators=int(_mc_get(mc, "ltm_n_estimators", 8)),
+            allow_auto_download=str(_mc_get(mc, "ltm_allow_auto_download", "false")).lower() == "true",
+            nexus_endpoint=str(_mc_get(mc, "ltm_nexus_endpoint", "") or "").strip(),
+            nexus_region=str(_mc_get(mc, "ltm_nexus_region", "") or "").strip(),
+        )
+
+
 @dataclass
 class LakebaseConfig:
     """Lakebase database configuration for state management.
@@ -323,6 +410,7 @@ class AgentConfig:
     table_metadata: TableMetadataConfig
     model_serving: ModelServingConfig
     lakebase: LakebaseConfig
+    tabular_ltm: TabularLTMConfig
     
     @property
     def enriched_docs_table_fq(self) -> str:
@@ -351,6 +439,7 @@ class AgentConfig:
             table_metadata=TableMetadataConfig.from_env(uc),
             model_serving=ModelServingConfig.from_env(),
             lakebase=LakebaseConfig.from_env(),
+            tabular_ltm=TabularLTMConfig.from_env(),
         )
 
     @classmethod
@@ -365,6 +454,7 @@ class AgentConfig:
             table_metadata=TableMetadataConfig.from_model_config(mc),
             model_serving=ModelServingConfig.from_model_config(mc),
             lakebase=LakebaseConfig.from_model_config(mc),
+            tabular_ltm=TabularLTMConfig.from_model_config(mc),
         )
     
     def validate(self) -> None:
@@ -475,6 +565,18 @@ class AgentConfig:
         print(f"  Embedding Endpoint: {self.lakebase.embedding_endpoint}")
         print(f"  Embedding Dimensions: {self.lakebase.embedding_dims}")
         print(f"  Purpose: Short-term (checkpoints) + Long-term (user memories)")
+        print(f"\nTabular LTM (Embedded Inference):")
+        print(f"  Enabled: {self.tabular_ltm.enabled}")
+        print(f"  Provider: {self.tabular_ltm.provider}")
+        print(f"  Checkpoint Dir: {self.tabular_ltm.checkpoint_dir or '(unset)'}")
+        print(f"  Classifier Checkpoint: {self.tabular_ltm.classifier_checkpoint}")
+        print(f"  Regressor Checkpoint: {self.tabular_ltm.regressor_checkpoint}")
+        print(f"  Device: {self.tabular_ltm.device or 'auto'}")
+        print(f"  Max Context Rows: {self.tabular_ltm.max_context_rows}")
+        print(f"  Allow Auto Download: {self.tabular_ltm.allow_auto_download}")
+        if self.tabular_ltm.provider == "nexus":
+            print(f"  NEXUS Endpoint: {self.tabular_ltm.nexus_endpoint or '(unset)'}")
+            print(f"  NEXUS Region: {self.tabular_ltm.nexus_region or '(unset)'}")
         print("="*80)
 
 

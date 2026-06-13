@@ -84,6 +84,11 @@ resources:
               lakebase_branch: ${var.lakebase_branch}
               source_table: ${var.source_table}
               experiment_id: ${var.experiment_id}
+              ltm_enabled: ${var.ltm_enabled}
+              ltm_provider: ${var.ltm_provider}
+              ltm_checkpoint_path: ${var.ltm_checkpoint_path}
+              ltm_classifier_checkpoint: ${var.ltm_classifier_checkpoint}
+              ltm_regressor_checkpoint: ${var.ltm_regressor_checkpoint}
           timeout_seconds: 1800
 
     agent_app_preps_job:

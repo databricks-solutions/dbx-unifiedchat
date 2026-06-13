@@ -20,6 +20,7 @@ dependencies = [
     "pyyaml>=6.0",
     "ddgs>=9.11.4",
     "sqlglot>=30.1.0",
+    "tabicl>=2.1.1",
 ]
 
 [tool.uv]
@@ -33,6 +34,16 @@ build-backend = "hatchling.build"
 dev = [
     "hatchling>=1.28.0",
     "pytest>=9.0.2",
+]
+# Benchmark-only deps (not installed in the app container). Used by
+# scripts/benchmark_ltm.py to compare TabICLv2 against TabM and GBDT baselines.
+benchmark = [
+    "tabm>=0.0.3",
+    "catboost>=1.2",
+    "xgboost>=2.0",
+    "scikit-learn>=1.4",
+    "pandas>=2.0",
+    "numpy>=1.26",
 ]
 
 [project.scripts]
