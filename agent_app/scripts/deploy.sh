@@ -37,7 +37,9 @@
 #                        post-deploy job.
 #   --bootstrap-local    Ensure local Python tooling is ready via `uv sync --dev`.
 #   --skip-bootstrap     Skip local bootstrap checks and dependency sync.
-#   --ci                 Non-interactive CI mode; implies no opportunistic bootstrap.
+#   --auto-approve       Skip interactive bundle deployment approvals.
+#   --ci                 Non-interactive CI mode; implies no opportunistic bootstrap
+#                        and bundle deploy --auto-approve.
 #   --help, -h           Show this help text and exit.
 
 set -euo pipefail
@@ -53,6 +55,7 @@ SKIP_SHARED_INFRA=false
 LIST_JOBS_ONLY=false
 POST_DEPLOY_JOB=""
 CI_MODE=false
+AUTO_APPROVE=false
 SKIP_BOOTSTRAP=false
 FORCE_BOOTSTRAP=false
 DEPRECATION_WARNINGS=()
@@ -144,6 +147,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --bootstrap-local)   FORCE_BOOTSTRAP=true; shift ;;
     --skip-bootstrap)    SKIP_BOOTSTRAP=true; shift ;;
+    --auto-approve)      AUTO_APPROVE=true; shift ;;
     --ci)                CI_MODE=true; shift ;;
     --help|-h)           print_help; exit 0 ;;
     *)                   error "Unknown argument: $1" ;;
@@ -202,6 +206,9 @@ eval "$(resolve_bundle_context)"
 TARGET="$RESOLVED_TARGET"
 if [[ -z "$PROFILE" ]]; then
   PROFILE="$RESOLVED_PROFILE"
+fi
+if [[ "$CI_MODE" == true ]]; then
+  AUTO_APPROVE=true
 fi
 
 PROFILE_ARGS=()
@@ -527,9 +534,17 @@ info "Sync       : $SYNC_WORKSPACE"
 info "Shared infra permissions grant to app SP after deploy : $([[ "$SKIP_SHARED_INFRA" == true ]] && echo "disabled" || echo "enabled")"
 info "Requested job to run after deploy : ${POST_DEPLOY_JOB:-<none>}"
 info "Start app  : $START_APP"
+info "Auto approve bundle deploy : $AUTO_APPROVE"
 
 section "Deploying bundle"
-databricks bundle deploy -t "$TARGET" "${PROFILE_ARGS[@]}"
+DEPLOY_CMD=(databricks bundle deploy -t "$TARGET")
+if [[ -n "$PROFILE" ]]; then
+  DEPLOY_CMD+=("--profile" "$PROFILE")
+fi
+if [[ "$AUTO_APPROVE" == true ]]; then
+  DEPLOY_CMD+=("--auto-approve")
+fi
+"${DEPLOY_CMD[@]}"
 success "Bundle deploy complete"
 
 # it is important to run the shared infra job after every deploy bundle so the app can use the shared 

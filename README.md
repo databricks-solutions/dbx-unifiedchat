@@ -136,7 +136,7 @@ Local development still uses `agent_app/.env` as a materialized runtime file
 for machine-specific values, auth context, resolved database connection
 details, and any local-only overrides.
 
-From a local terminal or CI runner:
+From a local terminal:
 
 ```bash
 cd agent_app
@@ -153,13 +153,20 @@ Useful variations:
 The deploy script validates the bundle, deploys the app resources, runs the prep or
 full deployment job graph, and can optionally start the app.
 
+For CI, run `./scripts/deploy.sh ... --ci`; this skips local bootstrap and
+passes `--auto-approve` to `databricks bundle deploy`. The CI runner must
+install required tools such as `python3`, Databricks CLI, and any Python
+dependencies before executing the deploy step. Add `--skip-bootstrap` only when
+using a non-CI context with a pre-prepared environment.
+
 #### 2. Workspace-native operator flow
 
 If you prefer to operate entirely inside Databricks, open
-`agent_app/scripts/deploy_notebook.py` and use it as a guided handoff to the
-Databricks web terminal. That notebook resolves the active target, prints the
-exact `./scripts/deploy.sh ...` command to run, and provides post-deploy
-verification.
+`agent_app/scripts/deploy_notebook.py`. In `deployment_context=web_terminal` or
+`deployment_context=local`, the notebook prints the exact
+`./scripts/deploy.sh ...` command to run. In `deployment_context=ci`, it runs
+the canonical `deploy.sh --ci` flow directly inside the notebook. The notebook
+also resolves the active target and provides post-deploy verification.
 
 #### 3. Local app development in `agent_app`
 
@@ -232,7 +239,7 @@ supported workflow.
 * [**Testing Guide**](agent_app/tests/README.md) - Run tests and write new tests
 * [**Contributing**](CONTRIBUTING.md) - Contribution guidelines
 * `agent_app/scripts/deploy.sh` - Canonical local and CI deployment entry point
-* `agent_app/scripts/deploy_notebook.py` - Workspace-native operator handoff
+* `agent_app/scripts/deploy_notebook.py` - Workspace-native deploy notebook
 * `agent_app/scripts/dev-local.sh` - Current local bootstrap/build entry point
 * `agent_app/scripts/dev-local-hot-reload.sh` - Current hot-reload development entry point
 

@@ -26,8 +26,9 @@ It is intentionally not a second deployment system.
 
 - `scripts/deploy_notebook.py`
   - repo-backed Databricks notebook source
-  - provides widgets for `project_dir`, `target`, `run_job`, `sync_workspace`, and `start_app`
-  - organized into preflight, terminal handoff, and verification sections
+  - provides widgets for `project_dir`, `target`, `deployment_context`, `skip_bootstrap`, `run_job`, `sync_workspace`, and `start_app`
+  - organized into preflight, deploy, and verification sections
+  - executes `deploy.sh` automatically when `deployment_context=ci`
   - prints both a deploy handoff and a separate destroy handoff
 
 - `scripts/notebook_deploy_lib.py`
@@ -52,12 +53,15 @@ Use one of these entrypoints depending on where you are operating:
   - this is the normal first-run path because it bootstraps `agent_app/.venv`
 - Databricks web terminal
   - use the command printed by `scripts/deploy_notebook.py`
-  - this path usually includes `--skip-bootstrap` because the workspace-side
-    handoff is for an already prepared terminal environment
+  - use `deployment_context=web_terminal`; this includes `--skip-bootstrap` by
+    default because the workspace-side handoff is for an already prepared
+    terminal environment
 - CI
-  - run `./scripts/deploy.sh ... --ci`
+  - use `deployment_context=ci` to run `./scripts/deploy.sh ... --ci` from the notebook
   - add `--skip-bootstrap` only when the runner was already prepared earlier in
     the job
+  - `deploy.sh --ci` automatically passes `--auto-approve` to
+    `databricks bundle deploy`
 
 ## Operational Jobs
 
@@ -167,17 +171,21 @@ to run `./scripts/deploy.sh` first.
    - `project_dir`: path to the `agent_app` folder
    - `target`: `dev` or `prod`
    - `profile`: optional Databricks CLI profile override
+   - `deployment_context`: `web_terminal`, `ci`, or `local`
+   - `skip_bootstrap`: `auto`, `true`, or `false`; `auto` means true only for `web_terminal`
    - `run_job`: blank for deploy-only, or one of `meta`, `infra`, `prep`, `val`, `full`
    - `sync_workspace`: `true` or `false`
    - `start_app`: `true` or `false`
 3. Run the preflight cell.
-4. Copy the printed deploy handoff into the Databricks web terminal and run it from the `agent_app` directory.
-5. Re-run the verification cell after the command completes.
+4. Run the deploy cell.
+   - For `deployment_context=ci`, the cell executes the deploy script directly.
+   - For interactive contexts, copy the printed deploy handoff into the terminal and run it from the `agent_app` directory.
+5. Run the verification cell after deployment completes.
 
 ## Handoff Examples
 
-The notebook deploy handoff reflects the current widget values and includes
-`--skip-bootstrap` for the Databricks web-terminal flow.
+The notebook deploy handoff reflects the current widget values. With
+`deployment_context=web_terminal`, it includes `--skip-bootstrap`.
 
 Example deploy handoff:
 
@@ -187,6 +195,18 @@ cd /Workspace/Users/you@example.com/path/to/agent_app
 ```
 
 If `sync_workspace=true`, the handoff also includes `--sync-workspace`.
+
+With `deployment_context=ci`, the notebook executes the command directly. The
+command includes `--ci`, and `deploy.sh` passes `--auto-approve` to
+`databricks bundle deploy`. `deploy.sh --ci` skips local bootstrap, so the CI
+runner must install required tools such as `python3`, Databricks CLI, and any
+Python dependencies before executing the notebook/deploy step. `skip_bootstrap=true`
+is only needed when using non-CI contexts with a pre-prepared environment:
+
+```bash
+cd /path/to/agent_app
+./scripts/deploy.sh --target prod --ci --profile prod --run-job full --start-app
+```
 
 If you need to discover raw job keys first:
 

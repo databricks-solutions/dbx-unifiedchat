@@ -17,12 +17,14 @@
 # MAGIC What this notebook does:
 # MAGIC - resolves target-specific settings from `agent_app/databricks.yml`
 # MAGIC - checks workspace auth and current app state
-# MAGIC - prints the exact `./scripts/deploy.sh ...` command to run in the web terminal
-# MAGIC - verifies the deployed app surface after the terminal command finishes
+# MAGIC - runs the canonical `./scripts/deploy.sh ... --ci` flow automatically
+# MAGIC   when `deployment_context=ci`
+# MAGIC - prints the exact `./scripts/deploy.sh ...` command for interactive
+# MAGIC   web terminal or local terminal use
+# MAGIC - verifies the deployed app surface after deployment
 # MAGIC
 # MAGIC What it does not do:
 # MAGIC - it does not replace `deploy.sh` for local or CI automation
-# MAGIC - it does not run deployment commands directly in notebook cells
 
 # COMMAND ----------
 
@@ -67,6 +69,19 @@ project_dir_value = _widget("project_dir", str(initial_project_dir))
 project_dir = Path(project_dir_value).expanduser().resolve()
 target = _widget("target", "dev", choices=["dev", "prod"])
 profile = _widget("profile", "")
+deployment_context = _widget(
+    "deployment_context",
+    default="web_terminal",
+    choices=["web_terminal", "ci", "local"],
+)
+skip_bootstrap_value = _widget(
+    "skip_bootstrap",
+    default="auto",
+    choices=["auto", "false", "true"],
+)
+skip_bootstrap = None
+if skip_bootstrap_value != "auto":
+    skip_bootstrap = skip_bootstrap_value == "true"
 run_job = _widget(
     "run_job",
     default="full",
@@ -93,12 +108,15 @@ NotebookDeployConfig = module.NotebookDeployConfig
 collect_preflight_report = module.collect_preflight_report
 print_preflight_report = module.print_preflight_report
 print_terminal_handoff = module.print_terminal_handoff
+run_deploy_command = module.run_deploy_command
 verify_deployment = module.verify_deployment
 
 config = NotebookDeployConfig(
     project_dir=project_dir,
     target=target,
     profile=profile or None,
+    deployment_context=deployment_context,
+    skip_bootstrap=skip_bootstrap,
     start_app=start_app,
     sync_workspace=sync_workspace,
     run_job=run_job,
@@ -120,25 +138,30 @@ print_preflight_report(config, preflight)
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 2. Terminal Handoff
+# MAGIC ## 2. Deploy
 # MAGIC
-# MAGIC Run the printed deploy command in the Databricks web terminal from the
-# MAGIC `agent_app` directory. The handoff reflects the current widget values and
-# MAGIC includes `--skip-bootstrap` for the web-terminal flow.
+# MAGIC This cell reflects the current widget values:
+# MAGIC - `deployment_context=ci` runs `deploy.sh` automatically inside the notebook
+# MAGIC - `deployment_context=web_terminal` prints a web-terminal command with
+# MAGIC   `--skip-bootstrap` by default
+# MAGIC - `deployment_context=local` prints the local terminal command
 # MAGIC
-# MAGIC A separate destroy handoff is also printed below with warnings and usage.
+# MAGIC Interactive contexts also print a separate destroy handoff with warnings
+# MAGIC and usage.
 
 # COMMAND ----------
 
-print_terminal_handoff(config)
+if deployment_context == "ci":
+    run_deploy_command(config)
+else:
+    print_terminal_handoff(config)
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## 3. Verification
 # MAGIC
-# MAGIC After the terminal command completes, rerun this cell to confirm the app
-# MAGIC exists and to review any remaining manual follow-up.
+# MAGIC Confirm the app exists and review any remaining manual follow-up.
 
 # COMMAND ----------
 

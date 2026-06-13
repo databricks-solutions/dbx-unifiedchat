@@ -55,8 +55,11 @@ reconciliation step.
 - Local terminal: run `./scripts/deploy.sh ...` from `agent_app`
 - Databricks web terminal: use the handoff printed by `scripts/deploy_notebook.py`
   and typically include `--skip-bootstrap`
-- CI: run `./scripts/deploy.sh ... --ci`, optionally with `--skip-bootstrap`
-  when the runner is already prepared
+- CI: run `./scripts/deploy.sh ... --ci`; this skips local bootstrap and passes
+  `--auto-approve` to `databricks bundle deploy`. The CI runner must install
+  required tools such as `python3`, Databricks CLI, and any Python dependencies
+  before executing the deploy step. Add `--skip-bootstrap` only when using a
+  non-CI context with a pre-prepared environment.
 
 The bundle inputs committed to the repo are:
 
