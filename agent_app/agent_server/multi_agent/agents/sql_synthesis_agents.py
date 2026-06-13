@@ -94,6 +94,8 @@ from databricks_langchain import (
     GenieAgent,
 )
 
+from ..prompts import load_databricks_sql_synthesis_skill
+
 
 # ==============================================================================
 # Genie Agent Pool (for SQLSynthesisGenieAgent)
@@ -317,7 +319,9 @@ class SQLSynthesisTableAgent:
         
         self.uc_toolkit = UCFunctionToolkit(function_names=uc_function_names)
         self.tools = self.uc_toolkit.tools
-        
+
+        databricks_sql_skill = load_databricks_sql_synthesis_skill()
+
         # Create SQL synthesis agent with tools
         self.agent = create_agent(
             model=llm,
@@ -325,6 +329,9 @@ class SQLSynthesisTableAgent:
             system_prompt=(
                 "You are a specialized SQL synthesis agent in a multi-agent system.\n\n"
                 "ROLE: You receive execution plans from the planning agent and generate SQL queries.\n\n"
+                "The SQL warehouse executes queries as **Databricks SQL (Spark SQL)**. Follow the static "
+                "Databricks SQL skill appended at the end of this prompt for dialect rules, "
+                "UNION/UNION ALL requirements, and common pitfalls.\n\n"
 
                 "## WORKFLOW:\n"
                 "1. Review the execution plan and provided metadata\n"
@@ -397,6 +404,8 @@ class SQLSynthesisTableAgent:
                 "     -- Query 2: Top procedures\n"
                 "     SELECT procedure_code, COUNT(*) AS count FROM procedures GROUP BY procedure_code;\n"
                 "     ```\n\n"
+                "## Static skill: Databricks SQL (required dialect)\n\n"
+                f"{databricks_sql_skill}\n"
             )
         )
     
@@ -794,13 +803,19 @@ class SQLSynthesisGenieAgent:
         tools.append(parallel_tool)
         
         print(f"✓ Created SQL Synthesis Agent with {len(self.genie_agent_tools)} Genie agent tools + 1 parallel execution tool")
-        
+
+        databricks_sql_skill = load_databricks_sql_synthesis_skill()
+
         # Create SQL Synthesis Agent (specialized for multi-agent system)
         sql_synthesis_agent = create_agent(
             model=self.llm,
             tools=tools,
             system_prompt=(
 """You are a SQL synthesis agent with access to both INDIVIDUAL and PARALLEL Genie agent execution tools.
+
+The SQL warehouse runs **Databricks SQL (Spark SQL)**. You MUST synthesize and combine fragments into
+dialect-correct Databricks SQL. A static Databricks SQL skill is appended at the end of this prompt
+(UNION/UNION ALL column alignment, string quoting, and avoiding other vendors' function names).
 
 The Plan given to you is a JSON:
 {
@@ -904,6 +919,8 @@ OUTPUT REQUIREMENTS:
        -- Query 2: Top procedures
        SELECT procedure_code, COUNT(*) AS count FROM procedures GROUP BY procedure_code;
        ```"""
+
+                + f"\n\n## Static skill: Databricks SQL (required dialect)\n\n{databricks_sql_skill}\n"
             )
         )
         
