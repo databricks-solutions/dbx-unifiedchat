@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shlex
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -25,6 +26,8 @@ class NotebookDeployConfig:
     project_dir: Path
     target: str = "dev"
     profile: str | None = None
+    deployment_context: str = "web_terminal"
+    skip_bootstrap: bool | None = None
     start_app: bool = False
     sync_workspace: bool = False
     run_job: str | None = "full"
@@ -60,6 +63,22 @@ def _profile_args(profile: str | None) -> list[str]:
 
 def _render_command(command: list[str]) -> str:
     return shlex.join(command)
+
+
+def _resolved_skip_bootstrap(config: NotebookDeployConfig) -> bool:
+    if config.skip_bootstrap is not None:
+        return config.skip_bootstrap
+    return config.deployment_context == "web_terminal"
+
+
+def _append_deployment_context_args(
+    command: list[str],
+    config: NotebookDeployConfig,
+) -> None:
+    if config.deployment_context == "ci":
+        command.append("--ci")
+    if _resolved_skip_bootstrap(config):
+        command.append("--skip-bootstrap")
 
 
 def load_yaml(path: Path) -> dict:
@@ -226,6 +245,8 @@ def print_preflight_report(config: NotebookDeployConfig, report: PreflightReport
     print(f"  target: {config.target}")
     print(f"  profile: {config.profile or '<workspace auth>'}")
     print(f"  effective_profile: {report.effective_profile or '<workspace auth>'}")
+    print(f"  deployment_context: {config.deployment_context}")
+    print(f"  skip_bootstrap: {_resolved_skip_bootstrap(config)}")
     print(f"  app_name: {config.app_name}")
     print(f"  run_job: {config.run_job or '<none>'}")
     print(f"  sync_workspace: {config.sync_workspace}")
@@ -252,8 +273,9 @@ def print_preflight_report(config: NotebookDeployConfig, report: PreflightReport
             print(f"  - {warning}")
 
 
-def build_deploy_command(config: NotebookDeployConfig) -> str:
-    command = ["./scripts/deploy.sh", "--target", config.target, "--skip-bootstrap"]
+def build_deploy_command_args(config: NotebookDeployConfig) -> list[str]:
+    command = ["./scripts/deploy.sh", "--target", config.target]
+    _append_deployment_context_args(command, config)
     if config.profile:
         command.extend(["--profile", config.profile])
     if config.sync_workspace:
@@ -262,6 +284,11 @@ def build_deploy_command(config: NotebookDeployConfig) -> str:
         command.extend(["--run-job", config.run_job])
     if config.start_app:
         command.append("--start-app")
+    return command
+
+
+def build_deploy_command(config: NotebookDeployConfig) -> str:
+    command = build_deploy_command_args(config)
     return _render_command(command)
 
 
@@ -273,19 +300,27 @@ def build_destroy_command(config: NotebookDeployConfig) -> str:
 
 
 def print_terminal_handoff(config: NotebookDeployConfig) -> None:
-    print("Deploy handoff")
+    print("Deploy command handoff")
     print(f"  cd {shlex.quote(str(config.project_dir))}")
     print(f"  {build_deploy_command(config)}")
     print()
     print("Notes")
+    print(f"  - deployment_context widget -> {config.deployment_context}")
+    print(f"  - skip_bootstrap widget     -> {_resolved_skip_bootstrap(config)}")
     print(f"  - run_job widget        -> {config.run_job or '<none>'}")
     print(f"  - sync_workspace widget -> {config.sync_workspace}")
     print(f"  - start_app widget      -> {config.start_app}")
-    print("  - --skip-bootstrap is included for the Databricks web terminal flow")
+    print("  - web_terminal adds --skip-bootstrap by default")
+    print("  - ci adds --ci for non-interactive CI/CD runners")
     print("  - use `meta`, `infra`, `prep`, `val`, or `full` for `run_job`")
+    list_jobs_command = ["./scripts/deploy.sh", "--target", config.target]
+    _append_deployment_context_args(list_jobs_command, config)
+    if config.profile:
+        list_jobs_command.extend(["--profile", config.profile])
+    list_jobs_command.append("--list-jobs")
     print(
         "  - discover exact job keys and descriptions with: "
-        f"./scripts/deploy.sh --target {shlex.quote(config.target)} --skip-bootstrap --list-jobs"
+        f"{_render_command(list_jobs_command)}"
     )
     print()
     print("Destroy handoff")
@@ -297,6 +332,17 @@ def print_terminal_handoff(config: NotebookDeployConfig) -> None:
     print("  To skip the confirmation prompt only after review, add: --auto-approve")
     print()
     print("After the deploy terminal command finishes, rerun the verification cells.")
+
+
+def run_deploy_command(config: NotebookDeployConfig) -> None:
+    command = build_deploy_command_args(config)
+    print("Executing deploy command")
+    print(f"  cwd: {config.project_dir}")
+    print(f"  command: {_render_command(command)}")
+    print()
+    subprocess.run(command, cwd=config.project_dir, check=True)
+    print()
+    print("Deploy command completed.")
 
 
 def bootstrap_lakebase_role(
